@@ -14,9 +14,8 @@ namespace nativeapi {
 // Private implementation class
 class Window::Impl {
  public:
-  Impl(void* window) : native_window_(window), visual_effect_(VisualEffect::None) {}
+  Impl(void* window) : native_window_(window) {}
   void* native_window_;
-  VisualEffect visual_effect_;
 };
 
 Window::Window() : pimpl_(std::make_unique<Impl>(nullptr)) {}
@@ -327,6 +326,18 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   return TitleBarStyle::Normal;
 }
 
+bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBar() const {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBarSupported() {
+  return false;
+}
+
 void Window::SetHasShadow(bool has_shadow) {
   // SetHasShadow not supported on OpenHarmony
 }
@@ -343,13 +354,16 @@ float Window::GetOpacity() const {
   return 1.0f;
 }
 
-void Window::SetVisualEffect(VisualEffect effect) {
-  pimpl_->visual_effect_ = effect;
-  // SetVisualEffect not supported on OpenHarmony
+bool Window::SetVisualEffect(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 VisualEffect Window::GetVisualEffect() const {
-  return pimpl_->visual_effect_;
+  return VisualEffect::None;
+}
+
+bool Window::IsVisualEffectSupported(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 void Window::SetBackgroundColor(const Color& color) {

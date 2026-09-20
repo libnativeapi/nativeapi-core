@@ -207,12 +207,10 @@ class Window::Impl {
       : widget_(widget),
         gdk_window_(gdk_window),
         title_bar_style_(TitleBarStyle::Normal),
-        visual_effect_(VisualEffect::None),
         background_color_(Color::White) {}
   GtkWidget* widget_;
   GdkWindow* gdk_window_;
   TitleBarStyle title_bar_style_;
-  VisualEffect visual_effect_;
   Color background_color_;
   double aspect_ratio_ = 0.0;
   // What SetContentSize() asked for while the window was not mapped yet. GDK only
@@ -881,6 +879,20 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   return pimpl_->title_bar_style_;
 }
 
+// A GTK header bar is a sibling above the content, not an overlay over it; taking it into
+// the content area would mean rebuilding a widget tree the toolkit owns.
+bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBar() const {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBarSupported() {
+  return false;
+}
+
 // The shadow of a window with client-side decorations - every toplevel on Wayland, and
 // windows with a header bar on X11 - is drawn by GTK itself, from the CSS of the window's
 // "decoration" node. That node cannot be styled through the window's own style context,
@@ -994,14 +1006,18 @@ float Window::GetOpacity() const {
   return 1.0f;  // Default assumption
 }
 
-void Window::SetVisualEffect(VisualEffect effect) {
-  pimpl_->visual_effect_ = effect;
-  // TODO: Implement background blur for Linux (GTK/GDK)
-  // This typically requires compositor support or specific GTK CSS
+// Blur behind a window is the compositor's to offer on Linux, and there is no common way
+// to ask for it: KWin has a protocol of its own, Mutter has nothing.
+bool Window::SetVisualEffect(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 VisualEffect Window::GetVisualEffect() const {
-  return pimpl_->visual_effect_;
+  return VisualEffect::None;
+}
+
+bool Window::IsVisualEffectSupported(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 void Window::SetBackgroundColor(const Color& color) {

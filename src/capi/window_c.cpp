@@ -894,6 +894,41 @@ native_title_bar_style_t native_window_get_title_bar_style(native_window_t windo
   }
 }
 
+bool native_window_set_content_under_title_bar(native_window_t window, bool is_content_under_title_bar) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->SetContentUnderTitleBar(is_content_under_title_bar);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_content_under_title_bar");
+    return false;
+  }
+}
+
+bool native_window_is_content_under_title_bar(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsContentUnderTitleBar();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_content_under_title_bar");
+    return false;
+  }
+}
+
+bool native_window_is_content_under_title_bar_supported(void) {
+  try {
+    return nativeapi::Window::IsContentUnderTitleBarSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_content_under_title_bar_supported");
+    return false;
+  }
+}
+
 void native_window_set_has_shadow(native_window_t window, bool has_shadow) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -948,17 +983,16 @@ float native_window_get_opacity(native_window_t window) {
   }
 }
 
-void native_window_set_visual_effect(native_window_t window, native_visual_effect_t effect) {
+bool native_window_set_visual_effect(native_window_t window, native_visual_effect_t effect) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
-    return;
+    return false;
   }
   try {
-    self->SetVisualEffect(to_cpp_visual_effect(effect));
-    return;
+    return self->SetVisualEffect(to_cpp_visual_effect(effect));
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_visual_effect");
-    return;
+    return false;
   }
 }
 
@@ -972,6 +1006,15 @@ native_visual_effect_t native_window_get_visual_effect(native_window_t window) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_visual_effect");
     return (native_visual_effect_t)NATIVE_VISUAL_EFFECT_NONE;
+  }
+}
+
+bool native_window_is_visual_effect_supported(native_visual_effect_t effect) {
+  try {
+    return nativeapi::Window::IsVisualEffectSupported(to_cpp_visual_effect(effect));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_visual_effect_supported");
+    return false;
   }
 }
 

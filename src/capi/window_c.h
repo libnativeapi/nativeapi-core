@@ -32,6 +32,10 @@ typedef enum {
   NATIVE_VISUAL_EFFECT_BLUR = 1,
   NATIVE_VISUAL_EFFECT_ACRYLIC = 2,
   NATIVE_VISUAL_EFFECT_MICA = 3,
+  NATIVE_VISUAL_EFFECT_MICA_ALT = 4,
+  NATIVE_VISUAL_EFFECT_HUD = 5,
+  NATIVE_VISUAL_EFFECT_POPOVER = 6,
+  NATIVE_VISUAL_EFFECT_MENU = 7,
 } native_visual_effect_t;
 
 typedef enum {
@@ -288,6 +292,15 @@ FFI_PLUGIN_EXPORT
 native_title_bar_style_t native_window_get_title_bar_style(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_content_under_title_bar(native_window_t window, bool is_content_under_title_bar);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_content_under_title_bar(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_content_under_title_bar_supported(void);
+
+FFI_PLUGIN_EXPORT
 void native_window_set_has_shadow(native_window_t window, bool has_shadow);
 
 FFI_PLUGIN_EXPORT
@@ -300,10 +313,13 @@ FFI_PLUGIN_EXPORT
 float native_window_get_opacity(native_window_t window);
 
 FFI_PLUGIN_EXPORT
-void native_window_set_visual_effect(native_window_t window, native_visual_effect_t effect);
+bool native_window_set_visual_effect(native_window_t window, native_visual_effect_t effect);
 
 FFI_PLUGIN_EXPORT
 native_visual_effect_t native_window_get_visual_effect(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_visual_effect_supported(native_visual_effect_t effect);
 
 FFI_PLUGIN_EXPORT
 void native_window_set_background_color(native_window_t window, native_color_t color);
@@ -420,6 +436,14 @@ inline native_visual_effect_t to_c_visual_effect(nativeapi::VisualEffect value) 
       return NATIVE_VISUAL_EFFECT_ACRYLIC;
     case nativeapi::VisualEffect::Mica:
       return NATIVE_VISUAL_EFFECT_MICA;
+    case nativeapi::VisualEffect::MicaAlt:
+      return NATIVE_VISUAL_EFFECT_MICA_ALT;
+    case nativeapi::VisualEffect::Hud:
+      return NATIVE_VISUAL_EFFECT_HUD;
+    case nativeapi::VisualEffect::Popover:
+      return NATIVE_VISUAL_EFFECT_POPOVER;
+    case nativeapi::VisualEffect::Menu:
+      return NATIVE_VISUAL_EFFECT_MENU;
     default:
       return NATIVE_VISUAL_EFFECT_NONE;
   }
@@ -435,6 +459,14 @@ inline nativeapi::VisualEffect to_cpp_visual_effect(native_visual_effect_t value
       return nativeapi::VisualEffect::Acrylic;
     case NATIVE_VISUAL_EFFECT_MICA:
       return nativeapi::VisualEffect::Mica;
+    case NATIVE_VISUAL_EFFECT_MICA_ALT:
+      return nativeapi::VisualEffect::MicaAlt;
+    case NATIVE_VISUAL_EFFECT_HUD:
+      return nativeapi::VisualEffect::Hud;
+    case NATIVE_VISUAL_EFFECT_POPOVER:
+      return nativeapi::VisualEffect::Popover;
+    case NATIVE_VISUAL_EFFECT_MENU:
+      return nativeapi::VisualEffect::Menu;
     default:
       return nativeapi::VisualEffect::None;
   }

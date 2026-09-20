@@ -9,9 +9,8 @@ namespace nativeapi {
 // Private implementation class
 class Window::Impl {
  public:
-  Impl(UIWindow* window) : ui_window_(window), visual_effect_(VisualEffect::None) {}
+  Impl(UIWindow* window) : ui_window_(window) {}
   UIWindow* ui_window_;
-  VisualEffect visual_effect_;
 };
 
 Window::Window() : pimpl_(std::make_unique<Impl>(nil)) {}
@@ -384,6 +383,18 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   return TitleBarStyle::Normal;
 }
 
+bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBar() const {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBarSupported() {
+  return false;
+}
+
 void Window::SetHasShadow(bool has_shadow) {
   // iOS manages shadow automatically
 }
@@ -402,13 +413,16 @@ float Window::GetOpacity() const {
   return pimpl_->ui_window_ ? pimpl_->ui_window_.alpha : 1.0f;
 }
 
-void Window::SetVisualEffect(VisualEffect effect) {
-  pimpl_->visual_effect_ = effect;
-  NSLog(@"SetVisualEffect not supported on iOS");
+bool Window::SetVisualEffect(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 VisualEffect Window::GetVisualEffect() const {
-  return pimpl_->visual_effect_;
+  return VisualEffect::None;
+}
+
+bool Window::IsVisualEffectSupported(VisualEffect effect) {
+  return effect == VisualEffect::None;
 }
 
 void Window::SetBackgroundColor(const Color& color) {

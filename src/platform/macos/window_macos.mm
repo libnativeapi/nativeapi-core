@@ -26,6 +26,17 @@ static const void* kWindowMovableKey = &kWindowMovableKey;
 // becomes the child of a visible one, so a hidden child is only attached once
 // it is shown; see Window::SetParentWindow().
 static const void* kWindowPendingParentKey = &kWindowPendingParentKey;
+// Window::SetVisualEffect() state, on the NSWindow like the rest: the effect in force, the
+// view that draws it, and the background the content view controller had before the effect
+// made it clear.
+// Window::SetContentUnderTitleBar() state, and the window control button
+// visibility Window::SetTitleBarStyle() / SetWindowControlButtonsVisible() last asked
+// for. Both on the NSWindow, for the same reason as the flags above.
+static const void* kWindowContentUnderTitleBarKey = &kWindowContentUnderTitleBarKey;
+static const void* kWindowButtonsVisibleKey = &kWindowButtonsVisibleKey;
+static const void* kWindowVisualEffectKey = &kWindowVisualEffectKey;
+static const void* kWindowVisualEffectViewKey = &kWindowVisualEffectViewKey;
+static const void* kWindowContentBackgroundKey = &kWindowContentBackgroundKey;
 
 // Also called by window_manager_macos.mm, for windows someone else shows.
 void NativeApiAttachPendingParentWindow(NSWindow* window) {
@@ -55,8 +66,61 @@ static void NativeApiDetachFromParentWindow(NSWindow* window, bool keep_pending)
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// The content may paint a backing of its own over the window's background. A view
+// controller that has a background colour is the case that matters: a
+// FlutterViewController is opaque black by default.
+static NSViewController* NativeApiContentWithBackground(NSWindow* window) {
+  NSViewController* content = [window contentViewController];
+  if ([content respondsToSelector:@selector(setBackgroundColor:)] &&
+      [content respondsToSelector:@selector(backgroundColor)]) {
+    return content;
+  }
+  return nil;
+}
+
 static BOOL NativeApiWindowIsTitleBarHidden(NSWindow* window) {
   return [objc_getAssociatedObject(window, kWindowTitleBarHiddenKey) boolValue];
+}
+
+static BOOL NativeApiWindowHasContentUnderTitleBar(NSWindow* window) {
+  return [objc_getAssociatedObject(window, kWindowContentUnderTitleBarKey) boolValue];
+}
+
+// A hidden title bar and a title bar the content has taken in are the same window: the
+// content view covers the frame and the bar draws nothing. They differ only in whether
+// the window buttons are left on it, which is applied separately.
+static void NativeApiApplyTitleBarAppearance(NSWindow* window) {
+  if (!window) {
+    return;
+  }
+  const BOOL full_size =
+      NativeApiWindowIsTitleBarHidden(window) || NativeApiWindowHasContentUnderTitleBar(window);
+
+  // Changing NSWindowStyleMaskFullSizeContentView keeps the content size and the
+  // bottom-left origin, so the window would grow or shrink by the title bar height and
+  // its top edge would jump. Keep the frame instead, as on Windows: the content takes
+  // over, or gives back, the title bar area.
+  const NSRect frame = window.frame;
+  window.titleVisibility = full_size ? NSWindowTitleHidden : NSWindowTitleVisible;
+  window.titlebarAppearsTransparent = full_size;
+  if (full_size) {
+    window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+  } else {
+    window.styleMask &= ~NSWindowStyleMaskFullSizeContentView;
+  }
+  if (!NSEqualRects(window.frame, frame)) {
+    [window setFrame:frame display:YES];
+  }
+}
+
+// Whether the window control buttons were last asked for; a window starts with them.
+static void NativeApiApplyWindowControlButtons(NSWindow* window) {
+  NSNumber* value = objc_getAssociatedObject(window, kWindowButtonsVisibleKey);
+  const BOOL hidden = value ? ![value boolValue] : NO;
+  for (NSWindowButton button :
+       {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+    [[window standardWindowButton:button] setHidden:hidden];
+  }
 }
 
 // Whether the user may move the window, as requested through Window::SetMovable().
@@ -164,14 +228,9 @@ namespace nativeapi {
 class Window::Impl {
  public:
   Impl(WindowId id, NSWindow* window)
-      : id_(id),
-        ns_window_(window),
-        visual_effect_(VisualEffect::None),
-        visual_effect_view_(nil) {}
+      : id_(id), ns_window_(window) {}
   WindowId id_;
   NSWindow* ns_window_;
-  VisualEffect visual_effect_;
-  NSVisualEffectView* visual_effect_view_;
   double aspect_ratio_ = 0.0;
 };
 
@@ -482,19 +541,9 @@ bool Window::IsClosable() const {
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
-  NSButton* closeButton = [pimpl_->ns_window_ standardWindowButton:NSWindowCloseButton];
-  NSButton* miniaturizeButton = [pimpl_->ns_window_ standardWindowButton:NSWindowMiniaturizeButton];
-  NSButton* zoomButton = [pimpl_->ns_window_ standardWindowButton:NSWindowZoomButton];
-
-  if (closeButton) {
-    [closeButton setHidden:!is_visible];
-  }
-  if (miniaturizeButton) {
-    [miniaturizeButton setHidden:!is_visible];
-  }
-  if (zoomButton) {
-    [zoomButton setHidden:!is_visible];
-  }
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowButtonsVisibleKey, @(is_visible),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NativeApiApplyWindowControlButtons(pimpl_->ns_window_);
 }
 
 bool Window::IsWindowControlButtonsVisible() const {
@@ -610,47 +659,42 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   if (!pimpl_->ns_window_) {
     return;
   }
+  const BOOL hidden = style == TitleBarStyle::Hidden;
   // Record the movable preference before the hidden flag starts to affect -isMovable.
   NativeApiUpdateWindowMovable(pimpl_->ns_window_);
-  objc_setAssociatedObject(pimpl_->ns_window_, kWindowTitleBarHiddenKey,
-                           @(style == TitleBarStyle::Hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowTitleBarHiddenKey, @(hidden),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   NativeApiUpdateWindowMovable(pimpl_->ns_window_);
 
-  // Changing NSWindowStyleMaskFullSizeContentView keeps the content size and the bottom-left
-  // origin, so the window would grow or shrink by the title bar height and its top edge would
-  // jump. Keep the frame instead, as on Windows: the content takes over, or gives back, the title
-  // bar area.
-  const NSRect frame = pimpl_->ns_window_.frame;
+  NativeApiApplyTitleBarAppearance(pimpl_->ns_window_);
 
-  if (style == TitleBarStyle::Hidden) {
-    // Hide title bar - make it transparent and full size content view
-    pimpl_->ns_window_.titleVisibility = NSWindowTitleHidden;
-    pimpl_->ns_window_.titlebarAppearsTransparent = YES;
-    pimpl_->ns_window_.styleMask |= NSWindowStyleMaskFullSizeContentView;
-  } else {
-    // Show title bar - restore normal appearance
-    pimpl_->ns_window_.titleVisibility = NSWindowTitleVisible;
-    pimpl_->ns_window_.titlebarAppearsTransparent = NO;
-    pimpl_->ns_window_.styleMask &= ~NSWindowStyleMaskFullSizeContentView;
-  }
-  if (!NSEqualRects(pimpl_->ns_window_.frame, frame)) {
-    [pimpl_->ns_window_ setFrame:frame display:YES];
-  }
+  // The style says what the buttons do by default; SetWindowControlButtonsVisible()
+  // after this call overrides it.
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowButtonsVisibleKey, @(!hidden),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NativeApiApplyWindowControlButtons(pimpl_->ns_window_);
 
   // Ensure window remains opaque and has shadow
   pimpl_->ns_window_.opaque = NO;
   pimpl_->ns_window_.hasShadow = YES;
+}
 
-  // Show window buttons
-  NSView* titleBarView =
-      [[pimpl_->ns_window_ standardWindowButton:NSWindowCloseButton] superview].superview;
-  if (titleBarView) {
-    titleBarView.hidden = NO;
+bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
+  if (!pimpl_->ns_window_) {
+    return false;
   }
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowContentUnderTitleBarKey,
+                           @(is_content_under_title_bar), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NativeApiApplyTitleBarAppearance(pimpl_->ns_window_);
+  return true;
+}
 
-  [pimpl_->ns_window_ standardWindowButton:NSWindowCloseButton].hidden = NO;
-  [pimpl_->ns_window_ standardWindowButton:NSWindowMiniaturizeButton].hidden = NO;
-  [pimpl_->ns_window_ standardWindowButton:NSWindowZoomButton].hidden = NO;
+bool Window::IsContentUnderTitleBar() const {
+  return NativeApiWindowHasContentUnderTitleBar(pimpl_->ns_window_);
+}
+
+bool Window::IsContentUnderTitleBarSupported() {
+  return true;
 }
 
 TitleBarStyle Window::GetTitleBarStyle() const {
@@ -675,53 +719,108 @@ float Window::GetOpacity() const {
   return [pimpl_->ns_window_ alphaValue];
 }
 
-void Window::SetVisualEffect(VisualEffect effect) {
-  if (pimpl_->visual_effect_ == effect)
-    return;
-
-  pimpl_->visual_effect_ = effect;
+bool Window::SetVisualEffect(VisualEffect effect) {
   NSWindow* window = pimpl_->ns_window_;
+  if (!window) {
+    return false;
+  }
+  NSVisualEffectView* effect_view = objc_getAssociatedObject(window, kWindowVisualEffectViewKey);
+  NSViewController* content = NativeApiContentWithBackground(window);
 
   if (effect == VisualEffect::None) {
-    if (pimpl_->visual_effect_view_) {
-      [pimpl_->visual_effect_view_ removeFromSuperview];
-      pimpl_->visual_effect_view_ = nil;
+    if (effect_view) {
+      [effect_view removeFromSuperview];
+      objc_setAssociatedObject(window, kWindowVisualEffectViewKey, nil,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    [window setOpaque:YES];
-    [window setBackgroundColor:[NSColor windowBackgroundColor]];
-    return;
+    // The content gets back the backing it had, or the one it was given meanwhile.
+    NSColor* content_background = objc_getAssociatedObject(window, kWindowContentBackgroundKey);
+    if (content_background && content) {
+      [content performSelector:@selector(setBackgroundColor:) withObject:content_background];
+    }
+    objc_setAssociatedObject(window, kWindowContentBackgroundKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(window, kWindowVisualEffectKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return true;
   }
 
-  if (!pimpl_->visual_effect_view_) {
-    NSView* contentView = [window contentView];
-    pimpl_->visual_effect_view_ = [[NSVisualEffectView alloc] initWithFrame:[contentView bounds]];
-    [pimpl_->visual_effect_view_ setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [pimpl_->visual_effect_view_ setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
-    [contentView addSubview:pimpl_->visual_effect_view_ positioned:NSWindowBelow relativeTo:nil];
-  }
-
-  [window setOpaque:NO];
-  [window setBackgroundColor:[NSColor clearColor]];
-
+  NSVisualEffectMaterial material;
   switch (effect) {
     case VisualEffect::Blur:
-      [pimpl_->visual_effect_view_ setMaterial:NSVisualEffectMaterialSidebar];
+      material = NSVisualEffectMaterialSidebar;
       break;
     case VisualEffect::Acrylic:
-      [pimpl_->visual_effect_view_ setMaterial:NSVisualEffectMaterialUnderWindowBackground];
+      material = NSVisualEffectMaterialUnderWindowBackground;
       break;
     case VisualEffect::Mica:
-      [pimpl_->visual_effect_view_ setMaterial:NSVisualEffectMaterialWindowBackground];
+      material = NSVisualEffectMaterialWindowBackground;
+      break;
+    case VisualEffect::MicaAlt:
+      material = NSVisualEffectMaterialTitlebar;
+      break;
+    case VisualEffect::Hud:
+      material = NSVisualEffectMaterialHUDWindow;
+      break;
+    case VisualEffect::Popover:
+      material = NSVisualEffectMaterialPopover;
+      break;
+    case VisualEffect::Menu:
+      material = NSVisualEffectMaterialMenu;
       break;
     default:
-      break;
+      return false;
   }
 
-  [pimpl_->visual_effect_view_ setState:NSVisualEffectStateActive];
+  // The view is the lowest thing in the content view. A content view that draws into
+  // layers of its own - a FlutterView does, at z positions from 0 up - would still end
+  // up underneath it, so the effect's layer is pushed below those. (Next to the content
+  // view is not an option: a foreign subview makes the frame view draw an old-style
+  // title bar.) The view blends with what is behind the window, which needs neither a
+  // clear background nor a non-opaque window: both stay as SetBackgroundColor() left them.
+  NSView* content_view = [window contentView];
+  if (!content_view) {
+    return false;
+  }
+  if (!effect_view) {
+    effect_view = [[NSVisualEffectView alloc] initWithFrame:[content_view bounds]];
+    [effect_view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [effect_view setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+    [effect_view setState:NSVisualEffectStateActive];
+    [effect_view setWantsLayer:YES];
+    objc_setAssociatedObject(window, kWindowVisualEffectViewKey, effect_view,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  if ([effect_view superview] != content_view) {
+    // Also after the content view was replaced: the effect moves to the new one.
+    [effect_view setFrame:[content_view bounds]];
+    [content_view addSubview:effect_view positioned:NSWindowBelow relativeTo:nil];
+    [[effect_view layer] setZPosition:-1];
+  }
+  [effect_view setMaterial:material];
+
+  if (content && !objc_getAssociatedObject(window, kWindowContentBackgroundKey)) {
+    NSColor* content_background = [content performSelector:@selector(backgroundColor)];
+    objc_setAssociatedObject(window, kWindowContentBackgroundKey,
+                             content_background ?: [NSColor blackColor],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  if (content) {
+    [content performSelector:@selector(setBackgroundColor:) withObject:[NSColor clearColor]];
+  }
+
+  objc_setAssociatedObject(window, kWindowVisualEffectKey, @(static_cast<int>(effect)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  return true;
 }
 
 VisualEffect Window::GetVisualEffect() const {
-  return pimpl_->visual_effect_;
+  NSNumber* effect = objc_getAssociatedObject(pimpl_->ns_window_, kWindowVisualEffectKey);
+  return effect ? static_cast<VisualEffect>([effect intValue]) : VisualEffect::None;
+}
+
+bool Window::IsVisualEffectSupported(VisualEffect effect) {
+  return true;
 }
 
 void Window::SetBackgroundColor(const Color& color) {
@@ -734,13 +833,19 @@ void Window::SetBackgroundColor(const Color& color) {
   // opaque; without this AppKit composites it over black.
   [pimpl_->ns_window_ setOpaque:color.a == 255];
 
-  // The content may paint a backing of its own over the window's background. A
-  // view controller that has a background colour takes the same one: that is
-  // what makes a FlutterViewController, opaque black by default, see-through.
-  NSViewController* content = [pimpl_->ns_window_ contentViewController];
-  if ([content respondsToSelector:@selector(setBackgroundColor:)]) {
-    [content performSelector:@selector(setBackgroundColor:) withObject:nsColor];
+  // The content takes the same colour (a FlutterViewController is what makes this
+  // necessary) - once the visual effect is gone, if there is one: until then the
+  // content stays clear so that the effect shows.
+  NSViewController* content = NativeApiContentWithBackground(pimpl_->ns_window_);
+  if (!content) {
+    return;
   }
+  if (objc_getAssociatedObject(pimpl_->ns_window_, kWindowContentBackgroundKey)) {
+    objc_setAssociatedObject(pimpl_->ns_window_, kWindowContentBackgroundKey, nsColor,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return;
+  }
+  [content performSelector:@selector(setBackgroundColor:) withObject:nsColor];
 }
 
 Color Window::GetBackgroundColor() const {

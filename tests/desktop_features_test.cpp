@@ -47,6 +47,37 @@ int main(int argc, char** argv) {
   native_string_list_free(&paths);
   native_file_dialog_free(handle);
   if (!Check(!native_file_dialog_open(handle), "Stale C handle accepted")) return 1;
+  {
+    auto effect_window = std::make_shared<Window>();
+    // Every effect either takes and reads back, or is refused and leaves the last one.
+    if (!Check(Window::IsVisualEffectSupported(VisualEffect::Blur), "Blur is on every Windows"))
+      return 1;
+    VisualEffect expected = VisualEffect::None;
+    for (VisualEffect effect : {VisualEffect::Blur, VisualEffect::Acrylic, VisualEffect::Mica,
+                                VisualEffect::MicaAlt, VisualEffect::Hud, VisualEffect::Popover,
+                                VisualEffect::Menu}) {
+      const bool supported = Window::IsVisualEffectSupported(effect);
+      if (!Check(effect_window->SetVisualEffect(effect) == supported,
+                 "SetVisualEffect disagrees with IsVisualEffectSupported"))
+        return 1;
+      if (supported) expected = effect;
+      if (!Check(effect_window->GetVisualEffect() == expected,
+                 "GetVisualEffect is not the effect in force"))
+        return 1;
+    }
+    // The effect belongs to the HWND: another wrapper of it reads the same one.
+    if (!Check(Window(effect_window->GetNativeObject()).GetVisualEffect() == expected,
+               "A second wrapper lost the visual effect")) return 1;
+    // A see-through background set meanwhile waits, and survives the effect.
+    effect_window->SetBackgroundColor(Color::FromRGBA(10, 20, 30, 128));
+    if (!Check(effect_window->SetVisualEffect(VisualEffect::None) &&
+                   effect_window->GetVisualEffect() == VisualEffect::None,
+               "Removing the effect failed")) return 1;
+    const Color kept = effect_window->GetBackgroundColor();
+    if (!Check(kept.r == 10 && kept.g == 20 && kept.b == 30 && kept.a == 128,
+               "The background color did not survive the visual effect")) return 1;
+    effect_window->SetBackgroundColor(Color::White);
+  }
   if (argc == 1) return 0;
   const std::string mode = argv[1];
   if (mode == "--notify") {
@@ -88,11 +119,15 @@ int main(int argc, char** argv) {
   window->SetTitleBarStyle(TitleBarStyle::Hidden);
   if (!Check(window->GetTitleBarStyle() == TitleBarStyle::Hidden, "Hidden title bar failed")) return 1;
   window->SetTitleBarStyle(TitleBarStyle::Normal);
+  // Taking the title bar into the content area is a macOS thing; here it is refused
+  // and nothing changes.
+  if (!Check(!Window::IsContentUnderTitleBarSupported(),
+             "Windows claims it can extend content into the title bar")) return 1;
+  if (!Check(!window->SetContentUnderTitleBar(true) &&
+                 !window->IsContentUnderTitleBar(),
+             "A refused SetContentUnderTitleBar was recorded anyway")) return 1;
   if (!Check(window->SetTitleBarColors(Color::Blue, Color::White) && window->ResetTitleBarColors(),
              "Title bar colors failed")) return 1;
-  window->SetVisualEffect(VisualEffect::Mica);
-  if (!Check(window->GetVisualEffect() == VisualEffect::Mica, "Mica failed")) return 1;
-  window->SetVisualEffect(VisualEffect::None);
   dialog.SetParentWindow(window);
   dialog.SetModality(DialogModality::Window);
   dialog.SetInputEnabled(true);

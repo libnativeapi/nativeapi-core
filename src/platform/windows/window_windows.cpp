@@ -34,6 +34,12 @@ static const wchar_t* kHiddenFromTaskbarProperty = L"NativeAPIHiddenFromTaskbar"
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
 static const wchar_t* kTranslucentBackgroundProperty = L"NativeAPITranslucentBackground";
+// The visual effect in force, as the VisualEffect value (None is "no property"). On the
+// HWND like the flags above, and because WindowProc has to see it.
+static const wchar_t* kVisualEffectProperty = L"NativeAPIVisualEffect";
+// The opaque background color of a window of the library's own class, as 0x1RRGGBB.
+// WindowProc paints it: the class brush would be every such window's background at once.
+static const wchar_t* kBackgroundColorProperty = L"NativeAPIBackgroundColor";
 
 // SetWindowCompositionAttribute is how the shell itself makes windows see-through. It is
 // exported by user32 but not declared in the SDK.
@@ -43,6 +49,8 @@ enum AccentState {
   kAccentDisabled = 0,
   kAccentEnableGradient = 1,
   kAccentEnableTransparentGradient = 2,
+  kAccentEnableBlurBehind = 3,
+  kAccentEnableAcrylicBlurBehind = 4,
 };
 
 struct AccentPolicy {
@@ -60,22 +68,122 @@ struct WindowCompositionAttributeData {
 
 constexpr int kWcaAccentPolicy = 19;
 
-bool SetAccentPolicy(HWND hwnd, AccentState state, DWORD gradient_color) {
+// accent_flags 2 has the gradient color drawn, which is all a see-through background is.
+// The blur-behind accents come out nearly black with it and want 0.
+bool SetAccentPolicy(HWND hwnd, AccentState state, DWORD gradient_color, int accent_flags = 2) {
   using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, WindowCompositionAttributeData*);
   static const auto set_attribute = reinterpret_cast<SetWindowCompositionAttributeFn>(
       GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute"));
   if (!set_attribute) {
     return false;
   }
-  AccentPolicy policy = {state, 2, gradient_color, 0};
+  AccentPolicy policy = {state, accent_flags, gradient_color, 0};
   WindowCompositionAttributeData data = {kWcaAccentPolicy, &policy, sizeof(policy)};
   return set_attribute(hwnd, &data) != FALSE;
 }
 
-// -1 on every side turns the whole client area into the compositor's frame, which is
-// what a backdrop and a see-through background are drawn on.
-void UpdateFrameExtent(HWND hwnd, bool backdrop) {
-  const int extent = (backdrop || GetPropW(hwnd, kTranslucentBackgroundProperty)) ? -1 : 0;
+// The accent a see-through background color asks for. A visual effect takes the accent
+// over while it is active, and hands it back through here.
+void ApplyBackgroundAccent(HWND hwnd) {
+  const auto stored = reinterpret_cast<uintptr_t>(GetPropW(hwnd, kTranslucentBackgroundProperty));
+  if (!stored) {
+    SetAccentPolicy(hwnd, kAccentDisabled, 0);
+    return;
+  }
+  // 0x1AARRGGBB to 0xAABBGGRR
+  const DWORD gradient = static_cast<DWORD>((stored & 0xFF000000) | ((stored & 0xFF) << 16) |
+                                            (stored & 0xFF00) | ((stored >> 16) & 0xFF));
+  SetAccentPolicy(hwnd, kAccentEnableTransparentGradient, gradient);
+}
+
+// DWMWA_SYSTEMBACKDROP_TYPE and DWM_SYSTEMBACKDROP_TYPE, which SDKs before 10.0.22621
+// do not declare.
+constexpr DWORD kDwmwaSystemBackdropType = 38;
+enum SystemBackdrop : int {
+  kBackdropNone = 1,
+  kBackdropMica = 2,
+  kBackdropAcrylic = 3,
+  kBackdropMicaAlt = 4,
+};
+
+constexpr DWORD kBuildAcrylicAccent = 17134;   // Windows 10 1803
+constexpr DWORD kBuildSystemBackdrop = 22621;  // Windows 11 22H2
+
+// GetVersionExW lies to manifest-less processes; RtlGetVersion reports the real build.
+DWORD WindowsBuildNumber() {
+  static const DWORD build = [] {
+    using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto rtl_get_version =
+        ntdll ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+    RTL_OSVERSIONINFOW info = {};
+    info.dwOSVersionInfoSize = sizeof(info);
+    if (!rtl_get_version || rtl_get_version(&info) != 0) {
+      return DWORD{0};
+    }
+    return info.dwBuildNumber;
+  }();
+  return build;
+}
+
+// How an effect is drawn on the version that is running: as one of the compositor's
+// system backdrops, as an accent, or not at all (both zero).
+struct VisualEffectRecipe {
+  SystemBackdrop backdrop = kBackdropNone;
+  AccentState accent = kAccentDisabled;
+  bool IsAvailable() const { return backdrop != kBackdropNone || accent != kAccentDisabled; }
+};
+
+VisualEffectRecipe RecipeFor(VisualEffect effect) {
+  const DWORD build = WindowsBuildNumber();
+  VisualEffectRecipe recipe;
+  switch (effect) {
+    case VisualEffect::None:
+      break;
+    case VisualEffect::Blur:
+      // The accent blur is drawn behind the client area only, and the caption DWM
+      // draws over it stays opaque - a transparent caption color does not help, it
+      // shows white. A system backdrop covers the whole window, caption included, so
+      // it is the better match wherever there is one, even though the nearest kind is
+      // the acrylic one.
+      if (build >= kBuildSystemBackdrop) {
+        recipe.backdrop = kBackdropAcrylic;
+      } else {
+        recipe.accent = kAccentEnableBlurBehind;
+      }
+      break;
+    case VisualEffect::Acrylic:
+    case VisualEffect::Hud:
+    case VisualEffect::Popover:
+    case VisualEffect::Menu:
+      if (build >= kBuildSystemBackdrop) {
+        recipe.backdrop = kBackdropAcrylic;
+      } else if (build >= kBuildAcrylicAccent) {
+        recipe.accent = kAccentEnableAcrylicBlurBehind;
+      }
+      break;
+    case VisualEffect::Mica:
+      if (build >= kBuildSystemBackdrop) recipe.backdrop = kBackdropMica;
+      break;
+    case VisualEffect::MicaAlt:
+      if (build >= kBuildSystemBackdrop) recipe.backdrop = kBackdropMicaAlt;
+      break;
+  }
+  return recipe;
+}
+
+// -1 on every side turns the whole client area into the compositor's frame. A system
+// backdrop is drawn on that frame and nowhere else. A blur-behind accent is the other way
+// round: it is drawn behind the client area, and the frame, where there is any, covers it.
+// A see-through background color is an accent too, but only ever shown through a child
+// that covers the client area (a Flutter view), and that has been found to need the frame.
+void UpdateFrameExtent(HWND hwnd) {
+  const auto effect = static_cast<VisualEffect>(
+      reinterpret_cast<uintptr_t>(GetPropW(hwnd, kVisualEffectProperty)));
+  const bool whole = effect != VisualEffect::None
+                         ? RecipeFor(effect).backdrop != kBackdropNone
+                         : GetPropW(hwnd, kTranslucentBackgroundProperty) != nullptr;
+  const int extent = whole ? -1 : 0;
   MARGINS margins = {extent, extent, extent, extent};
   DwmExtendFrameIntoClientArea(hwnd, &margins);
 }
@@ -217,6 +325,9 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kTitleBarHiddenProperty);
     RemovePropW(hwnd, kNoShadowProperty);
     RemovePropW(hwnd, kHiddenFromTaskbarProperty);
+    RemovePropW(hwnd, kVisualEffectProperty);
+    RemovePropW(hwnd, kBackgroundColorProperty);
+    RemovePropW(hwnd, kTranslucentBackgroundProperty);
     g_full_screen_windows.erase(hwnd);
     const auto result = DefSubclassProc(hwnd, message, wp, lp);
     WindowRegistry::GetInstance().Remove(static_cast<WindowId>(reference));
@@ -249,10 +360,9 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 class Window::Impl {
  public:
   Impl(HWND hwnd, WindowId id)
-      : hwnd_(hwnd), window_id_(id), visual_effect_(VisualEffect::None) {}
+      : hwnd_(hwnd), window_id_(id) {}
   HWND hwnd_;
   WindowId window_id_;
-  VisualEffect visual_effect_;
   Size min_size_{0, 0};
   Size max_size_{0, 0};
   int min_max_handler_id_ = 0;
@@ -268,7 +378,25 @@ class Window::Impl {
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case WM_ERASEBKGND:
-      if (GetPropW(hwnd, L"NativeAPIBackdropEnabled")) return 1;
+      // The compositor draws a visual effect where the client area is black with no
+      // alpha, which is what GDI's black is. The class brush would paint over it.
+      if (GetPropW(hwnd, kVisualEffectProperty)) {
+        RECT client;
+        GetClientRect(hwnd, &client);
+        FillRect(reinterpret_cast<HDC>(wParam), &client,
+                 static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        return 1;
+      }
+      if (const auto stored =
+              reinterpret_cast<uintptr_t>(GetPropW(hwnd, kBackgroundColorProperty))) {
+        RECT client;
+        GetClientRect(hwnd, &client);
+        HBRUSH brush = CreateSolidBrush(
+            RGB((stored >> 16) & 0xFF, (stored >> 8) & 0xFF, stored & 0xFF));
+        FillRect(reinterpret_cast<HDC>(wParam), &client, brush);
+        DeleteObject(brush);
+        return 1;
+      }
       return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     case WM_WINDOWPOSCHANGING: {
       // Intercept visibility changes BEFORE they happen (pre-show/hide "swizzle")
@@ -1226,7 +1354,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   GetWindowRect(pimpl_->hwnd_, &rect);
 
   // Apply DWM frame extension based on style
-  UpdateFrameExtent(pimpl_->hwnd_, pimpl_->visual_effect_ != VisualEffect::None);
+  UpdateFrameExtent(pimpl_->hwnd_);
 
   // Trigger frame change to apply the new style
   SetWindowPos(pimpl_->hwnd_, nullptr, rect.left, rect.top, 0, 0,
@@ -1237,6 +1365,22 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   if (pimpl_->hwnd_ && GetPropW(pimpl_->hwnd_, kTitleBarHiddenProperty))
     return TitleBarStyle::Hidden;
   return TitleBarStyle::Normal;
+}
+
+// The client area can be given the caption band (WM_NCCALCSIZE), but the caption buttons
+// DWM keeps drawing there answer HTCLIENT once it is client area, so they stop working:
+// they would have to be hit-tested and drawn by hand. TitleBarStyle::Hidden plus chrome
+// of the application's own is the way to a full-bleed window here.
+bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBar() const {
+  return false;
+}
+
+bool Window::IsContentUnderTitleBarSupported() {
+  return false;
 }
 
 void Window::SetHasShadow(bool has_shadow) {
@@ -1290,39 +1434,48 @@ float Window::GetOpacity() const {
   return 1.0f;
 }
 
-void Window::SetVisualEffect(VisualEffect effect) {
-  if (!pimpl_->hwnd_ || pimpl_->visual_effect_ == effect)
-    return;
+bool Window::SetVisualEffect(VisualEffect effect) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !IsWindow(hwnd))
+    return false;
 
+  const VisualEffectRecipe recipe = RecipeFor(effect);
+  if (effect != VisualEffect::None && !recipe.IsAvailable())
+    return false;
 
-  // DWM_SYSTEMBACKDROP_TYPE is available in Windows 11 Build 22621+
-  // DWMWA_SYSTEMBACKDROP_TYPE = 38
-  int backdrop_type = 1;  // DWMSBT_NONE
+  // The backdrop first: it is the step that can fail, and nothing has changed yet if
+  // it does. Versions without system backdrops reject the attribute, which only
+  // matters when one was asked for.
+  int backdrop = recipe.backdrop;
+  const HRESULT result =
+      DwmSetWindowAttribute(hwnd, kDwmwaSystemBackdropType, &backdrop, sizeof(backdrop));
+  if (FAILED(result) && recipe.backdrop != kBackdropNone)
+    return false;
 
-  switch (effect) {
-    case VisualEffect::None:
-      backdrop_type = 1;  // DWMSBT_NONE
-      break;
-    case VisualEffect::Blur:
-    case VisualEffect::Acrylic:
-      backdrop_type = 3;  // DWMSBT_TRANSIENTWINDOW (Acrylic)
-      break;
-    case VisualEffect::Mica:
-      backdrop_type = 2;  // DWMSBT_MAINWINDOW (Mica)
-      break;
+  if (effect == VisualEffect::None) {
+    RemovePropW(hwnd, kVisualEffectProperty);
+    ApplyBackgroundAccent(hwnd);
+  } else {
+    SetPropW(hwnd, kVisualEffectProperty,
+             reinterpret_cast<HANDLE>(static_cast<uintptr_t>(effect)));
+    // An acrylic accent with no color at all is not drawn on Windows 10; the faintest is.
+    SetAccentPolicy(hwnd, recipe.accent,
+                    recipe.accent == kAccentEnableAcrylicBlurBehind ? 0x01000000 : 0, 0);
   }
-
-  if (SUCCEEDED(DwmSetWindowAttribute(pimpl_->hwnd_, 38, &backdrop_type, sizeof(backdrop_type)))) {
-    pimpl_->visual_effect_ = effect;
-    UpdateFrameExtent(pimpl_->hwnd_, effect != VisualEffect::None);
-    if (effect == VisualEffect::None) RemovePropW(pimpl_->hwnd_, L"NativeAPIBackdropEnabled");
-    else SetPropW(pimpl_->hwnd_, L"NativeAPIBackdropEnabled", reinterpret_cast<HANDLE>(1));
-    InvalidateRect(pimpl_->hwnd_, nullptr, TRUE);
-  }
+  UpdateFrameExtent(hwnd);
+  InvalidateRect(hwnd, nullptr, TRUE);
+  return true;
 }
 
 VisualEffect Window::GetVisualEffect() const {
-  return pimpl_->visual_effect_;
+  if (!pimpl_->hwnd_)
+    return VisualEffect::None;
+  return static_cast<VisualEffect>(
+      reinterpret_cast<uintptr_t>(GetPropW(pimpl_->hwnd_, kVisualEffectProperty)));
+}
+
+bool Window::IsVisualEffectSupported(VisualEffect effect) {
+  return effect == VisualEffect::None || RecipeFor(effect).IsAvailable();
 }
 
 void Window::SetBackgroundColor(const Color& color) {
@@ -1333,25 +1486,35 @@ void Window::SetBackgroundColor(const Color& color) {
     // A brush cannot be translucent. The compositor draws the color instead, behind
     // whatever the window and its children leave transparent - a Flutter view clears
     // to transparent, so this is all it takes to see the desktop through it.
-    const DWORD gradient = (static_cast<DWORD>(color.a) << 24) |
-                           (static_cast<DWORD>(color.b) << 16) |
-                           (static_cast<DWORD>(color.g) << 8) | color.r;
     const uintptr_t stored = (uintptr_t{1} << 32) | (static_cast<uintptr_t>(color.a) << 24) |
                              (static_cast<uintptr_t>(color.r) << 16) |
                              (static_cast<uintptr_t>(color.g) << 8) | color.b;
     SetPropW(pimpl_->hwnd_, kTranslucentBackgroundProperty, reinterpret_cast<HANDLE>(stored));
-    UpdateFrameExtent(pimpl_->hwnd_, pimpl_->visual_effect_ != VisualEffect::None);
-    SetAccentPolicy(pimpl_->hwnd_, kAccentEnableTransparentGradient, gradient);
+    RemovePropW(pimpl_->hwnd_, kBackgroundColorProperty);
+    UpdateFrameExtent(pimpl_->hwnd_);
+    // While a visual effect is active the accent is its; the color waits in the property.
+    if (!GetPropW(pimpl_->hwnd_, kVisualEffectProperty))
+      ApplyBackgroundAccent(pimpl_->hwnd_);
     InvalidateRect(pimpl_->hwnd_, nullptr, TRUE);
     return;
   }
   if (GetPropW(pimpl_->hwnd_, kTranslucentBackgroundProperty)) {
     RemovePropW(pimpl_->hwnd_, kTranslucentBackgroundProperty);
-    SetAccentPolicy(pimpl_->hwnd_, kAccentDisabled, 0);
-    UpdateFrameExtent(pimpl_->hwnd_, pimpl_->visual_effect_ != VisualEffect::None);
+    if (!GetPropW(pimpl_->hwnd_, kVisualEffectProperty))
+      ApplyBackgroundAccent(pimpl_->hwnd_);
+    UpdateFrameExtent(pimpl_->hwnd_);
   }
 
-  // Create new brush with the specified color
+  // A window of the library's own class is painted by WindowProc, one color per window.
+  if (reinterpret_cast<WNDPROC>(GetClassLongPtrW(pimpl_->hwnd_, GCLP_WNDPROC)) == WindowProc) {
+    const uintptr_t stored = (uintptr_t{1} << 24) | (static_cast<uintptr_t>(color.r) << 16) |
+                             (static_cast<uintptr_t>(color.g) << 8) | color.b;
+    SetPropW(pimpl_->hwnd_, kBackgroundColorProperty, reinterpret_cast<HANDLE>(stored));
+    InvalidateRect(pimpl_->hwnd_, nullptr, TRUE);
+    return;
+  }
+
+  // Anyone else's window only has its class brush to go by.
   COLORREF colorRef = RGB(color.r, color.g, color.b);
   HBRUSH brush = CreateSolidBrush(colorRef);
   
@@ -1384,6 +1547,13 @@ Color Window::GetBackgroundColor() const {
                            static_cast<unsigned char>((stored >> 8) & 0xFF),
                            static_cast<unsigned char>(stored & 0xFF),
                            static_cast<unsigned char>((stored >> 24) & 0xFF));
+  }
+
+  if (const auto stored =
+          reinterpret_cast<uintptr_t>(GetPropW(pimpl_->hwnd_, kBackgroundColorProperty))) {
+    return Color::FromRGBA(static_cast<unsigned char>((stored >> 16) & 0xFF),
+                           static_cast<unsigned char>((stored >> 8) & 0xFF),
+                           static_cast<unsigned char>(stored & 0xFF), 255);
   }
 
   // Get the background brush from the window class

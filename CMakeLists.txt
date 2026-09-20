@@ -35,6 +35,7 @@ add_subdirectory(examples/window_drag_session_example)
 add_subdirectory(examples/window_lifecycle_example)
 add_subdirectory(examples/window_parent_example)
 add_subdirectory(examples/window_shadow_example)
+add_subdirectory(examples/window_visual_effect_example)
 add_subdirectory(examples/drag_drop_example)
 add_subdirectory(examples/desktop_features_example)
 

@@ -38,57 +38,103 @@ enum class TitleBarStyle {
   Normal,
 
   /**
-   * Hidden title bar with no visible decorations.
-   * The window appears without a title bar, useful for custom chrome.
+   * No title bar and no window control buttons: the window is bare on every
+   * platform, for an application that draws its own chrome.
    *
    * The content owns the area where the title bar was: dragging there does
    * not move the window. Move it from custom chrome with
    * Window::StartDragging() (or a WindowDragSession).
-   * - macOS: the content extends under a transparent title bar; the
-   *   window buttons stay. The system is kept from moving the window, even
-   *   while IsMovable() is true.
+   * - macOS: the content extends under a title bar that is transparent and
+   *   empty; the window buttons are hidden. The system is kept from moving
+   *   the window, even while IsMovable() is true. To keep the buttons over
+   *   the content, use Normal with SetContentUnderTitleBar() instead,
+   *   or turn them back on with SetWindowControlButtonsVisible() after
+   *   setting this style.
    * - Windows: the content reaches the top edge of the window; the resize
    *   border stays on the other sides. A band as thick as that border along
    *   the top of the content still resizes the window, also over child
    *   windows of the same thread (such as a Flutter view), so content there
    *   does not receive the mouse.
+   * - Linux: the window's header bar is hidden, which takes its buttons with
+   *   it.
    *
    * Switching between styles keeps the window's frame (position and outer
-   * size); the content area grows or shrinks by the title bar instead.
+   * size); the content area grows or shrinks by the title bar instead, and
+   * the window control buttons go back to what the style implies - set
+   * SetWindowControlButtonsVisible() afterwards to override that.
    */
   Hidden
 };
 
 /**
- * @brief Visual effect styles for window background.
+ * @brief Translucent materials that can replace a window's background.
  *
- * Defines blur or material effects applied to the window background.
- * These effects typically provide a translucent or "frosted glass" appearance.
+ * A visual effect blurs or samples whatever is behind the window and draws the
+ * result where the background color would be. The window's content has to leave
+ * that area unpainted for the material to show.
+ *
+ * The values are named after the platform that defines the material. Each of
+ * them is accepted on every platform that has visual effects at all; where the
+ * exact material does not exist, the closest one is used, as listed per value.
+ * Linux, Android, iOS and OpenHarmony have no visual effects.
+ *
+ * @see Window::SetVisualEffect() for platform availability.
  */
 enum class VisualEffect {
-  /** No visual effect. Standard solid background. */
+  /** No visual effect: the window shows its background color. */
   None,
 
   /**
-   * Standard background blur.
-   * - Windows: Standard blur (Blur behind)
-   * - macOS: Default vibrancy effect
+   * A plain blur of what is behind the window, the most see-through material.
+   * - Windows: the acrylic system backdrop on Windows 11 22H2 and later, the
+   *   nearest material that covers the whole window there; the plain blur behind
+   *   on Windows 10, which stops at the title bar
+   * - macOS: NSVisualEffectMaterialSidebar
    */
   Blur,
 
   /**
-   * Enhanced translucent blur effect.
-   * - Windows: Acrylic effect
-   * - macOS: Thick vibrancy
+   * A heavier, tinted blur.
+   * - Windows: Acrylic - the system backdrop on Windows 11 22H2 and later, the
+   *   acrylic blur-behind on Windows 10 1803 and later
+   * - macOS: NSVisualEffectMaterialUnderWindowBackground
    */
   Acrylic,
 
   /**
-   * Material effect that samples the desktop wallpaper.
-   * - Windows: Mica effect (Windows 11+)
-   * - macOS: WindowBackground vibrancy
+   * A nearly opaque material tinted by the desktop wallpaper.
+   * - Windows: Mica (Windows 11 22H2 and later)
+   * - macOS: NSVisualEffectMaterialWindowBackground
    */
-  Mica
+  Mica,
+
+  /**
+   * Mica with a stronger tint, meant for windows with tabs in the title bar.
+   * - Windows: Mica Alt (Windows 11 22H2 and later)
+   * - macOS: NSVisualEffectMaterialTitlebar
+   */
+  MicaAlt,
+
+  /**
+   * The dark material of heads-up panels.
+   * - Windows: same as Acrylic
+   * - macOS: NSVisualEffectMaterialHUDWindow
+   */
+  Hud,
+
+  /**
+   * The material of popovers.
+   * - Windows: same as Acrylic
+   * - macOS: NSVisualEffectMaterialPopover
+   */
+  Popover,
+
+  /**
+   * The material of menus, which suits a window shown from a tray icon.
+   * - Windows: same as Acrylic
+   * - macOS: NSVisualEffectMaterialMenu
+   */
+  Menu
 };
 
 /**
@@ -747,18 +793,6 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    */
   std::string GetTitle() const;
 
-  /**
-   * @brief Sets the style of the window's title bar.
-   *
-   * @param style The desired title bar style
-   *
-   * Controls the appearance and visibility of the window's title bar.
-   * Use TitleBarStyle::Normal for standard appearance or TitleBarStyle::Hidden
-   * to create a frameless window without title bar decorations.
-   *
-   * @note When using Hidden style, you may want to implement custom window
-   *       controls and dragging behavior using StartDragging().
-   */
   /** Customize caption and caption-button colors. Windows WinUI3 backend only.
    * Operates on the existing window; does not replace the host's content.
    * Returns false when unsupported or the native window has been destroyed.
@@ -766,14 +800,90 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   bool SetTitleBarColors(const Color& background, const Color& foreground);
   bool ResetTitleBarColors();
 
+  /**
+   * @brief Sets the style of the window's title bar.
+   *
+   * TitleBarStyle::Hidden leaves the window without a title bar and without
+   * window control buttons; the application draws its own chrome and moves the
+   * window with StartDragging(). It also resets the button visibility to what
+   * the style implies, so a SetWindowControlButtonsVisible() that is meant to
+   * override that goes after this call.
+   *
+   * @param style The desired title bar style
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported
+   * - Windows: ✅ Fully supported
+   * - Linux: ✅ Fully supported - Hides the window's header bar
+   * - Android: ❌ Not applicable - Always ignored
+   * - iOS: ❌ Not applicable - Always ignored
+   * - OpenHarmony: ❌ Not applicable - Always ignored
+   */
   void SetTitleBarStyle(TitleBarStyle style);
 
   /**
    * @brief Gets the current title bar style of the window.
    *
    * @return TitleBarStyle The current title bar style
+   *
+   * @see SetTitleBarStyle() for platform availability.
    */
   TitleBarStyle GetTitleBarStyle() const;
+
+  /**
+   * @brief Lets the content area take in the title bar, which becomes a
+   *        transparent overlay above it.
+   *
+   * The title bar keeps its window control buttons and its height, but stops
+   * drawing a background of its own, and the content reaches the top edge of
+   * the window behind it. Use it for a window whose background - a colour or a
+   * visual effect - should run unbroken to the top edge while the system
+   * buttons stay. An application that wants no buttons and no title bar at all
+   * wants TitleBarStyle::Hidden instead.
+   *
+   * The window's frame (position and outer size) is kept; the content area
+   * grows or shrinks by the title bar instead. With TitleBarStyle::Hidden the
+   * flag is recorded but changes nothing, the content already covering the
+   * window.
+   *
+   * @param is_content_under_title_bar true to take the title bar into the
+   *        content area, false to give it back
+   * @return true if the window is now in that state, false where the platform
+   *         cannot do it; the window is then left as it was
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - NSWindowStyleMaskFullSizeContentView with a
+   *   transparent title bar; the traffic lights stay over the content.
+   * - Windows: ❌ Not supported - Always returns false. The client area can be
+   *   given the caption band, but the caption buttons DWM draws there stop
+   *   hit-testing (they answer HTCLIENT), so they would have to be drawn and
+   *   hit-tested by hand. Use TitleBarStyle::Hidden and draw the chrome.
+   * - Linux: ❌ Not supported - Always returns false. A GTK header bar is a
+   *   sibling above the content, not an overlay over it.
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   */
+  bool SetContentUnderTitleBar(bool is_content_under_title_bar);
+
+  /**
+   * @brief Tells whether the content area has taken in the title bar.
+   *
+   * @return true if the title bar is an overlay above the content; false where
+   *         there are no such title bars
+   *
+   * @see SetContentUnderTitleBar() for platform availability.
+   */
+  bool IsContentUnderTitleBar() const;
+
+  /**
+   * @brief Tells whether SetContentUnderTitleBar() can do anything here.
+   *
+   * @return true if this platform has a title bar the content can take in
+   *
+   * @see SetContentUnderTitleBar() for platform availability.
+   */
+  static bool IsContentUnderTitleBarSupported();
   // === Appearance and Advanced Behavior ===
 
   /**
@@ -826,27 +936,67 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   float GetOpacity() const;
 
   /**
-   * @brief Sets the visual effect (blur/vibrancy) for the window background.
+   * @brief Replaces the window's background with a translucent material.
    *
-   * Allows creating translucent windows with various platform-specific effects.
+   * While an effect is active it stands in for the background color: the color
+   * set with SetBackgroundColor() is kept but not shown, and comes back with
+   * VisualEffect::None. The material only shows where the window's content
+   * leaves the background unpainted. A Flutter view is made to do so for as
+   * long as the effect is active; what Flutter itself paints on top (an opaque
+   * Scaffold, for one) is the application's to make transparent.
    *
-   * @param effect The visual effect to apply
+   * @param effect The material to use, or VisualEffect::None to remove it
+   * @return true if the effect is now in force, false if the platform or this
+   *         version of it does not have it; the previous effect then stays
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - An NSVisualEffectView behind the content view,
+   *   blending with what is behind the window. It stays active while the window
+   *   is in the background.
+   * - Windows: ⚠️ Depends on the version - Blur needs Windows 10, Acrylic
+   *   Windows 10 1803, Mica and MicaAlt Windows 11 22H2. Windows 11 22H2 draws
+   *   every effect as a system backdrop, which covers the title bar as well;
+   *   before that they are blur-behind kinds, which reach the client area only and
+   *   make the window lag while it is dragged. A system backdrop falls back to a
+   *   solid color while the window is inactive; that is the system's doing.
+   * - Linux: ❌ Not supported - Always returns false. Blur behind a window is up
+   *   to the compositor there, and GNOME has none.
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
    */
-  void SetVisualEffect(VisualEffect effect);
+  bool SetVisualEffect(VisualEffect effect);
 
   /**
-   * @brief Gets the current visual effect applied to the window.
+   * @brief Gets the visual effect that is in force on the window.
    *
-   * @return VisualEffect The current visual effect
+   * This is the last effect SetVisualEffect() returned true for. It belongs to
+   * the native window, not to this object.
+   *
+   * @return VisualEffect The active effect; VisualEffect::None where there are
+   *         no visual effects
+   *
+   * @see SetVisualEffect() for platform availability.
    */
   VisualEffect GetVisualEffect() const;
+
+  /**
+   * @brief Tells whether SetVisualEffect() can apply an effect here.
+   *
+   * @param effect The effect to ask about
+   * @return true if this platform, in the version that is running, has the
+   *         effect. VisualEffect::None is supported everywhere.
+   *
+   * @see SetVisualEffect() for platform availability.
+   */
+  static bool IsVisualEffectSupported(VisualEffect effect);
 
   /**
    * @brief Sets the background color of the window.
    *
    * Sets a solid color for the window background. This color will be visible
-   * if the window content does not fully cover the window area, or if visual
-   * effects are enabled.
+   * if the window content does not fully cover the window area. While a visual
+   * effect is active the color is kept but not shown, see SetVisualEffect().
    *
    * @param color The background color to apply
    *
