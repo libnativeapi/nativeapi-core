@@ -36,6 +36,8 @@
 #include "../src/window.h"
 #include "../src/window_drag_session.h"
 #include "../src/window_manager.h"
+#include "../src/window_shadow.h"
+#include "../src/window_shape.h"
 #endif
 
 // C API (usable from both C and C++)
@@ -72,3 +74,5 @@
 #include "../src/capi/window_c.h"
 #include "../src/capi/window_drag_session_c.h"
 #include "../src/capi/window_manager_c.h"
+#include "../src/capi/window_shadow_c.h"
+#include "../src/capi/window_shape_c.h"

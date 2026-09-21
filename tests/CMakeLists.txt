@@ -2,6 +2,21 @@ add_executable(url_opener_test url_opener_test.cpp)
 target_link_libraries(url_opener_test PRIVATE nativeapi)
 add_test(NAME url_opener_test COMMAND url_opener_test)
 
+add_executable(window_shape_test window_shape_test.cpp)
+target_link_libraries(window_shape_test PRIVATE nativeapi)
+add_test(NAME window_shape_test COMMAND window_shape_test)
+
+add_executable(window_shadow_blur_test window_shadow_blur_test.cpp)
+target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
+add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)
+
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  enable_language(OBJCXX)
+  add_executable(window_shape_macos_test window_shape_macos_test.mm)
+  target_link_libraries(window_shape_macos_test PRIVATE nativeapi)
+  add_test(NAME window_shape_macos_test COMMAND window_shape_macos_test)
+endif()
+
 # Links the full library because EventEmitter now routes async delivery through
 # the platform dispatcher. The test installs its own dispatcher (see
 # FakeMainThread) so no run loop is required at runtime.
@@ -76,4 +91,10 @@ if(WIN32)
     target_sources(desktop_features_test PRIVATE ../cmake/winui3-example.manifest)
     nativeapi_deploy_winui3(desktop_features_test)
   endif()
+endif()
+
+# Explicit desktop integration test for the classic Win32 title-bar backend.
+if(WIN32 AND NOT NATIVEAPI_ENABLE_WINUI3)
+  add_executable(window_maximize_test window_maximize_test.cpp)
+  target_link_libraries(window_maximize_test PRIVATE nativeapi)
 endif()

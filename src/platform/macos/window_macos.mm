@@ -2,12 +2,14 @@
 #include <string>
 #include "../../foundation/id_allocator.h"
 #include "../../window.h"
+#include "../../window_shape.h"
 #include "../../window_manager.h"
 #include "../../window_registry.h"
 #include "coordinate_utils_macos.h"
 
 // Import Cocoa headers
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
 // Key for associated objects (used by both window_macos.mm and window_manager_macos.mm)
@@ -22,6 +24,9 @@ static const void* kWindowOriginalClassKey = &kWindowOriginalClassKey;
 // Window::SetTitleBarStyle() / SetMovable() state, kept on the NSWindow for the same reason.
 static const void* kWindowTitleBarHiddenKey = &kWindowTitleBarHiddenKey;
 static const void* kWindowMovableKey = &kWindowMovableKey;
+// A shaped window must not inherit AppKit's rounded titled frame. Keep this
+// choice after clearing its polygon so the restored rectangle has square corners.
+static const void* kWindowShapeFrameKey = &kWindowShapeFrameKey;
 // The parent a hidden window is waiting for. AppKit orders a window in when it
 // becomes the child of a visible one, so a hidden child is only attached once
 // it is shown; see Window::SetParentWindow().
@@ -101,16 +106,24 @@ static void NativeApiApplyTitleBarAppearance(NSWindow* window) {
   // its top edge would jump. Keep the frame instead, as on Windows: the content takes
   // over, or gives back, the title bar area.
   const NSRect frame = window.frame;
+  NSNumber* shape_frame = objc_getAssociatedObject(window, kWindowShapeFrameKey);
+  auto mask = window.styleMask;
+  if (shape_frame && NativeApiWindowIsTitleBarHidden(window)) {
+    mask &= ~(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+              NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView);
+  } else {
+    if (full_size) mask |= NSWindowStyleMaskFullSizeContentView;
+    else mask &= ~NSWindowStyleMaskFullSizeContentView;
+    if (shape_frame) {
+      mask |= [shape_frame unsignedLongLongValue] &
+              (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable);
+      objc_setAssociatedObject(window, kWindowShapeFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+  }
+  if (window.styleMask != mask) window.styleMask = mask;
   window.titleVisibility = full_size ? NSWindowTitleHidden : NSWindowTitleVisible;
   window.titlebarAppearsTransparent = full_size;
-  if (full_size) {
-    window.styleMask |= NSWindowStyleMaskFullSizeContentView;
-  } else {
-    window.styleMask &= ~NSWindowStyleMaskFullSizeContentView;
-  }
-  if (!NSEqualRects(window.frame, frame)) {
-    [window setFrame:frame display:YES];
-  }
+  [window setFrame:frame display:YES];
 }
 
 // Whether the window control buttons were last asked for; a window starts with them.
@@ -179,30 +192,34 @@ static Class NativeApiWindowOriginalClass(NSWindow* window) {
   return original;
 }
 
-// Returns (creating on first use) a runtime subclass of |base| whose -canBecomeKeyWindow honors
-// the focusable flag. Used by Window::SetFocusable() for windows that are not panels, so the
-// window keeps every behavior of its original class (e.g. a Flutter or storyboard subclass).
-static Class NativeApiFocusableSubclassOf(Class base) {
-  std::string name = std::string(class_getName(base)) + "_NativeApiFocusable";
-  if (Class existing = objc_getClass(name.c_str())) {
-    return existing;
+// Add a per-window focus override without changing isa: AppKit uses KVO runtime
+// classes for its frame, and replacing/subclassing those classes loses its
+// observation bookkeeping. Other instances continue through the original method.
+static void NativeApiInstallFocusOverride(NSWindow* window) {
+  static const void* installed_key = &installed_key;
+  Class cls = object_getClass(window);
+  if (objc_getAssociatedObject(cls, installed_key)) return;
+  SEL selector = @selector(canBecomeKeyWindow);
+  Method method = class_getInstanceMethod(cls, selector);
+  auto original = reinterpret_cast<BOOL (*)(id, SEL)>(method_getImplementation(method));
+  IMP replacement = imp_implementationWithBlock(^BOOL(NSWindow* instance) {
+    if (objc_getAssociatedObject(instance, kWindowFocusableKey) ||
+        (NativeApiWindowIsTitleBarHidden(instance) &&
+         objc_getAssociatedObject(instance, kWindowShapeFrameKey))) {
+      return NativeApiWindowIsFocusable(instance);
+    }
+    return original(instance, selector);
+  });
+  if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method))) {
+    class_replaceMethod(cls, selector, replacement, method_getTypeEncoding(method));
   }
-  Class subclass = objc_allocateClassPair(base, name.c_str(), 0);
-  Method method = class_getInstanceMethod([NativeApiNonActivatingPanel class],
-                                          @selector(canBecomeKeyWindow));
-  class_addMethod(subclass, @selector(canBecomeKeyWindow), method_getImplementation(method),
-                  method_getTypeEncoding(method));
-  objc_registerClassPair(subclass);
-  return subclass;
+  objc_setAssociatedObject(cls, installed_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Picks the runtime class for |window| from the non-activating and focusable state:
-//   non-activating            -> NativeApiNonActivatingPanel (handles both flags)
-//   activating, focusable     -> the original class
-//   activating, not focusable -> runtime subclass of the original class
+// Non-activating windows use a panel; focus overrides preserve the live class.
 static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
-  Class original = NativeApiWindowOriginalClass(window);
   if (non_activating) {
+    NativeApiWindowOriginalClass(window);
     if (object_getClass(window) != [NativeApiNonActivatingPanel class]) {
       object_setClass(window, [NativeApiNonActivatingPanel class]);
     }
@@ -214,13 +231,17 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
     panel.becomesKeyOnlyIfNeeded = NO;
     return;
   }
-  window.styleMask &= ~NSWindowStyleMaskNonactivatingPanel;
-  Class target =
-      NativeApiWindowIsFocusable(window) ? original : NativeApiFocusableSubclassOf(original);
-  if (object_getClass(window) != target) {
-    object_setClass(window, target);
+  if (NativeApiWindowIsNonActivating(window)) {
+    object_setClass(window, NativeApiWindowOriginalClass(window));
+    window.styleMask &= ~NSWindowStyleMaskNonactivatingPanel;
+  }
+  if (objc_getAssociatedObject(window, kWindowFocusableKey) ||
+      (NativeApiWindowIsTitleBarHidden(window) && objc_getAssociatedObject(window, kWindowShapeFrameKey))) {
+    NativeApiInstallFocusOverride(window);
   }
 }
+
+#include "window_shadow_macos.h"
 
 namespace nativeapi {
 
@@ -660,6 +681,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
     return;
   }
   const BOOL hidden = style == TitleBarStyle::Hidden;
+  const BOOL has_shadow = HasShadow();
   // Record the movable preference before the hidden flag starts to affect -isMovable.
   NativeApiUpdateWindowMovable(pimpl_->ns_window_);
   objc_setAssociatedObject(pimpl_->ns_window_, kWindowTitleBarHiddenKey, @(hidden),
@@ -667,6 +689,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   NativeApiUpdateWindowMovable(pimpl_->ns_window_);
 
   NativeApiApplyTitleBarAppearance(pimpl_->ns_window_);
+  NativeApiUpdateWindowClass(pimpl_->ns_window_, NativeApiWindowIsNonActivating(pimpl_->ns_window_));
 
   // The style says what the buttons do by default; SetWindowControlButtonsVisible()
   // after this call overrides it.
@@ -674,9 +697,9 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   NativeApiApplyWindowControlButtons(pimpl_->ns_window_);
 
-  // Ensure window remains opaque and has shadow
+  // Title-bar changes must preserve the caller's shadow preference.
   pimpl_->ns_window_.opaque = NO;
-  pimpl_->ns_window_.hasShadow = YES;
+  SetHasShadow(has_shadow);
 }
 
 bool Window::SetContentUnderTitleBar(bool is_content_under_title_bar) {
@@ -703,12 +726,52 @@ TitleBarStyle Window::GetTitleBarStyle() const {
 }
 
 void Window::SetHasShadow(bool has_shadow) {
-  [pimpl_->ns_window_ setHasShadow:has_shadow];
-  [pimpl_->ns_window_ invalidateShadow];
+  if (auto* custom = NativeApiGetCustomShadow(pimpl_->ns_window_)) {
+    custom->enabled = has_shadow;
+    [custom update];
+  } else {
+    [pimpl_->ns_window_ setHasShadow:has_shadow];
+    [pimpl_->ns_window_ invalidateShadow];
+  }
 }
 
 bool Window::HasShadow() const {
+  if (auto* custom = NativeApiGetCustomShadow(pimpl_->ns_window_)) return custom->enabled;
   return [pimpl_->ns_window_ hasShadow];
+}
+
+bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window || (shadow && GetTitleBarStyle() != TitleBarStyle::Hidden)) return false;
+  const bool enabled = HasShadow();
+  auto* state = NativeApiGetCustomShadow(window);
+  if (!shadow) {
+    [state close];
+    objc_setAssociatedObject(window, kNativeApiCustomShadowKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    window.hasShadow = enabled;
+    [window invalidateShadow];
+    return true;
+  }
+  if (!state) {
+    state = [[NativeApiCustomShadow alloc] init];
+    state->target = window;
+    objc_setAssociatedObject(window, kNativeApiCustomShadowKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (NSNotificationName name in @[NSWindowDidResizeNotification, NSWindowDidChangeScreenNotification,
+                                     NSWindowDidDeminiaturizeNotification,
+                                     NSWindowWillCloseNotification])
+      [[NSNotificationCenter defaultCenter] addObserver:state selector:@selector(changed:) name:name object:window];
+#if !__has_feature(objc_arc)
+    [state release];
+#endif
+  }
+  state->options = std::make_shared<WindowShadow>(*shadow);
+  state->enabled = enabled;
+  [state update];
+  return true;
+}
+std::shared_ptr<WindowShadow> Window::GetCustomShadow() const {
+  auto* state = NativeApiGetCustomShadow(pimpl_->ns_window_);
+  return state && state->options ? std::make_shared<WindowShadow>(*state->options) : nullptr;
 }
 
 void Window::SetOpacity(float opacity) {
@@ -1029,6 +1092,59 @@ WindowId Window::GetId() const {
 void* Window::GetNativeObjectInternal() const {
   return (__bridge void*)pimpl_->ns_window_;
 }
+
+bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
+  NSWindow* window = pimpl_->ns_window_;
+  NSView* view = window.contentView;
+  if (!window || !view) return false;
+  static NSString* const maskName = @"nativeapi.windowShape";
+  if (!shape) {
+    if ([view.layer.mask.name isEqualToString:maskName]) view.layer.mask = nil;
+    [window invalidateShadow];
+    [NativeApiGetCustomShadow(window) update];
+    return true;
+  }
+  if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden ||
+      window.isOpaque || GetBackgroundColor().a != 0 ||
+      GetVisualEffect() != VisualEffect::None) return false;
+  view.wantsLayer = YES;
+  // Do not replace a mask installed by the embedding application.
+  if (view.layer.mask && ![view.layer.mask.name isEqualToString:maskName]) return false;
+  if (!objc_getAssociatedObject(window, kWindowShapeFrameKey)) {
+    objc_setAssociatedObject(window, kWindowShapeFrameKey, @(window.styleMask),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NativeApiApplyTitleBarAppearance(window);
+    NativeApiUpdateWindowClass(window, NativeApiWindowIsNonActivating(window));
+  }
+  CGMutablePathRef path = CGPathCreateMutable();
+  for (size_t i = 0; i < shape->GetPointCount(); ++i) {
+    const auto p = shape->GetPointAt(i);
+    const double y = view.isFlipped ? p.y : NSHeight(view.bounds) - p.y;
+    if (i == 0) CGPathMoveToPoint(path, nullptr, p.x, y);
+    else CGPathAddLineToPoint(path, nullptr, p.x, y);
+  }
+  CGPathCloseSubpath(path);
+  CAShapeLayer* mask = [CAShapeLayer layer];
+  mask.name = maskName;
+  mask.frame = view.bounds;
+  mask.fillRule = kCAFillRuleEvenOdd;
+  mask.path = path;
+  CGPathRelease(path);
+  view.layer.mask = mask;
+  [window invalidateShadow];
+  [NativeApiGetCustomShadow(window) update];
+  return true;
+}
+
+bool Window::IsShaped() const {
+  return [pimpl_->ns_window_.contentView.layer.mask.name isEqualToString:@"nativeapi.windowShape"];
+}
+
+bool Window::IsShapeSupported() { return true; }
+
+bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) { return false; }
+bool Window::IsInputShaped() const { return false; }
+bool Window::IsInputShapeSupported() { return false; }
 
 }  // namespace nativeapi
 

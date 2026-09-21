@@ -418,9 +418,22 @@ void* Window::GetNativeObjectInternal() const {
   return pimpl_->native_window_;
 }
 
+bool Window::SetShape(std::shared_ptr<WindowShape> shape) { return false; }
+bool Window::IsShaped() const { return false; }
+bool Window::IsShapeSupported() { return false; }
+
+bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) { return false; }
+bool Window::IsInputShaped() const { return false; }
+bool Window::IsInputShapeSupported() { return false; }
+
 }  // namespace nativeapi
 
 namespace nativeapi {
 bool Window::SetTitleBarColors(const Color&, const Color&) { return false; }
 bool Window::ResetTitleBarColors() { return false; }
 }
+
+namespace nativeapi {
+bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) { return false; }
+std::shared_ptr<WindowShadow> Window::GetCustomShadow() const { return nullptr; }
+}  // namespace nativeapi

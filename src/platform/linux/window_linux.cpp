@@ -1,8 +1,12 @@
 #include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 #include "../../foundation/id_allocator.h"
 #include "../../window.h"
+#include "../../window_shape.h"
 #include "../../window_manager.h"
 #include "../../window_registry.h"
 
@@ -16,10 +20,15 @@
 #include <gdk/gdkwayland.h>
 #endif
 
+// Native shadow rendering is independent of Flutter and other content renderers.
+#include "window_shadow_linux.h"
+
 namespace nativeapi {
 
 // Key to store/retrieve WindowId on GObjects
 static const char* kWindowIdKey = "NativeAPIWindowId";
+static const char* kInputShapeKey = "NativeAPIInputShape";
+static const char* kTitleBarStyleKey = "NativeAPITitleBarStyle";
 
 // The window manager draws a title bar and border around the client area, and the
 // public geometry is the frame (window.h): positions are the frame's top-left corner
@@ -484,6 +493,10 @@ void Window::SetContentSize(Size size) {
     pimpl_->requested_content_size_ = size;
   }
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    if (linux_shadow::Get(pimpl_->widget_)) {
+      size.width += linux_shadow::Get(pimpl_->widget_)->margin * 2;
+      size.height += linux_shadow::Get(pimpl_->widget_)->margin * 2;
+    }
     GtkWindow* gtk_window = GTK_WINDOW(pimpl_->widget_);
     if (!gtk_widget_get_mapped(pimpl_->widget_)) {
       // Windows are realized as soon as they are created, and GTK then maps them at
@@ -757,7 +770,8 @@ void Window::SetPosition(Point point) {
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     // gtk_window_move() positions the frame, and remembers the position for a window
     // that is not mapped yet — which gdk_window_move() does not.
-    gtk_window_move(GTK_WINDOW(pimpl_->widget_), (gint)point.x, (gint)point.y);
+    const int margin = linux_shadow::Get(pimpl_->widget_) ? linux_shadow::Get(pimpl_->widget_)->margin : 0;
+    gtk_window_move(GTK_WINDOW(pimpl_->widget_), (gint)point.x - margin, (gint)point.y - margin);
   } else if (pimpl_->gdk_window_) {
     gdk_window_move(pimpl_->gdk_window_, (gint)point.x, (gint)point.y);
   }
@@ -849,13 +863,23 @@ std::string Window::GetTitle() const {
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
+  const bool has_shadow = HasShadow();
   pimpl_->title_bar_style_ = style;
+  // Wrapping a Flutter controller creates a new Window each time. Keep the
+  // title-bar policy on the native object so later wrappers can apply shapes.
+  GObject* object = pimpl_->gdk_window_ ? G_OBJECT(pimpl_->gdk_window_)
+                                     : (pimpl_->widget_ ? G_OBJECT(pimpl_->widget_) : nullptr);
+  if (object) {
+    g_object_set_data(object, kTitleBarStyleKey,
+                      GINT_TO_POINTER(static_cast<int>(style) + 1));
+  }
 
   if (!pimpl_->widget_ || !GTK_IS_WINDOW(pimpl_->widget_))
     return;
 
   GtkWindow* gtk_window = GTK_WINDOW(pimpl_->widget_);
   bool show_decorations = (style == TitleBarStyle::Normal);
+  if (show_decorations) linux_shadow::Remove(pimpl_->widget_);
 
   // Try to find and toggle header bar visibility
   GtkWidget* header_bar = FindHeaderBar(pimpl_->widget_);
@@ -873,9 +897,16 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   if (show_decorations) {
     gtk_window_set_decorated(gtk_window, TRUE);
   }
+  SetHasShadow(has_shadow);
 }
 
 TitleBarStyle Window::GetTitleBarStyle() const {
+  GObject* object = pimpl_->gdk_window_ ? G_OBJECT(pimpl_->gdk_window_)
+                                     : (pimpl_->widget_ ? G_OBJECT(pimpl_->widget_) : nullptr);
+  if (object) {
+    gpointer stored = g_object_get_data(object, kTitleBarStyleKey);
+    if (stored) return static_cast<TitleBarStyle>(GPOINTER_TO_INT(stored) - 1);
+  }
   return pimpl_->title_bar_style_;
 }
 
@@ -969,6 +1000,23 @@ void Window::SetHasShadow(bool has_shadow) {
     return;
   }
   GObject* object = G_OBJECT(widget);
+  if (GetTitleBarStyle() == TitleBarStyle::Hidden) {
+    auto* shadow = linux_shadow::Ensure(widget);
+    shadow->enabled = has_shadow;
+    RefreshShadowInput(widget);
+    // Like the system-shadow path below, do not change CSD extents between
+    // realize and map. GTK otherwise allocates content with stale extents.
+    if (gtk_widget_get_mapped(widget)) {
+      ApplyShadowClass(widget, false);
+    } else {
+      if (!g_object_get_data(object, kPendingNoShadowKey)) {
+        g_signal_connect(widget, "map-event", G_CALLBACK(OnMappedApplyShadow), nullptr);
+      }
+      g_object_set_data(object, kPendingNoShadowKey, GINT_TO_POINTER(1));
+    }
+    gtk_widget_queue_draw(widget);
+    return;
+  }
   if (gtk_widget_get_mapped(widget)) {
     g_object_set_data(object, kPendingNoShadowKey, nullptr);
     ApplyShadowClass(widget, has_shadow);
@@ -983,8 +1031,28 @@ void Window::SetHasShadow(bool has_shadow) {
   g_object_set_data(object, kPendingNoShadowKey, GINT_TO_POINTER(has_shadow ? 2 : 1));
 }
 
+bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) {
+  auto* widget = pimpl_->widget_;
+  if (!widget || !GTK_IS_WINDOW(widget) ||
+      (shadow && GetTitleBarStyle() != TitleBarStyle::Hidden)) return false;
+  const bool enabled = HasShadow();
+  g_object_set_data_full(G_OBJECT(widget), linux_shadow::kConfig,
+                        shadow ? new WindowShadow(*shadow) : nullptr,
+                        [](gpointer p) { delete static_cast<WindowShadow*>(p); });
+  if (GetTitleBarStyle() == TitleBarStyle::Hidden)
+    linux_shadow::Configure(widget, shadow ? std::make_shared<WindowShadow>(*shadow) : nullptr);
+  SetHasShadow(enabled);
+  return true;
+}
+std::shared_ptr<WindowShadow> Window::GetCustomShadow() const {
+  const auto* options = pimpl_->widget_ ? static_cast<WindowShadow*>(
+      g_object_get_data(G_OBJECT(pimpl_->widget_), linux_shadow::kConfig)) : nullptr;
+  return options ? std::make_shared<WindowShadow>(*options) : nullptr;
+}
+
 bool Window::HasShadow() const {
   GtkWidget* widget = pimpl_->widget_;
+  if (auto* shadow = linux_shadow::Get(widget)) return shadow->enabled;
   if (!widget || !GTK_IS_WINDOW(widget)) {
     return true;
   }
@@ -1199,6 +1267,155 @@ void Window::StartResizing(ResizeEdge edge) {
 void* Window::GetNativeObjectInternal() const {
   // Return the GtkWidget* (GtkWindow) as the native handle on Linux
   return pimpl_ ? static_cast<void*>(pimpl_->widget_ ? pimpl_->widget_ : nullptr) : nullptr;
+}
+
+bool Window::IsShapeSupported() {
+  GdkDisplay* display = gdk_display_get_default();
+  return display && gdk_display_supports_shapes(display) &&
+         gdk_display_supports_input_shapes(display);
+}
+
+// Both visible and input polygons use the same pixel-centre, even-odd rasterization.
+static cairo_region_t* RasterizeShape(GtkWidget* widget, GdkWindow* window,
+                                      const WindowShape& polygon) {
+  const WindowShape* shape = &polygon;
+  // Rasterize at pixel centres using the even-odd rule. GDK region coordinates
+  // are logical pixels, including on HiDPI displays. Bound work by the surface.
+  cairo_region_t* region = cairo_region_create();
+  const int width = gdk_window_get_width(window);
+  const int height = gdk_window_get_height(window);
+  gint origin_x = 0, origin_y = 0;
+  gdk_window_get_origin(window, &origin_x, &origin_y);
+  const auto layout = GetLayout(widget, window);
+  int offset_x = layout.content.width > 0 ? layout.content.x - origin_x : 0;
+  int offset_y = layout.content.height > 0 ? layout.content.y - origin_y : 0;
+  // GetLayout deliberately normalizes Wayland frame coordinates to zero, hiding
+  // the CSD shadow margin. Input regions instead need surface-local coordinates.
+  if (widget && GTK_IS_WINDOW(widget)) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(widget));
+    if (child && gtk_widget_get_mapped(child)) {
+      gtk_widget_translate_coordinates(child, widget, 0, 0, &offset_x, &offset_y);
+    }
+#ifdef GDK_WINDOWING_WAYLAND
+    else if (GDK_IS_WAYLAND_DISPLAY(gdk_window_get_display(window))) {
+      gint content_width = 0, content_height = 0;
+      gtk_window_get_size(GTK_WINDOW(widget), &content_width, &content_height);
+      offset_x = std::max(0, (width - content_width) / 2);
+      offset_y = std::max(0, (height - content_height) / 2);
+    }
+#endif
+  }
+  std::vector<double> crossings;
+  for (int y = 0; y < height; ++y) {
+    crossings.clear();
+    const double scan = y + 0.5 - offset_y;
+    for (size_t i = 0, j = shape->GetPointCount() - 1; i < shape->GetPointCount(); j = i++) {
+      const auto a = shape->GetPointAt(j), b = shape->GetPointAt(i);
+      if ((a.y > scan) != (b.y > scan)) {
+        crossings.push_back(offset_x + a.x + (scan - a.y) * (b.x - a.x) / (b.y - a.y));
+      }
+    }
+    std::sort(crossings.begin(), crossings.end());
+    for (size_t i = 0; i + 1 < crossings.size(); i += 2) {
+      const int left = std::max(0, static_cast<int>(std::ceil(crossings[i] - 0.5)));
+      const int right = std::min(width, static_cast<int>(std::ceil(crossings[i + 1] - 0.5)));
+      if (right > left) {
+        cairo_rectangle_int_t rect = {left, y, right - left, 1};
+        cairo_region_union_rectangle(region, &rect);
+      }
+    }
+  }
+  return region;
+}
+
+static void ApplyInputRegion(GtkWidget* widget, GdkWindow* window, cairo_region_t* region) {
+  // GTK intersects its CSD input region with the explicit widget region. Register
+  // ours with GTK as well as GDK so a later allocation cannot overwrite it.
+  if (widget) {
+    gtk_widget_input_shape_combine_region(widget, region);
+  } else {
+    gdk_window_input_shape_combine_region(window, region, 0, 0);
+  }
+  g_object_set_data(G_OBJECT(window), kInputShapeKey, region ? GINT_TO_POINTER(1) : nullptr);
+  gdk_window_invalidate_rect(window, nullptr, TRUE);
+}
+
+static void RefreshShadowInput(GtkWidget* widget) {
+  auto* shadow = linux_shadow::Get(widget);
+  auto* window = gtk_widget_get_window(widget);
+  auto* child = gtk_bin_get_child(GTK_BIN(widget));
+  if (!shadow || !window || !child || !gtk_widget_get_mapped(child)) return;
+  const bool explicit_polygon = shadow->polygon.GetPointCount() > 0;
+  WindowShape rectangle;
+  const int width = gtk_widget_get_allocated_width(child);
+  const int height = gtk_widget_get_allocated_height(child);
+  if (!explicit_polygon) {
+    rectangle.AddPoint({0, 0}); rectangle.AddPoint({double(width), 0});
+    rectangle.AddPoint({double(width), double(height)}); rectangle.AddPoint({0, double(height)});
+  }
+  auto* region = RasterizeShape(widget, window, explicit_polygon ? shadow->polygon : rectangle);
+  ApplyInputRegion(widget, window, region);
+  cairo_region_destroy(region);
+  g_object_set_data(G_OBJECT(window), kInputShapeKey, explicit_polygon ? GINT_TO_POINTER(1) : nullptr);
+}
+
+bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
+  GdkWindow* window = pimpl_->gdk_window_;
+  if (!window || gdk_window_is_destroyed(window) || !IsShapeSupported()) return false;
+  if (!shape) {
+    gdk_window_shape_combine_region(window, nullptr, 0, 0);
+    ApplyInputRegion(pimpl_->widget_, window, nullptr);
+    gdk_window_invalidate_rect(window, nullptr, TRUE);
+    return true;
+  }
+  if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden) return false;
+  cairo_region_t* region = RasterizeShape(pimpl_->widget_, window, *shape);
+  const bool ok = cairo_region_status(region) == CAIRO_STATUS_SUCCESS;
+  if (ok) {
+    gdk_window_shape_combine_region(window, region, 0, 0);
+    ApplyInputRegion(pimpl_->widget_, window, region);
+    // GDK submits the bounding shape during its next paint update. Shrinking
+    // a region exposes no new pixels, so it may otherwise schedule no paint
+    // and leave the X server using the previous visual contour.
+    gdk_window_invalidate_rect(window, nullptr, TRUE);
+  }
+  cairo_region_destroy(region);
+  return ok;
+}
+
+bool Window::IsInputShapeSupported() {
+  GdkDisplay* display = gdk_display_get_default();
+  return display && gdk_display_supports_input_shapes(display);
+}
+
+bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) {
+  GdkWindow* window = pimpl_->gdk_window_;
+  if (!window || gdk_window_is_destroyed(window) || !IsInputShapeSupported()) return false;
+  if (!shape) {
+    linux_shadow::SetPolygon(pimpl_->widget_, nullptr);
+    if (linux_shadow::Get(pimpl_->widget_)) RefreshShadowInput(pimpl_->widget_);
+    else ApplyInputRegion(pimpl_->widget_, window, nullptr);
+    return true;
+  }
+  if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden) return false;
+  cairo_region_t* region = RasterizeShape(pimpl_->widget_, window, *shape);
+  const bool ok = cairo_region_status(region) == CAIRO_STATUS_SUCCESS;
+  if (ok) {
+    ApplyInputRegion(pimpl_->widget_, window, region);
+    linux_shadow::SetPolygon(pimpl_->widget_, shape);
+  }
+  cairo_region_destroy(region);
+  return ok;
+}
+
+bool Window::IsInputShaped() const {
+  return pimpl_->gdk_window_ && !gdk_window_is_destroyed(pimpl_->gdk_window_) &&
+         g_object_get_data(G_OBJECT(pimpl_->gdk_window_), kInputShapeKey) != nullptr;
+}
+
+bool Window::IsShaped() const {
+  return pimpl_->gdk_window_ && !gdk_window_is_destroyed(pimpl_->gdk_window_) &&
+         gdk_window_is_shaped(pimpl_->gdk_window_);
 }
 
 }  // namespace nativeapi

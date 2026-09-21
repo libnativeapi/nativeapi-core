@@ -11,11 +11,13 @@
 #include <unordered_map>
 #include "../../foundation/id_allocator.h"
 #include "../../window.h"
+#include "../../window_shape.h"
 #include "../../window_manager.h"
 #include "../../window_registry.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 #include "window_message_dispatcher.h"
+#include "window_shape_shadow_windows.h"
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
@@ -232,9 +234,8 @@ static void ApplyTaskbarVisibility(HWND hwnd, bool is_visible) {
 }
 
 #ifndef NATIVEAPI_ENABLE_WINUI3
-// A window with WS_THICKFRAME but no WS_CAPTION keeps its sizing frame on all sides.
-// The left, right and bottom parts are invisible, but the top part is painted as a
-// band above the content. That band is given to the client area (WM_NCCALCSIZE), and
+// Keep the native sizing/caption styles, but give the top non-client band to the
+// content (WM_NCCALCSIZE) when the title bar is hidden. The sizing frame remains,
 // the top edge stays resizable through hit testing: the window answers HTTOP there,
 // and child windows covering the content let the hit test through to it.
 
@@ -298,9 +299,8 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
       params->rgrc[0].top = top;
       return result;
     }
-    // Without a caption, maximizing sizes the whole window to the monitor, so the
-    // content would run under the taskbar and stop short on the right. Fit it to
-    // the work area instead.
+    // The maximized frame extends beyond the work area by its resize borders.
+    // Fit the captionless client to the work area, excluding those borders.
     MONITORINFO monitor = {sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
       params->rgrc[0] = monitor.rcWork;
@@ -324,6 +324,7 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kWindowIdProperty);
     RemovePropW(hwnd, kTitleBarHiddenProperty);
     RemovePropW(hwnd, kNoShadowProperty);
+    delete static_cast<WindowShadow*>(RemovePropW(hwnd, shape_shadow::kConfig));
     RemovePropW(hwnd, kHiddenFromTaskbarProperty);
     RemovePropW(hwnd, kVisualEffectProperty);
     RemovePropW(hwnd, kBackgroundColorProperty);
@@ -1334,8 +1335,11 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   if (!SetWinUI3TitleBarStyle(pimpl_->hwnd_, style)) return;
 #else
   LONG_PTR flags = GetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE);
-  if (style == TitleBarStyle::Hidden) flags &= ~WS_CAPTION;
-  else flags |= WS_CAPTION;
+  // Keep the native caption style even when its non-client area is hidden by
+  // HandleHiddenTitleBarFrame. Removing it makes Windows maximize the outer
+  // window over the entire monitor, which also hides the taskbar. Clamping only
+  // the client area in WM_NCCALCSIZE cannot fix the shell's fullscreen detection.
+  flags |= WS_CAPTION;
   SetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE, flags);
 #endif
   // Read by WM_NCCALCSIZE during the frame change below.
@@ -1359,6 +1363,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   // Trigger frame change to apply the new style
   SetWindowPos(pimpl_->hwnd_, nullptr, rect.left, rect.top, 0, 0,
                SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+  SetHasShadow(HasShadow());
 }
 
 TitleBarStyle Window::GetTitleBarStyle() const {
@@ -1390,7 +1395,8 @@ void Window::SetHasShadow(bool has_shadow) {
   // The shadow is part of the frame the desktop compositor draws around the window, so
   // it goes away with the rest of that frame. On a window that still has a title bar
   // the caption is drawn there too and the compositor keeps both.
-  DWMNCRENDERINGPOLICY policy = has_shadow ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
+  DWMNCRENDERINGPOLICY policy = has_shadow && GetTitleBarStyle() != TitleBarStyle::Hidden
+                                     ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
   if (FAILED(DwmSetWindowAttribute(pimpl_->hwnd_, DWMWA_NCRENDERING_POLICY, &policy,
                                    sizeof(policy))))
     return;
@@ -1399,6 +1405,28 @@ void Window::SetHasShadow(bool has_shadow) {
     RemovePropW(pimpl_->hwnd_, kNoShadowProperty);
   else
     SetPropW(pimpl_->hwnd_, kNoShadowProperty, reinterpret_cast<HANDLE>(1));
+  if (!has_shadow) {
+    shape_shadow::Clear(pimpl_->hwnd_);
+  } else {
+    if (GetTitleBarStyle() == TitleBarStyle::Hidden) shape_shadow::Refresh(pimpl_->hwnd_);
+    else shape_shadow::Clear(pimpl_->hwnd_);
+  }
+}
+
+bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!IsWindow(hwnd) || (shadow && GetTitleBarStyle() != TitleBarStyle::Hidden)) return false;
+  auto* copy = shadow ? new WindowShadow(*shadow) : nullptr;
+  auto* previous = static_cast<WindowShadow*>(GetPropW(hwnd, shape_shadow::kConfig));
+  if (copy && !SetPropW(hwnd, shape_shadow::kConfig, copy)) { delete copy; return false; }
+  if (!copy) RemovePropW(hwnd, shape_shadow::kConfig);
+  delete previous;
+  SetHasShadow(HasShadow());
+  return true;
+}
+std::shared_ptr<WindowShadow> Window::GetCustomShadow() const {
+  const auto* options = static_cast<WindowShadow*>(GetPropW(pimpl_->hwnd_, shape_shadow::kConfig));
+  return options ? std::make_shared<WindowShadow>(*options) : nullptr;
 }
 
 bool Window::HasShadow() const {
@@ -1704,6 +1732,64 @@ WindowId Window::GetId() const {
 void* Window::GetNativeObjectInternal() const {
   return pimpl_ ? reinterpret_cast<void*>(pimpl_->hwnd_) : nullptr;
 }
+
+bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!IsWindow(hwnd)) return false;
+  if (!shape) {
+    if (!SetWindowRgn(hwnd, nullptr, TRUE)) return false;
+    if (HasShadow() && GetTitleBarStyle() == TitleBarStyle::Hidden) shape_shadow::Refresh(hwnd);
+    else shape_shadow::Clear(hwnd);
+    // A changed top-level region can invalidate child composition surfaces
+    // without requesting their paint (e.g. Flutter's view). Repaint the whole
+    // hierarchy so retained content is visible without another user interaction.
+    // Let WM_PAINT run normally: a synchronous paint here can precede the
+    // embedding framework's pending layout/frame update.
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    return true;
+  }
+  if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden) return false;
+  const double scale = GetScaleFactorForWindow(hwnd);
+  RECT frame;
+  POINT origin = {0, 0};
+  if (!GetWindowRect(hwnd, &frame) || !ClientToScreen(hwnd, &origin)) return false;
+  std::vector<POINT> points;
+  for (size_t i = 0; i < shape->GetPointCount(); ++i) {
+    const auto p = shape->GetPointAt(i);
+    points.push_back({static_cast<LONG>(std::lround(p.x * scale)) + origin.x - frame.left,
+                      static_cast<LONG>(std::lround(p.y * scale)) + origin.y - frame.top});
+  }
+  HRGN region = CreatePolygonRgn(points.data(), static_cast<int>(points.size()), ALTERNATE);
+  if (!region) return false;
+  if (!SetWindowRgn(hwnd, region, TRUE)) {
+    DeleteObject(region);
+    return false;
+  }
+  // The system owns region after a successful SetWindowRgn. Read back a copy
+  // rather than using that transferred handle to generate the soft shadow.
+  if (HasShadow()) {
+    HRGN copy = CreateRectRgn(0, 0, 0, 0);
+    if (copy && GetWindowRgn(hwnd, copy) != ERROR) shape_shadow::Update(hwnd, copy, scale);
+    if (copy) DeleteObject(copy);
+  }
+  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+  return true;
+}
+
+bool Window::IsShaped() const {
+  if (!IsWindow(pimpl_->hwnd_)) return false;
+  HRGN region = CreateRectRgn(0, 0, 0, 0);
+  if (!region) return false;
+  const int result = GetWindowRgn(pimpl_->hwnd_, region);
+  DeleteObject(region);
+  return result != ERROR;
+}
+
+bool Window::IsShapeSupported() { return true; }
+
+bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) { return false; }
+bool Window::IsInputShaped() const { return false; }
+bool Window::IsInputShapeSupported() { return false; }
 
 }  // namespace nativeapi
 

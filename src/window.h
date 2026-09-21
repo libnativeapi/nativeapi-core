@@ -9,6 +9,9 @@
 
 namespace nativeapi {
 
+class WindowShape;
+class WindowShadow;
+
 /**
  * @typedef WindowId
  * @brief Unique identifier for a window instance.
@@ -896,13 +899,16 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - Drops the shadow of any window
-   * - Windows: ⚠️ Frameless windows only - The desktop compositor always draws the
-   *   shadow of a window that has a title bar; with TitleBarStyle::Hidden the shadow
-   *   follows this flag
-   * - Linux: ⚠️ Client-side decorations only - Removed from the windows GTK decorates
-   *   itself: every window on Wayland, windows with a header bar on X11. On a window
-   *   that is not shown yet it takes effect when the window is shown. A window the
-   *   window manager decorates keeps its shadow, and HasShadow() keeps saying so.
+   * - Windows: ⚠️ Hidden-title-bar windows use a core-managed click-through shadow
+   *   for either the rectangle or the applied shape. System-decorated windows
+   *   retain the desktop compositor's restrictions.
+   * - Linux: ⚠️ Hidden-title-bar GtkWindows use a core-rendered shadow with an
+   *   internal non-interactive margin; content coordinates and sizes exclude it.
+   *   SetInputShape() supplies its contour, or nullptr restores a rectangle.
+   *   Native X11 visual regions still clip the shadow; use independent input
+   *   shaping and transparent renderer clipping for a soft exterior shadow.
+   *   Decorated GTK windows use their theme shadow; server-side X11 decorations
+   *   remain controlled by the window manager.
    * - Android: ❌ Not applicable - Always ignored
    * - iOS: ❌ Not applicable - Always ignored
    * - OpenHarmony: ❌ Not applicable - Always ignored
@@ -917,6 +923,27 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @see SetHasShadow() for platform availability.
    */
   bool HasShadow() const;
+
+  /**
+   * @brief Applies a copied custom shadow, or restores the default with nullptr.
+   * @return False if the window or its decoration mode does not support custom shadows.
+   *
+   * SetHasShadow() remains the visibility switch and preserves this configuration.
+   * Custom shadows are rendered by core and do not receive pointer input.
+   * Content dimensions and shape coordinates exclude the shadow's internal margin.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Hidden-title-bar windows; core draws a non-interactive child window
+   * - Windows: ✅ Hidden-title-bar windows; core draws a layered helper window
+   * - Linux: ✅ Hidden-title-bar GtkWindows; core draws in the same surface
+   * - Android: ❌ Unsupported, returns false
+   * - iOS: ❌ Unsupported, returns false
+   * - OpenHarmony: ❌ Unsupported, returns false
+   */
+  bool SetCustomShadow(std::shared_ptr<WindowShadow> shadow);
+
+  /** @brief Returns an independent copy of the custom shadow, or nullptr for default. */
+  std::shared_ptr<WindowShadow> GetCustomShadow() const;
 
   /**
    * @brief Sets the window's opacity (transparency level).
@@ -990,6 +1017,69 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @see SetVisualEffect() for platform availability.
    */
   static bool IsVisualEffectSupported(VisualEffect effect);
+
+  /**
+   * @brief Sets a polygonal visible region, or restores the rectangle with nullptr.
+   * @param shape Polygon in content-local logical pixels; at least three vertices.
+   * @return False if unsupported, invalid, or the native operation fails.
+   *
+   * Hide the title bar before applying a shape. Points are copied when applied;
+   * editing the builder does not change the window. Reapply after resizing or a
+   * display scale change. A shape does not change the window's rectangular bounds.
+   * The caller supplies its own drag and close controls. Clear before restoring
+   * decorations. On macOS use a transparent background and no visual effect;
+   * transparent pixels participate in AppKit's normal alpha-based hit testing.
+   *
+   * @note Platform availability:
+   * - macOS: ⚠️ Content-layer mask; requires a transparent background and hidden title bar
+   * - Windows: ✅ Native window region clips rendering and mouse input
+   * - Linux: ⚠️ GDK visual and input regions, only on backends supporting both (X11)
+   * - Android: ❌ Unsupported, returns false
+   * - iOS: ❌ Unsupported, returns false
+   * - OpenHarmony: ❌ Unsupported, returns false
+   */
+  bool SetShape(std::shared_ptr<WindowShape> shape);
+
+  /** @brief Checks if a window shape is active. @see SetShape() for availability. */
+  bool IsShaped() const;
+
+  /** @brief Checks if the current platform/backend supports SetShape(). */
+  static bool IsShapeSupported();
+
+  /**
+   * @brief Sets a polygonal pointer/touch input region without clipping drawing.
+   * @param shape Polygon in content-local logical pixels, with at least three
+   *        vertices; nullptr restores the default input region.
+   * @return False if unsupported, invalid, or the native window is unavailable.
+   *
+   * Hide the title bar first. Points are copied; reapply after resizing or display
+   * scale changes. Outside the region, pointer/touch events go to windows beneath.
+   * Keyboard focus is unchanged. The renderer must paint outside the polygon
+   * transparent when using this to implement a shaped window on Wayland.
+   * On Linux, SetShape() also replaces this input region; clearing either API
+   * restores default input handling. SetInputShape() never clips content drawing;
+   * when the core-managed shadow is enabled, it also updates the shadow contour.
+   * The internal shadow margin remains non-interactive even after clearing.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Unsupported, returns false; use SetShape() for a content mask
+   * - Windows: ❌ Unsupported, returns false; use SetShape() for a native region
+   * - Linux: ✅ GDK input regions, including X11 and Wayland
+   * - Android: ❌ Unsupported, returns false
+   * - iOS: ❌ Unsupported, returns false
+   * - OpenHarmony: ❌ Unsupported, returns false
+   */
+  bool SetInputShape(std::shared_ptr<WindowShape> shape);
+
+  /**
+   * @brief Checks if an explicit input polygon was applied through this API or SetShape().
+   * @return False if no polygon is active, unsupported, or the window is unavailable.
+   * @see SetInputShape() for platform availability.
+   */
+  bool IsInputShaped() const;
+
+  /** @brief Checks if the current platform/backend supports SetInputShape(). */
+  static bool IsInputShapeSupported();
 
   /**
    * @brief Sets the background color of the window.

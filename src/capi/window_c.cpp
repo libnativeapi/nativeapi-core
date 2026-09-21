@@ -17,6 +17,10 @@
 #include "geometry_c.h"
 #include "../foundation/color.h"
 #include "color_c.h"
+#include "../window_shape.h"
+#include "window_shape_c.h"
+#include "../window_shadow.h"
+#include "window_shadow_c.h"
 #include "../window.h"
 
 native_window_t native_window_create(void) {
@@ -956,6 +960,33 @@ bool native_window_has_shadow(native_window_t window) {
   }
 }
 
+bool native_window_set_custom_shadow(native_window_t window, native_window_shadow_t shadow) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto shadow_cpp = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::WindowShadow>(shadow);
+    return self->SetCustomShadow(shadow_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_custom_shadow");
+    return false;
+  }
+}
+
+native_window_shadow_t native_window_get_custom_shadow(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return nativeapi::HandleTable::GetInstance().Insert(self->GetCustomShadow());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_custom_shadow");
+    return 0;
+  }
+}
+
 void native_window_set_opacity(native_window_t window, float opacity) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -1014,6 +1045,78 @@ bool native_window_is_visual_effect_supported(native_visual_effect_t effect) {
     return nativeapi::Window::IsVisualEffectSupported(to_cpp_visual_effect(effect));
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_visual_effect_supported");
+    return false;
+  }
+}
+
+bool native_window_set_shape(native_window_t window, native_window_shape_t shape) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto shape_cpp = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::WindowShape>(shape);
+    return self->SetShape(shape_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_shape");
+    return false;
+  }
+}
+
+bool native_window_is_shaped(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsShaped();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_shaped");
+    return false;
+  }
+}
+
+bool native_window_is_shape_supported(void) {
+  try {
+    return nativeapi::Window::IsShapeSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_shape_supported");
+    return false;
+  }
+}
+
+bool native_window_set_input_shape(native_window_t window, native_window_shape_t shape) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto shape_cpp = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::WindowShape>(shape);
+    return self->SetInputShape(shape_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_input_shape");
+    return false;
+  }
+}
+
+bool native_window_is_input_shaped(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsInputShaped();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_input_shaped");
+    return false;
+  }
+}
+
+bool native_window_is_input_shape_supported(void) {
+  try {
+    return nativeapi::Window::IsInputShapeSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_input_shape_supported");
     return false;
   }
 }

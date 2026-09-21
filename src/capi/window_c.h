@@ -9,6 +9,8 @@
 #include "common_c.h"
 #include "color_c.h"
 #include "geometry_c.h"
+#include "window_shadow_c.h"
+#include "window_shape_c.h"
 
 #if _WIN32
 #define FFI_PLUGIN_EXPORT __declspec(dllexport)
@@ -307,6 +309,13 @@ FFI_PLUGIN_EXPORT
 bool native_window_has_shadow(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_custom_shadow(native_window_t window, native_window_shadow_t shadow);
+
+/// Caller owns the returned handle; release it with native_window_shadow_free().
+FFI_PLUGIN_EXPORT
+native_window_shadow_t native_window_get_custom_shadow(native_window_t window);
+
+FFI_PLUGIN_EXPORT
 void native_window_set_opacity(native_window_t window, float opacity);
 
 FFI_PLUGIN_EXPORT
@@ -320,6 +329,24 @@ native_visual_effect_t native_window_get_visual_effect(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 bool native_window_is_visual_effect_supported(native_visual_effect_t effect);
+
+FFI_PLUGIN_EXPORT
+bool native_window_set_shape(native_window_t window, native_window_shape_t shape);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_shaped(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_shape_supported(void);
+
+FFI_PLUGIN_EXPORT
+bool native_window_set_input_shape(native_window_t window, native_window_shape_t shape);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_input_shaped(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_input_shape_supported(void);
 
 FFI_PLUGIN_EXPORT
 void native_window_set_background_color(native_window_t window, native_color_t color);

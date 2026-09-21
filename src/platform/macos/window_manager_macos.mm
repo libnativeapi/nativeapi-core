@@ -210,7 +210,7 @@ namespace nativeapi {
 // an id is allocated and attached. Newly seen windows are added to the registry
 // so listeners can call WindowManager::Get() straight from the callback.
 static WindowId ResolveWindowId(NSWindow* ns_window) {
-  if (ns_window == nil) {
+  if (ns_window == nil || [ns_window isKindOfClass:NSClassFromString(@"NativeApiShadowWindow")]) {
     return IdAllocator::kInvalidId;
   }
 
@@ -425,6 +425,7 @@ std::vector<std::shared_ptr<Window>> WindowManager::GetAll() {
 
   // First, ensure all NSWindows are registered
   for (NSWindow* ns_window in ns_windows) {
+    if ([ns_window isKindOfClass:NSClassFromString(@"NativeApiShadowWindow")]) continue;
     // Create or get Window wrapper - this will handle ID assignment via associated object
     auto window = std::make_shared<Window>((__bridge void*)ns_window);
     WindowId window_id = window->GetId();
