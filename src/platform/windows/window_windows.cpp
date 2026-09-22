@@ -956,46 +956,46 @@ static int RegisterAlwaysOnBottomHandler(HWND hwnd, int existing_handler_id) {
 
 // Helper function: registers a WM_GETMINMAXINFO handler for the given HWND
 // via WindowMessageDispatcher if not already registered. Returns the handler ID.
-static int RegisterMinMaxInfoHandler(HWND hwnd, int existing_handler_id) {
+static int RegisterMinMaxInfoHandler(HWND hwnd,
+                                     int existing_handler_id,
+                                     const Size* minimum,
+                                     const Size* maximum) {
   if (existing_handler_id != 0) {
     return existing_handler_id;
   }
   if (!hwnd || !IsWindow(hwnd)) {
     return 0;
   }
-  auto& dispatcher = WindowMessageDispatcher::GetInstance();
-  return dispatcher.RegisterHandler(
+  // A directly constructed Window need not be in WindowRegistry; enumeration
+  // may also register a different wrapper for this HWND. Read the state of the
+  // wrapper that installed this handler. Its destructor unregisters the handler
+  // before destroying the Impl that owns these sizes.
+  return WindowMessageDispatcher::GetInstance().RegisterHandler(
       hwnd,
-      [](HWND hwnd, UINT msg, WPARAM wparam,
-         LPARAM lparam) -> std::optional<LRESULT> {
-        if (msg == WM_GETMINMAXINFO) {
-          HANDLE prop_handle = GetPropW(hwnd, kWindowIdProperty);
-          if (prop_handle) {
-            WindowId window_id = static_cast<WindowId>(
-                reinterpret_cast<uintptr_t>(prop_handle));
-            if (window_id != IdAllocator::kInvalidId) {
-              auto window = WindowRegistry::GetInstance().Get(window_id);
-              if (window) {
-                auto minSize = window->GetMinimumSize();
-                auto maxSize = window->GetMaximumSize();
-                MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
-                double scale_mm = GetScaleFactorForWindow(hwnd);
-                if (scale_mm <= 0.0)
-                  scale_mm = 1.0;
-                if (minSize.width > 0 && minSize.height > 0) {
-                  mmi->ptMinTrackSize.x = static_cast<LONG>(std::lround(minSize.width * scale_mm));
-                  mmi->ptMinTrackSize.y = static_cast<LONG>(std::lround(minSize.height * scale_mm));
-                }
-                if (maxSize.width > 0 && maxSize.height > 0) {
-                  mmi->ptMaxTrackSize.x = static_cast<LONG>(std::lround(maxSize.width * scale_mm));
-                  mmi->ptMaxTrackSize.y = static_cast<LONG>(std::lround(maxSize.height * scale_mm));
-                }
-                return std::make_optional(0);
-              }
-            }
-          }
+      [minimum, maximum](HWND hwnd, UINT msg, WPARAM, LPARAM lparam) -> std::optional<LRESULT> {
+        if (msg != WM_GETMINMAXINFO || !lparam) {
+          return std::nullopt;
         }
-        return std::nullopt;
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        double scale = GetScaleFactorForWindow(hwnd);
+        if (scale <= 0.0) {
+          scale = 1.0;
+        }
+        // Each axis can be bounded independently. Leave unconstrained fields
+        // as supplied by Windows, including the system's normal tracking limits.
+        if (minimum->width > 0) {
+          info->ptMinTrackSize.x = static_cast<LONG>(std::lround(minimum->width * scale));
+        }
+        if (minimum->height > 0) {
+          info->ptMinTrackSize.y = static_cast<LONG>(std::lround(minimum->height * scale));
+        }
+        if (maximum->width > 0) {
+          info->ptMaxTrackSize.x = static_cast<LONG>(std::lround(maximum->width * scale));
+        }
+        if (maximum->height > 0) {
+          info->ptMaxTrackSize.y = static_cast<LONG>(std::lround(maximum->height * scale));
+        }
+        return 0;
       });
 }
 
@@ -1003,8 +1003,8 @@ void Window::SetMinimumSize(Size size) {
   pimpl_->min_size_ = size;
 
   if (pimpl_->hwnd_) {
-    pimpl_->min_max_handler_id_ =
-        RegisterMinMaxInfoHandler(pimpl_->hwnd_, pimpl_->min_max_handler_id_);
+    pimpl_->min_max_handler_id_ = RegisterMinMaxInfoHandler(
+        pimpl_->hwnd_, pimpl_->min_max_handler_id_, &pimpl_->min_size_, &pimpl_->max_size_);
 
     // Trigger the window to re-evaluate its size constraints
     SetWindowPos(pimpl_->hwnd_, nullptr, 0, 0, 0, 0,
@@ -1020,8 +1020,8 @@ void Window::SetMaximumSize(Size size) {
   pimpl_->max_size_ = size;
 
   if (pimpl_->hwnd_) {
-    pimpl_->min_max_handler_id_ =
-        RegisterMinMaxInfoHandler(pimpl_->hwnd_, pimpl_->min_max_handler_id_);
+    pimpl_->min_max_handler_id_ = RegisterMinMaxInfoHandler(
+        pimpl_->hwnd_, pimpl_->min_max_handler_id_, &pimpl_->min_size_, &pimpl_->max_size_);
 
     // Trigger the window to re-evaluate its size constraints
     SetWindowPos(pimpl_->hwnd_, nullptr, 0, 0, 0, 0,

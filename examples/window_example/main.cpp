@@ -39,7 +39,7 @@ int main() {
   window_ptr->SetTitle("Window Example");
   window_ptr->SetSize({800, 600}, false);
   window_ptr->SetMinimumSize({400, 300});
-  window_ptr->SetMaximumSize({1920, 1080});
+  window_ptr->SetMaximumSize({1000, 700});
   window_ptr->Center();
 
   std::shared_ptr<TrayIcon> tray_icon_ptr = std::make_shared<TrayIcon>();
