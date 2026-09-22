@@ -23,6 +23,8 @@ target_link_libraries(your_app PRIVATE nativeapi)
 
 On Windows, configure with `-DNATIVEAPI_ENABLE_WINUI3=ON` to use the WinUI 3 backends for menus, dialogs, title bars and notifications — see [docs/winui3.md](docs/winui3.md).
 
+On Linux, window control policies depend on the window manager and decoration type — see [docs/linux-window-controls.md](docs/linux-window-controls.md) for supported behavior and compositor limitations.
+
 ## Quick Start
 
 ```cpp

@@ -16,6 +16,11 @@
 #include <functional>
 #include <gtk/gtk.h>
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#undef None  // Xlib macro conflicts with VisualEffect::None.
+#endif
+
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
 #endif
@@ -209,6 +214,193 @@ static GtkWidget* FindHeaderBar(GtkWidget* widget) {
   return nullptr;
 }
 
+// Requested WM capabilities belong to the native window, not a temporary wrapper.
+// X11 WMs may ignore the Motif hints; Wayland has no equivalent capabilities mask.
+static const char* kWindowControlsKey = "NativeAPIWindowControls";
+static const char* kHeaderLayoutKey = "NativeAPIWindowControlsLayout";
+struct WindowControls {
+  bool movable = true;
+  bool minimizable = true;
+  bool maximizable = true;
+  bool closable = true;  // Used only for a bare GdkWindow.
+  bool pending_maximize = false;
+  bool pending_minimize = false;
+};
+struct HeaderLayout {
+  explicit HeaderLayout(const gchar* value) : original(g_strdup(value)) {}
+  ~HeaderLayout() { g_free(original); }
+  gchar* original;
+};
+
+static void ApplyWindowControls(GtkWidget* widget,
+                                GdkWindow* surface,
+                                const WindowControls& controls) {
+  const bool gtk_window = widget && GTK_IS_WINDOW(widget);
+  if (gtk_window)
+    surface = gtk_widget_get_window(widget);
+  const auto state = surface ? gdk_window_get_state(surface) : static_cast<GdkWindowState>(0);
+  const bool closable =
+      gtk_window ? gtk_window_get_deletable(GTK_WINDOW(widget)) : controls.closable;
+  int functions = 0;
+  if (!gtk_window || gtk_window_get_resizable(GTK_WINDOW(widget)))
+    functions |= GDK_FUNC_RESIZE;
+  if (controls.movable)
+    functions |= GDK_FUNC_MOVE;
+  if (controls.minimizable || controls.pending_minimize || (state & GDK_WINDOW_STATE_ICONIFIED))
+    functions |= GDK_FUNC_MINIMIZE;
+  if (controls.maximizable || controls.pending_maximize || (state & GDK_WINDOW_STATE_MAXIMIZED))
+    functions |= GDK_FUNC_MAXIMIZE;
+  if (closable)
+    functions |= GDK_FUNC_CLOSE;
+  if (surface)
+    gdk_window_set_functions(surface, static_cast<GdkWMFunction>(functions));
+
+  // GTK uses decoration-layout for both explicit and automatically created CSD
+  // header bars. Filter the original layout, retaining button order and sides.
+  GtkWidget* header = nullptr;
+  if (gtk_window) {
+    struct Search {
+      GtkWidget* content;
+      GtkWidget* header = nullptr;
+    } search{gtk_bin_get_child(GTK_BIN(widget))};
+    // The automatic GTK title bar is an internal child, not get_titlebar().
+    // Exclude application content: it may contain unrelated GtkHeaderBars.
+    gtk_container_forall(GTK_CONTAINER(widget), +[](GtkWidget* child, gpointer data) {
+      auto* search = static_cast<Search*>(data);
+      if (child != search->content && !search->header) search->header = FindHeaderBar(child);
+    }, &search);
+    header = search.header;
+  }
+  if (!header)
+    return;
+  auto* original =
+      static_cast<HeaderLayout*>(g_object_get_data(G_OBJECT(header), kHeaderLayoutKey));
+  if (!original && controls.minimizable && controls.maximizable)
+    return;
+  if (!original) {
+    original = new HeaderLayout(gtk_header_bar_get_decoration_layout(GTK_HEADER_BAR(header)));
+    g_object_set_data_full(
+        G_OBJECT(header), kHeaderLayoutKey, original,
+        +[](gpointer data) { delete static_cast<HeaderLayout*>(data); });
+  }
+  gchar* settings_layout = nullptr;
+  const gchar* layout = original->original;
+  const bool filtered = !controls.minimizable || !controls.maximizable;
+  if (filtered && !layout) {
+    g_object_get(gtk_widget_get_settings(widget), "gtk-decoration-layout", &settings_layout,
+                 nullptr);
+    layout = settings_layout;
+  }
+  std::string result;
+  if (filtered && layout) {
+    gchar** sides = g_strsplit(layout, ":", 2);
+    for (int side = 0; sides[side]; ++side) {
+      if (side)
+        result += ':';
+      gchar** buttons = g_strsplit(sides[side], ",", -1);
+      bool first = true;
+      for (int i = 0; buttons[i]; ++i) {
+        if ((!controls.minimizable && g_str_equal(buttons[i], "minimize")) ||
+            (!controls.maximizable && g_str_equal(buttons[i], "maximize")))
+          continue;
+        if (!first)
+          result += ',';
+        result += buttons[i];
+        first = false;
+      }
+      g_strfreev(buttons);
+    }
+    g_strfreev(sides);
+  }
+  const gchar* desired = filtered ? result.c_str() : original->original;
+  if (g_strcmp0(gtk_header_bar_get_decoration_layout(GTK_HEADER_BAR(header)), desired) != 0) {
+    gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(header), desired);
+  }
+  g_free(settings_layout);
+}
+
+static WindowControls* GetWindowControls(GtkWidget* widget, GdkWindow* surface, bool create) {
+  GObject* object = widget ? G_OBJECT(widget) : surface ? G_OBJECT(surface) : nullptr;
+  if (!object)
+    return nullptr;
+  auto* controls = static_cast<WindowControls*>(g_object_get_data(object, kWindowControlsKey));
+  if (!controls && create) {
+    controls = new WindowControls;
+    g_object_set_data_full(
+        object, kWindowControlsKey, controls,
+        +[](gpointer data) { delete static_cast<WindowControls*>(data); });
+    if (widget && GTK_IS_WINDOW(widget)) {
+      auto update = +[](GtkWidget* widget, gpointer) {
+        auto* state =
+            static_cast<WindowControls*>(g_object_get_data(G_OBJECT(widget), kWindowControlsKey));
+        ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
+      };
+      g_signal_connect_after(widget, "map", G_CALLBACK(update), nullptr);
+      g_signal_connect_after(widget, "size-allocate",
+                             G_CALLBACK(+[](GtkWidget* widget, GtkAllocation*, gpointer) {
+                               auto* state = static_cast<WindowControls*>(
+                                   g_object_get_data(G_OBJECT(widget), kWindowControlsKey));
+                               ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
+                             }),
+                             nullptr);
+      g_signal_connect_after(
+          widget, "window-state-event",
+          G_CALLBACK(+[](GtkWidget* widget, GdkEventWindowState* event, gpointer) -> gboolean {
+            auto* state = static_cast<WindowControls*>(
+                g_object_get_data(G_OBJECT(widget), kWindowControlsKey));
+            if (event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED)
+              state->pending_maximize = false;
+            if (event->new_window_state & GDK_WINDOW_STATE_ICONIFIED)
+              state->pending_minimize = false;
+            ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
+            return FALSE;
+          }),
+          nullptr);
+      // set_deletable() rewrites the entire GDK functions mask, so reapply the
+      // combined state after GTK changes either native property.
+      auto notify = +[](GObject* object, GParamSpec*, gpointer) {
+        auto* widget = GTK_WIDGET(object);
+        auto* state = static_cast<WindowControls*>(g_object_get_data(object, kWindowControlsKey));
+        ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
+      };
+      g_signal_connect_after(widget, "notify::deletable", G_CALLBACK(notify), nullptr);
+      g_signal_connect_after(widget, "notify::resizable", G_CALLBACK(notify), nullptr);
+    }
+  }
+  return controls;
+}
+
+// Mutter also checks Motif functions for application requests. Permit an
+// explicit request until its state arrives; keep that function while in the
+// requested state so the WM does not undo it. Restoration reapplies the policy.
+static void AllowProgrammaticWindowControl(GtkWidget* widget, GdkWindow* surface, bool maximize) {
+  auto* controls = GetWindowControls(widget, surface, false);
+  if (!controls || (maximize ? controls->maximizable : controls->minimizable))
+    return;
+  if (maximize)
+    controls->pending_maximize = true;
+  else
+    controls->pending_minimize = true;
+  ApplyWindowControls(widget, surface, *controls);
+  // A compositor may reject the request. Do not leave a pending permission
+  // enabled indefinitely in that case. The source holds only the native object.
+  GObject* object = widget ? G_OBJECT(widget) : G_OBJECT(surface);
+  g_timeout_add_full(
+      G_PRIORITY_DEFAULT, 1000,
+      +[](gpointer data) -> gboolean {
+        auto* object = G_OBJECT(data);
+        auto* controls =
+            static_cast<WindowControls*>(g_object_get_data(object, kWindowControlsKey));
+        controls->pending_maximize = controls->pending_minimize = false;
+        auto* widget = GTK_IS_WIDGET(object) ? GTK_WIDGET(object) : nullptr;
+        auto* surface = widget ? gtk_widget_get_window(widget) : GDK_WINDOW(object);
+        if (surface && !gdk_window_is_destroyed(surface))
+          ApplyWindowControls(widget, surface, *controls);
+        return G_SOURCE_REMOVE;
+      },
+      g_object_ref(object), g_object_unref);
+}
+
 // Private implementation class
 class Window::Impl {
  public:
@@ -217,6 +409,113 @@ class Window::Impl {
         gdk_window_(gdk_window),
         title_bar_style_(TitleBarStyle::Normal),
         background_color_(Color::White) {}
+
+  ~Impl() {
+    if (hints_refresh_source_) {
+      g_source_remove(hints_refresh_source_);
+    }
+    if (hints_widget_) {
+      g_signal_handlers_disconnect_by_data(hints_widget_, this);
+      g_object_remove_weak_pointer(G_OBJECT(hints_widget_),
+                                   reinterpret_cast<gpointer*>(&hints_widget_));
+    }
+  }
+
+  void ApplyGeometryHints() {
+    if (widget_ && GTK_IS_WINDOW(widget_) && !hints_widget_) {
+      hints_widget_ = widget_;
+      g_object_add_weak_pointer(G_OBJECT(hints_widget_),
+                                reinterpret_cast<gpointer*>(&hints_widget_));
+      // Decorations are not measurable until mapping. Recompute after allocations
+      // too, since maximizing/restoring or changing the title bar changes them.
+      g_signal_connect_after(hints_widget_, "map", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+                               static_cast<Impl*>(data)->ScheduleGeometryHints();
+                             }),
+                             this);
+      g_signal_connect_after(hints_widget_, "size-allocate",
+                             G_CALLBACK(+[](GtkWidget*, GtkAllocation*, gpointer data) {
+                               static_cast<Impl*>(data)->ScheduleGeometryHints();
+                             }),
+                             this);
+    }
+
+    GdkGeometry geometry = {};
+    int flags = 0;
+    auto dimension = [](double value, int offset) {
+      return static_cast<gint>(std::clamp(value + offset, 1.0, static_cast<double>(G_MAXINT)));
+    };
+    if (minimum_size_.width > 0 || minimum_size_.height > 0) {
+      geometry.min_width =
+          minimum_size_.width > 0 ? dimension(minimum_size_.width, hint_width_offset_) : 0;
+      geometry.min_height =
+          minimum_size_.height > 0 ? dimension(minimum_size_.height, hint_height_offset_) : 0;
+      flags |= GDK_HINT_MIN_SIZE;
+    }
+    if (maximum_size_.width > 0 || maximum_size_.height > 0) {
+      geometry.max_width =
+          maximum_size_.width > 0 ? dimension(maximum_size_.width, hint_width_offset_) : G_MAXINT;
+      geometry.max_height = maximum_size_.height > 0
+                                ? dimension(maximum_size_.height, hint_height_offset_)
+                                : G_MAXINT;
+      flags |= GDK_HINT_MAX_SIZE;
+    }
+    if (aspect_ratio_ > 0) {
+      geometry.min_aspect = geometry.max_aspect = aspect_ratio_;
+      flags |= GDK_HINT_ASPECT;
+    }
+    // GTK keeps these hints across allocations; setting only GDK hints on a
+    // GtkWindow would let GTK overwrite them on its next resize.
+    if (hints_widget_) {
+      gtk_window_set_geometry_hints(GTK_WINDOW(hints_widget_), nullptr, &geometry,
+                                    static_cast<GdkWindowHints>(flags));
+    } else if (gdk_window_) {
+      gdk_window_set_geometry_hints(gdk_window_, &geometry, static_cast<GdkWindowHints>(flags));
+    }
+  }
+
+  void ScheduleGeometryHints() {
+    if (hints_refresh_source_) {
+      return;
+    }
+    // GTK finishes its resize bookkeeping after size-allocate. Updating hints
+    // inside that signal can lose the queued resize, and native frame extents
+    // can still describe the previous allocation. Wait until GTK has settled.
+    hints_refresh_source_ = g_idle_add(
+        +[](gpointer data) -> gboolean {
+          auto* self = static_cast<Impl*>(data);
+          self->hints_refresh_source_ = 0;
+          if (self->hints_widget_ && gtk_widget_get_realized(self->hints_widget_)) {
+            self->gdk_window_ = gtk_widget_get_window(self->hints_widget_);
+            self->RefreshGeometryHints();
+          }
+          return G_SOURCE_REMOVE;
+        },
+        this);
+  }
+
+  void RefreshGeometryHints() {
+    if (!gdk_window_ || !gdk_window_is_viewable(gdk_window_)) {
+      return;
+    }
+    const Layout layout = GetLayout(widget_, gdk_window_);
+    // Hints describe the GDK surface, whereas the API describes the visible
+    // frame: add CSD shadows, or subtract server-side decorations. The CSD
+    // title bar already belongs to both the surface and the public frame.
+    const int width = gdk_window_get_width(gdk_window_) - layout.frame.width;
+    const int height = gdk_window_get_height(gdk_window_) - layout.frame.height;
+    if (width != hint_width_offset_ || height != hint_height_offset_) {
+      hint_width_offset_ = width;
+      hint_height_offset_ = height;
+      ApplyGeometryHints();
+    }
+  }
+
+  guint hints_refresh_source_ = 0;
+  GtkWidget* hints_widget_ = nullptr;  // Weak; wrapped widgets may die before us.
+  Size minimum_size_ = {0, 0};
+  Size maximum_size_ = {-1, -1};
+  int hint_width_offset_ = 0;
+  int hint_height_offset_ = 0;
   GtkWidget* widget_;
   GdkWindow* gdk_window_;
   TitleBarStyle title_bar_style_;
@@ -373,8 +672,29 @@ bool Window::IsFocused() const {
   return gdk_window_get_state(pimpl_->gdk_window_) & GDK_WINDOW_STATE_FOCUSED;
 }
 
+// Present through GTK so both its iconify-on-map bookkeeping and the WM's
+// activation request agree. A bare GDK deiconify is ignored by Mutter.
+static void PresentWindow(GtkWidget* widget) {
+  auto* window = GTK_WINDOW(widget);
+  gtk_window_deiconify(window);
+  guint32 timestamp = gtk_get_current_event_time();
+#ifdef GDK_WINDOWING_X11
+  auto* surface = gtk_widget_get_window(widget);
+  if (timestamp == GDK_CURRENT_TIME && surface && GDK_IS_X11_WINDOW(surface)) {
+    // Calls from timers/FFI have no input event. Obtain X server time instead
+    // of reusing GTK's possibly stale last-user-interaction timestamp.
+    timestamp = gdk_x11_get_server_time(surface);
+  }
+#endif
+  // Wayland activation uses the compositor's input serial/token via GDK;
+  // an X timestamp (or a locally fabricated clock value) is not applicable.
+  gtk_window_present_with_time(window, timestamp);
+}
+
 void Window::Show() {
-  if (pimpl_->widget_) {
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    PresentWindow(pimpl_->widget_);
+  } else if (pimpl_->widget_) {
     gtk_widget_show(pimpl_->widget_);
   } else if (pimpl_->gdk_window_) {
     gdk_window_show(pimpl_->gdk_window_);
@@ -409,6 +729,7 @@ bool Window::IsVisible() const {
 
 void Window::Maximize() {
   if (pimpl_->gdk_window_) {
+    AllowProgrammaticWindowControl(pimpl_->widget_, pimpl_->gdk_window_, true);
     gdk_window_maximize(pimpl_->gdk_window_);
   }
 }
@@ -428,13 +749,17 @@ bool Window::IsMaximized() const {
 
 void Window::Minimize() {
   if (pimpl_->gdk_window_) {
+    AllowProgrammaticWindowControl(pimpl_->widget_, pimpl_->gdk_window_, false);
     gdk_window_iconify(pimpl_->gdk_window_);
   }
 }
 
 void Window::Restore() {
-  if (pimpl_->gdk_window_) {
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    PresentWindow(pimpl_->widget_);
+  } else if (pimpl_->gdk_window_) {
     gdk_window_deiconify(pimpl_->gdk_window_);
+    gdk_window_focus(pimpl_->gdk_window_, GDK_CURRENT_TIME);
   }
 }
 
@@ -498,6 +823,11 @@ void Window::SetContentSize(Size size) {
       size.height += linux_shadow::Get(pimpl_->widget_)->margin * 2;
     }
     GtkWindow* gtk_window = GTK_WINDOW(pimpl_->widget_);
+    if (!gtk_window_get_resizable(gtk_window)) {
+      // GTK derives a non-resizable window's fixed geometry from its default
+      // size. Updating only the resize request cannot shrink that geometry.
+      gtk_window_set_default_size(gtk_window, (gint)size.width, (gint)size.height);
+    }
     if (!gtk_widget_get_mapped(pimpl_->widget_)) {
       // Windows are realized as soon as they are created, and GTK then maps them at
       // whatever size the GdkWindow already has: a resize requested in between is
@@ -558,39 +888,25 @@ Rectangle Window::GetContentBounds() const {
 }
 
 void Window::SetMinimumSize(Size size) {
-  // GTK minimum size constraints would need to be set on the widget level
-  // For now, we'll provide a basic implementation that doesn't enforce
-  // constraints
+  pimpl_->minimum_size_ = size;
+  pimpl_->RefreshGeometryHints();
+  pimpl_->ApplyGeometryHints();
 }
 
 Size Window::GetMinimumSize() const {
-  return Size{0, 0};
+  return pimpl_->minimum_size_;
 }
 
 void Window::SetMaximumSize(Size size) {
-  // GTK maximum size constraints would need to be set on the widget level
-  // For now, we'll provide a basic implementation that doesn't enforce
-  // constraints
+  pimpl_->maximum_size_ = size;
+  pimpl_->RefreshGeometryHints();
+  pimpl_->ApplyGeometryHints();
 }
 
 void Window::SetAspectRatio(double aspect_ratio) {
   pimpl_->aspect_ratio_ = aspect_ratio > 0.0 ? aspect_ratio : 0.0;
-
-  GdkGeometry geometry = {};
-  GdkWindowHints hints = static_cast<GdkWindowHints>(0);
-  if (pimpl_->aspect_ratio_ > 0.0) {
-    geometry.min_aspect = pimpl_->aspect_ratio_;
-    geometry.max_aspect = pimpl_->aspect_ratio_;
-    hints = GDK_HINT_ASPECT;
-  }
-
-  // Prefer the GTK-level hints when we own a GtkWindow: GTK merges them with the
-  // hints it computes itself instead of overwriting them on the next allocation.
-  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
-    gtk_window_set_geometry_hints(GTK_WINDOW(pimpl_->widget_), nullptr, &geometry, hints);
-  } else if (pimpl_->gdk_window_) {
-    gdk_window_set_geometry_hints(pimpl_->gdk_window_, &geometry, hints);
-  }
+  pimpl_->RefreshGeometryHints();
+  pimpl_->ApplyGeometryHints();
 }
 
 double Window::GetAspectRatio() const {
@@ -598,43 +914,68 @@ double Window::GetAspectRatio() const {
 }
 
 Size Window::GetMaximumSize() const {
-  return Size{-1, -1};  // -1 indicates no maximum
+  return pimpl_->maximum_size_;
 }
 
 void Window::SetResizable(bool is_resizable) {
-  // This would typically be set at window creation time in GTK
-  // For now, provide stub implementation
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    auto* window = GTK_WINDOW(pimpl_->widget_);
+    if (!is_resizable && gtk_window_get_resizable(window)) {
+      // Preserve the current size rather than reverting to an old default when
+      // GTK computes the fixed-size hints. Use GTK's content coordinates so CSD
+      // title bars and shadows are accounted for exactly once.
+      gint width = 0;
+      gint height = 0;
+      gtk_window_get_size(window, &width, &height);
+      gtk_window_set_default_size(window, width, height);
+    }
+    gtk_window_set_resizable(window, is_resizable);
+  }
 }
 
 bool Window::IsResizable() const {
-  return true;  // Default assumption
+  return pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)
+             ? gtk_window_get_resizable(GTK_WINDOW(pimpl_->widget_))
+             : true;
 }
 
 void Window::SetMovable(bool is_movable) {
-  // Window movability is typically a window manager property
-  // Provide stub implementation
+  auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+  if (controls) {
+    controls->movable = is_movable;
+    ApplyWindowControls(pimpl_->widget_, pimpl_->gdk_window_, *controls);
+  }
 }
 
 bool Window::IsMovable() const {
-  return true;  // Default assumption
+  const auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+  return controls ? controls->movable : true;
 }
 
 void Window::SetMinimizable(bool is_minimizable) {
-  // This would typically be set via window hints
-  // Provide stub implementation
+  auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+  if (controls) {
+    controls->minimizable = is_minimizable;
+    ApplyWindowControls(pimpl_->widget_, pimpl_->gdk_window_, *controls);
+  }
 }
 
 bool Window::IsMinimizable() const {
-  return true;  // Default assumption
+  const auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+  return controls ? controls->minimizable : true;
 }
 
 void Window::SetMaximizable(bool is_maximizable) {
-  // This would typically be set via window hints
-  // Provide stub implementation
+  auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+  if (controls) {
+    controls->maximizable = is_maximizable;
+    ApplyWindowControls(pimpl_->widget_, pimpl_->gdk_window_, *controls);
+  }
 }
 
 bool Window::IsMaximizable() const {
-  return true;  // Default assumption
+  const auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+  return controls ? controls->maximizable : true;
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
@@ -646,12 +987,22 @@ bool Window::IsFullScreenable() const {
 }
 
 void Window::SetClosable(bool is_closable) {
-  // This would typically be set via window hints
-  // Provide stub implementation
+  auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+  if (controls) {
+    controls->closable = is_closable;
+    if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+      gtk_window_set_deletable(GTK_WINDOW(pimpl_->widget_), is_closable);
+    }
+    ApplyWindowControls(pimpl_->widget_, pimpl_->gdk_window_, *controls);
+  }
 }
 
 bool Window::IsClosable() const {
-  return true;  // Default assumption
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    return gtk_window_get_deletable(GTK_WINDOW(pimpl_->widget_));
+  }
+  const auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+  return controls ? controls->closable : true;
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {

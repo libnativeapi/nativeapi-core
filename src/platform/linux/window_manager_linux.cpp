@@ -20,6 +20,7 @@ namespace nativeapi {
 
 // Key to store/retrieve WindowId on GObjects (must match window_linux.cpp)
 static const char* kWindowIdKey = "NativeAPIWindowId";
+static const char* kObservedIconifiedKey = "NativeAPIObservedIconified";
 
 // Shared static variables for window ID mapping
 static std::unordered_map<GdkWindow*, WindowId> g_window_id_map;
@@ -338,8 +339,35 @@ static gboolean on_window_state_emission_hook(GSignalInvocationHint* ihint,
   const GdkWindowState changed = event->window_state.changed_mask;
   const GdkWindowState state = event->window_state.new_window_state;
   if (changed & GDK_WINDOW_STATE_ICONIFIED) {
-    g_window_signal_fn(g_window_signal_context, id,
-                       (state & GDK_WINDOW_STATE_ICONIFIED) ? "minimized" : "restored");
+    // GTK can queue a local deiconify followed by stale WM state during a
+    // hide/show cycle. Reconcile after queued events rather than publishing
+    // these intermediate states as a fake restore/minimize pair.
+    if (!g_object_get_data(G_OBJECT(widget), "NativeAPIIconifyReconcile")) {
+      const guint source = g_idle_add_full(
+          G_PRIORITY_DEFAULT_IDLE,
+          +[](gpointer data) -> gboolean {
+            auto* widget = GTK_WIDGET(data);
+            g_object_set_data(G_OBJECT(widget), "NativeAPIIconifyReconcile", nullptr);
+            auto* surface = gtk_widget_get_window(widget);
+            if (!surface || !g_window_signal_fn || !g_window_signal_context)
+              return G_SOURCE_REMOVE;
+            const auto state = gdk_window_get_state(surface);
+            if (state & GDK_WINDOW_STATE_WITHDRAWN)
+              return G_SOURCE_REMOVE;
+            const bool previous =
+                GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), kObservedIconifiedKey)) == 2;
+            const bool minimized = (state & GDK_WINDOW_STATE_ICONIFIED) != 0;
+            g_object_set_data(G_OBJECT(widget), kObservedIconifiedKey,
+                              GINT_TO_POINTER(minimized ? 2 : 1));
+            if (previous != minimized) {
+              g_window_signal_fn(g_window_signal_context, GetOrCreateWindowId(surface),
+                                 minimized ? "minimized" : "restored");
+            }
+            return G_SOURCE_REMOVE;
+          },
+          g_object_ref(widget), g_object_unref);
+      g_object_set_data(G_OBJECT(widget), "NativeAPIIconifyReconcile", GUINT_TO_POINTER(source));
+    }
   }
   // Minimizing a maximized window keeps the maximized bit, so it only changes
   // when the user really maximizes or unmaximizes.
@@ -500,6 +528,11 @@ class WindowManager::Impl {
       for (GList* l = toplevels; l != nullptr; l = l->next) {
         GtkWindow* gtk_window = GTK_WINDOW(l->data);
         InstallShowHideHooks(GTK_WIDGET(gtk_window));
+        if (auto* surface = gtk_widget_get_window(GTK_WIDGET(gtk_window))) {
+          const bool minimized = gdk_window_get_state(surface) & GDK_WINDOW_STATE_ICONIFIED;
+          g_object_set_data(G_OBJECT(gtk_window), kObservedIconifiedKey,
+                           GINT_TO_POINTER(minimized ? 2 : 1));
+        }
         SeedWindowGeometry(GTK_WIDGET(gtk_window));
         SeedShownWindow(GTK_WIDGET(gtk_window));
       }

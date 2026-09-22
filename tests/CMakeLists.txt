@@ -98,3 +98,46 @@ if(WIN32 AND NOT NATIVEAPI_ENABLE_WINUI3)
   add_executable(window_maximize_test window_maximize_test.cpp)
   target_link_libraries(window_maximize_test PRIVATE nativeapi)
 endif()
+
+# Explicit desktop test: temporarily switches the app theme and restores it.
+# Not registered with CTest because it needs an interactive desktop.
+if(WIN32)
+  add_executable(menu_theme_test menu_theme_test.cpp)
+  target_link_libraries(menu_theme_test PRIVATE nativeapi)
+endif()
+
+# Explicit desktop integration test; requires a running window manager.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_size_constraints_linux_test window_size_constraints_linux_test.cpp)
+  target_link_libraries(window_size_constraints_linux_test PRIVATE nativeapi)
+endif()
+
+if(WIN32)
+  add_executable(window_size_constraints_windows_test window_size_constraints_windows_test.cpp)
+  target_link_libraries(window_size_constraints_windows_test PRIVATE nativeapi)
+endif()
+
+# Explicit desktop integration test; requires a running window manager.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_resizable_linux_test window_resizable_linux_test.cpp)
+  target_link_libraries(window_resizable_linux_test PRIVATE nativeapi)
+endif()
+
+# Explicit desktop integration test; creates windows but sends no input.
+if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(window_resizable_desktop_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(window_resizable_desktop_test window_resizable_desktop_test.cpp)
+  target_link_libraries(window_resizable_desktop_test PRIVATE nativeapi)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_controls_linux_test window_controls_linux_test.cpp)
+  target_link_libraries(window_controls_linux_test PRIVATE nativeapi)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_restore_linux_test window_restore_linux_test.cpp)
+  target_link_libraries(window_restore_linux_test PRIVATE nativeapi)
+endif()
