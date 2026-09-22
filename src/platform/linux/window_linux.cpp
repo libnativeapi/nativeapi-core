@@ -460,7 +460,8 @@ class Window::Impl {
       flags |= GDK_HINT_MAX_SIZE;
     }
     if (aspect_ratio_ > 0) {
-      geometry.min_aspect = geometry.max_aspect = aspect_ratio_;
+      geometry.min_aspect = geometry.max_aspect =
+          surface_aspect_ratio_ > 0 ? surface_aspect_ratio_ : aspect_ratio_;
       flags |= GDK_HINT_ASPECT;
     }
     // GTK keeps these hints across allocations; setting only GDK hints on a
@@ -501,11 +502,28 @@ class Window::Impl {
     // Hints describe the GDK surface, whereas the API describes the visible
     // frame: add CSD shadows, or subtract server-side decorations. The CSD
     // title bar already belongs to both the surface and the public frame.
-    const int width = gdk_window_get_width(gdk_window_) - layout.frame.width;
-    const int height = gdk_window_get_height(gdk_window_) - layout.frame.height;
-    if (width != hint_width_offset_ || height != hint_height_offset_) {
+    const int surface_width = gdk_window_get_width(gdk_window_);
+    const int surface_height = gdk_window_get_height(gdk_window_);
+    const int width = surface_width - layout.frame.width;
+    const int height = surface_height - layout.frame.height;
+    // The API ratio is the content's, but GTK (client-side, on Wayland) and the
+    // X11 window manager apply GDK_HINT_ASPECT to the whole surface. With
+    // client-side decorations that includes the header bar and the shadow: a
+    // fixed extra size no constant surface ratio can describe. Use the surface
+    // ratio that gives the content the requested ratio at its current height,
+    // and follow every allocation, so a resize converges on the content ratio.
+    double surface_aspect_ratio = 0.0;
+    if (aspect_ratio_ > 0 && layout.content.height > 0) {
+      const double content_height = layout.content.height;
+      surface_aspect_ratio =
+          (aspect_ratio_ * content_height + (surface_width - layout.content.width)) /
+          (content_height + (surface_height - layout.content.height));
+    }
+    if (width != hint_width_offset_ || height != hint_height_offset_ ||
+        std::abs(surface_aspect_ratio - surface_aspect_ratio_) > 1e-4) {
       hint_width_offset_ = width;
       hint_height_offset_ = height;
+      surface_aspect_ratio_ = surface_aspect_ratio;
       ApplyGeometryHints();
     }
   }
@@ -516,6 +534,7 @@ class Window::Impl {
   Size maximum_size_ = {-1, -1};
   int hint_width_offset_ = 0;
   int hint_height_offset_ = 0;
+  double surface_aspect_ratio_ = 0.0;  // GDK_HINT_ASPECT; 0 until measured.
   GtkWidget* widget_;
   GdkWindow* gdk_window_;
   TitleBarStyle title_bar_style_;
@@ -905,6 +924,7 @@ void Window::SetMaximumSize(Size size) {
 
 void Window::SetAspectRatio(double aspect_ratio) {
   pimpl_->aspect_ratio_ = aspect_ratio > 0.0 ? aspect_ratio : 0.0;
+  pimpl_->surface_aspect_ratio_ = 0.0;  // Derived from the old ratio; re-measure.
   pimpl_->RefreshGeometryHints();
   pimpl_->ApplyGeometryHints();
 }

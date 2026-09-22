@@ -41,6 +41,7 @@ static const void* kWindowContentUnderTitleBarKey = &kWindowContentUnderTitleBar
 static const void* kWindowButtonsVisibleKey = &kWindowButtonsVisibleKey;
 static const void* kWindowVisualEffectKey = &kWindowVisualEffectKey;
 static const void* kWindowVisualEffectViewKey = &kWindowVisualEffectViewKey;
+static const void* kWindowAspectRatioKey = &kWindowAspectRatioKey;
 static const void* kWindowContentBackgroundKey = &kWindowContentBackgroundKey;
 
 // Also called by window_manager_macos.mm, for windows someone else shows.
@@ -94,6 +95,32 @@ static BOOL NativeApiWindowHasContentUnderTitleBar(NSWindow* window) {
 // A hidden title bar and a title bar the content has taken in are the same window: the
 // content view covers the frame and the bar draws nothing. They differ only in whether
 // the window buttons are left on it, which is applied separately.
+static double NativeApiGetAspectRatio(NSWindow* window) {
+  NSNumber* value = objc_getAssociatedObject(window, kWindowAspectRatioKey);
+  return value ? value.doubleValue : 0.0;
+}
+
+// The public ratio is the content's. With a full-size content view the content
+// covers the frame, so AppKit's frame ratio is the one to use; otherwise the
+// content ratio. The choice follows the title bar style, so it is re-made
+// whenever NSWindowStyleMaskFullSizeContentView changes.
+static void NativeApiApplyAspectRatio(NSWindow* window) {
+  // aspectRatio/resizeIncrements and contentAspectRatio/contentResizeIncrements
+  // are each mutually exclusive; resetting both increments clears both ratios.
+  window.resizeIncrements = NSMakeSize(1.0, 1.0);
+  window.contentResizeIncrements = NSMakeSize(1.0, 1.0);
+  const double aspect_ratio = NativeApiGetAspectRatio(window);
+  if (aspect_ratio <= 0.0) {
+    return;
+  }
+  const NSSize ratio = NSMakeSize(aspect_ratio, 1.0);
+  if (window.styleMask & NSWindowStyleMaskFullSizeContentView) {
+    window.aspectRatio = ratio;
+  } else {
+    window.contentAspectRatio = ratio;
+  }
+}
+
 static void NativeApiApplyTitleBarAppearance(NSWindow* window) {
   if (!window) {
     return;
@@ -124,6 +151,7 @@ static void NativeApiApplyTitleBarAppearance(NSWindow* window) {
   window.titleVisibility = full_size ? NSWindowTitleHidden : NSWindowTitleVisible;
   window.titlebarAppearsTransparent = full_size;
   [window setFrame:frame display:YES];
+  NativeApiApplyAspectRatio(window);
 }
 
 // Whether the window control buttons were last asked for; a window starts with them.
@@ -252,7 +280,6 @@ class Window::Impl {
       : id_(id), ns_window_(window) {}
   WindowId id_;
   NSWindow* ns_window_;
-  double aspect_ratio_ = 0.0;
 };
 
 Window::Window() : Window(nullptr) {}
@@ -457,24 +484,17 @@ void Window::SetMaximumSize(Size size) {
 }
 
 void Window::SetAspectRatio(double aspect_ratio) {
-  pimpl_->aspect_ratio_ = aspect_ratio > 0.0 ? aspect_ratio : 0.0;
   NSWindow* window = pimpl_->ns_window_;
-  if (pimpl_->aspect_ratio_ > 0.0) {
-    NSSize ratio = NSMakeSize(pimpl_->aspect_ratio_, 1.0);
-    if (window.styleMask & NSWindowStyleMaskFullSizeContentView) {
-      window.aspectRatio = ratio;
-    } else {
-      window.contentAspectRatio = ratio;
-    }
-  } else {
-    // aspectRatio and resizeIncrements are mutually exclusive; setting the
-    // increments back to 1x1 is how AppKit clears an aspect ratio constraint.
-    window.resizeIncrements = NSMakeSize(1.0, 1.0);
-  }
+  // Stored on the NSWindow, so every wrapper of it (and a later title bar style
+  // change) sees the same ratio.
+  objc_setAssociatedObject(window, kWindowAspectRatioKey,
+                           aspect_ratio > 0.0 ? @(aspect_ratio) : nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NativeApiApplyAspectRatio(window);
 }
 
 double Window::GetAspectRatio() const {
-  return pimpl_->aspect_ratio_;
+  return NativeApiGetAspectRatio(pimpl_->ns_window_);
 }
 
 Size Window::GetMaximumSize() const {
@@ -1026,7 +1046,7 @@ void Window::StartResizing(ResizeEdge edge) {
   const NSRect start_frame = [window frame];
   const NSSize min_size = [window minSize];
   const NSSize max_size = [window maxSize];
-  const double aspect_ratio = pimpl_->aspect_ratio_;
+  const double aspect_ratio = NativeApiGetAspectRatio(window);
 
   const NSEventMask mask = NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
   while (true) {

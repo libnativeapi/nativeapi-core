@@ -5,6 +5,8 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shobjidl.h>
+#include <algorithm>
+#include <climits>
 #include <cmath>
 #include <iostream>
 #include <optional>
@@ -867,39 +869,85 @@ static std::shared_ptr<Window> WindowFromHwnd(HWND hwnd) {
 
 // Helper function: registers a WM_SIZING handler that keeps user-driven
 // resizing at the window's aspect ratio. Returns the handler ID.
-static int RegisterAspectRatioHandler(HWND hwnd, int existing_handler_id) {
+//
+// The ratio applies to the client area, as on macOS and Linux: the non-client
+// size (title bar, borders; zero when the client takes the whole frame) is taken
+// off the tracking rectangle first and added back afterwards. Like the min/max
+// handler, it reads the state of the wrapper that installed it, whose destructor
+// unregisters it; WindowRegistry may hold a different wrapper for the HWND.
+static int RegisterAspectRatioHandler(HWND hwnd,
+                                      int existing_handler_id,
+                                      const double* aspect_ratio,
+                                      const Size* minimum,
+                                      const Size* maximum) {
   if (existing_handler_id != 0) {
     return existing_handler_id;
   }
   if (!hwnd || !IsWindow(hwnd)) {
     return 0;
   }
-  auto& dispatcher = WindowMessageDispatcher::GetInstance();
-  return dispatcher.RegisterHandler(
+  return WindowMessageDispatcher::GetInstance().RegisterHandler(
       hwnd,
-      [](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> std::optional<LRESULT> {
-        if (msg != WM_SIZING) {
-          return std::nullopt;
-        }
-        auto window = WindowFromHwnd(hwnd);
-        if (!window) {
-          return std::nullopt;
-        }
-        const double aspect_ratio = window->GetAspectRatio();
+      [aspect_ratio, minimum, maximum](HWND hwnd, UINT msg, WPARAM wparam,
+                                       LPARAM lparam) -> std::optional<LRESULT> {
+        const double ratio = *aspect_ratio;
         RECT* rect = reinterpret_cast<RECT*>(lparam);
-        if (aspect_ratio <= 0.0 || !rect) {
+        if (msg != WM_SIZING || ratio <= 0.0 || !rect) {
           return std::nullopt;
         }
+        RECT window_rect = {};
+        RECT client_rect = {};
+        if (!GetWindowRect(hwnd, &window_rect) || !GetClientRect(hwnd, &client_rect)) {
+          return std::nullopt;
+        }
+        const LONG extra_width =
+            (window_rect.right - window_rect.left) - (client_rect.right - client_rect.left);
+        const LONG extra_height =
+            (window_rect.bottom - window_rect.top) - (client_rect.bottom - client_rect.top);
+
+        // Minimum and maximum sizes are frame sizes (WM_GETMINMAXINFO) and still
+        // win over the ratio; where one clips the derived side, derive the other
+        // side back from it so the ratio holds whenever the limits allow.
+        double scale = GetScaleFactorForWindow(hwnd);
+        if (scale <= 0.0) {
+          scale = 1.0;
+        }
+        auto limit = [scale](double value, double fallback) {
+          return value > 0 ? static_cast<LONG>(std::lround(value * scale))
+                           : static_cast<LONG>(fallback);
+        };
+        const LONG min_width = limit(minimum->width, 0);
+        const LONG min_height = limit(minimum->height, 0);
+        const LONG max_width = limit(maximum->width, LONG_MAX);
+        const LONG max_height = limit(maximum->height, LONG_MAX);
+        auto height_for = [&](LONG width) {
+          return static_cast<LONG>(std::lround((width - extra_width) / ratio)) + extra_height;
+        };
+        auto width_for = [&](LONG height) {
+          return static_cast<LONG>(std::lround((height - extra_height) * ratio)) + extra_width;
+        };
 
         LONG width = rect->right - rect->left;
         LONG height = rect->bottom - rect->top;
         // Pure vertical edges derive width from height; everything else derives
         // height from width.
         if (wparam == WMSZ_TOP || wparam == WMSZ_BOTTOM) {
-          width = static_cast<LONG>(std::lround(height * aspect_ratio));
+          width = width_for(height);
+          const LONG clamped = std::clamp(width, min_width, max_width);
+          if (clamped != width) {
+            width = clamped;
+            height = height_for(width);
+          }
         } else {
-          height = static_cast<LONG>(std::lround(width / aspect_ratio));
+          height = height_for(width);
+          const LONG clamped = std::clamp(height, min_height, max_height);
+          if (clamped != height) {
+            height = clamped;
+            width = width_for(height);
+          }
         }
+        width = std::clamp(width, min_width, max_width);
+        height = std::clamp(height, min_height, max_height);
 
         // Grow away from the edge being dragged so the opposite edge stays put.
         switch (wparam) {
@@ -1032,8 +1080,9 @@ void Window::SetMaximumSize(Size size) {
 void Window::SetAspectRatio(double aspect_ratio) {
   pimpl_->aspect_ratio_ = aspect_ratio > 0.0 ? aspect_ratio : 0.0;
   if (pimpl_->hwnd_ && pimpl_->aspect_ratio_ > 0.0) {
-    pimpl_->aspect_ratio_handler_id_ =
-        RegisterAspectRatioHandler(pimpl_->hwnd_, pimpl_->aspect_ratio_handler_id_);
+    pimpl_->aspect_ratio_handler_id_ = RegisterAspectRatioHandler(
+        pimpl_->hwnd_, pimpl_->aspect_ratio_handler_id_, &pimpl_->aspect_ratio_,
+        &pimpl_->min_size_, &pimpl_->max_size_);
   }
 }
 

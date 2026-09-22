@@ -456,15 +456,19 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @param aspect_ratio Desired width divided by height, e.g. 16.0 / 9.0.
    *        Values of 0 or less remove the constraint.
    *
-   * The constraint applies while the user drags a window edge; it does not
-   * change the current size and is not enforced by SetSize() or SetBounds().
+   * The ratio applies to the content area (the title bar and borders are not
+   * counted) while the user drags a window edge. It does not change the current
+   * size and is not enforced by SetSize(), SetContentSize() or SetBounds().
    * Minimum and maximum sizes still apply on top of the ratio.
    *
    * @note Platform availability:
-   * - macOS: ✅ Fully supported - The ratio is applied to the content area.
-   * - Windows: ✅ Fully supported - The ratio is applied to the outer frame.
-   * - Linux: ✅ Fully supported - Applied via GDK aspect geometry hints; the
-   *   window manager decides how strictly they are honored.
+   * - macOS: ✅ Fully supported
+   * - Windows: ✅ Fully supported
+   * - Linux: ⚠️ Partial - Applied via GDK aspect geometry hints, which the
+   *   window manager may honor loosely. GTK also applies them to programmatic
+   *   resizes, so SetSize(), SetContentSize() and SetBounds() are adjusted to
+   *   the ratio while one is set. With client-side decorations the content
+   *   ratio can be off by a pixel after a resize.
    * - Android: ❌ Not applicable - Always ignored
    * - iOS: ❌ Not applicable - Always ignored
    * - OpenHarmony: ❌ Not applicable - Always ignored

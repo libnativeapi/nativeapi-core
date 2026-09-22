@@ -141,3 +141,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_restore_linux_test window_restore_linux_test.cpp)
   target_link_libraries(window_restore_linux_test PRIVATE nativeapi)
 endif()
+
+# Explicit desktop integration test; creates windows but sends no input.
+if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(window_aspect_ratio_desktop_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(window_aspect_ratio_desktop_test window_aspect_ratio_desktop_test.cpp)
+  target_link_libraries(window_aspect_ratio_desktop_test PRIVATE nativeapi)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_aspect_ratio_linux_test window_aspect_ratio_linux_test.cpp)
+  target_link_libraries(window_aspect_ratio_linux_test PRIVATE nativeapi)
+endif()
