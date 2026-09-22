@@ -10,6 +10,7 @@
 #include "../../image.h"
 #include "../../menu.h"
 #include "../../window.h"
+#include "application_theme_windows.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 #include "window_message_dispatcher.h"
@@ -18,6 +19,120 @@
 #endif
 
 namespace nativeapi {
+
+namespace {
+
+// Classic popup menus require the undocumented UxTheme dark-mode opt-in; DWM's
+// title-bar setting does not affect them. Resolve it only on Windows 10 1903+
+// (including Windows 11): ordinal 135 had a different signature in 1809.
+class MenuThemeScope {
+ public:
+  explicit MenuThemeScope(HWND window) : window_(window) {
+    const auto& api = GetApi();
+    if (!api.module)
+      return;
+
+    HIGHCONTRASTW contrast = {sizeof(contrast)};
+    const bool allow_dark =
+        SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0) &&
+        !(contrast.dwFlags & HCF_HIGHCONTRASTON);
+
+    AppMode mode = AppMode::Default;
+    if (allow_dark) {
+      switch (application_brightness.load()) {
+        case Brightness::Light:
+          mode = AppMode::ForceLight;
+          break;
+        case Brightness::Dark:
+          mode = AppMode::ForceDark;
+          break;
+        case Brightness::System:
+          mode = AppMode::AllowDark;
+          break;
+      }
+    }
+    previous_mode_ = api.set_mode(mode);
+    previous_window_dark_ = api.is_window_dark(window_);
+    api.allow_window_dark(window_, allow_dark);
+    // Read the current preference on every open, including when a host does not
+    // forward WM_SETTINGCHANGE to nativeapi (e.g. a tray-only application).
+    api.refresh_policy();
+    api.flush_menus();
+  }
+
+  ~MenuThemeScope() {
+    const auto& api = GetApi();
+    if (!api.module)
+      return;
+    api.allow_window_dark(window_, previous_window_dark_);
+    api.set_mode(previous_mode_);
+    api.flush_menus();
+  }
+
+  MenuThemeScope(const MenuThemeScope&) = delete;
+  MenuThemeScope& operator=(const MenuThemeScope&) = delete;
+
+ private:
+  enum class AppMode { Default, AllowDark, ForceDark, ForceLight };
+  struct Api {
+    HMODULE module = nullptr;
+    AppMode(WINAPI* set_mode)(AppMode) = nullptr;
+    bool(WINAPI* allow_window_dark)(HWND, bool) = nullptr;
+    bool(WINAPI* is_window_dark)(HWND) = nullptr;
+    void(WINAPI* refresh_policy)() = nullptr;
+    void(WINAPI* flush_menus)() = nullptr;
+
+    Api() {
+      using GetVersion = void(WINAPI*)(DWORD*, DWORD*, DWORD*);
+      const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+      if (!ntdll)
+        return;
+      const auto get_version =
+          reinterpret_cast<GetVersion>(GetProcAddress(ntdll, "RtlGetNtVersionNumbers"));
+      if (!get_version)
+        return;
+      DWORD major = 0, minor = 0, build = 0;
+      get_version(&major, &minor, &build);
+      build &= 0x0fffffff;
+      if (major != 10 || minor != 0 || build < 18362)
+        return;
+
+      module = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+      if (!module)
+        return;
+      set_mode =
+          reinterpret_cast<decltype(set_mode)>(GetProcAddress(module, MAKEINTRESOURCEA(135)));
+      allow_window_dark = reinterpret_cast<decltype(allow_window_dark)>(
+          GetProcAddress(module, MAKEINTRESOURCEA(133)));
+      is_window_dark =
+          reinterpret_cast<decltype(is_window_dark)>(GetProcAddress(module, MAKEINTRESOURCEA(137)));
+      refresh_policy =
+          reinterpret_cast<decltype(refresh_policy)>(GetProcAddress(module, MAKEINTRESOURCEA(104)));
+      flush_menus =
+          reinterpret_cast<decltype(flush_menus)>(GetProcAddress(module, MAKEINTRESOURCEA(136)));
+      if (!set_mode || !allow_window_dark || !is_window_dark || !refresh_policy || !flush_menus) {
+        FreeLibrary(module);
+        module = nullptr;
+      }
+    }
+
+    ~Api() {
+      if (module)
+        FreeLibrary(module);
+    }
+  };
+
+  static const Api& GetApi() {
+    static const Api api;
+    return api;
+  }
+
+  HWND window_;
+  AppMode previous_mode_ = AppMode::Default;
+  bool previous_window_dark_ = false;
+};
+
+}  // namespace
 
 HICON ImageToHICON(const Image* image, int width, int height);
 
@@ -889,8 +1004,14 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
   // returns, keeps every menu event inside the Open() call.
   pimpl_->opening_ = true;
   pimpl_->shown_ = false;
-  const UINT cmd = static_cast<UINT>(TrackPopupMenu(
-      pimpl_->hmenu_, uFlags | TPM_RETURNCMD, pt.x, pt.y, 0, host_window, nullptr));
+  UINT cmd;
+  {
+    // Scope the process-wide opt-in to the native modal menu loop and restore
+    // the embedding application's policy before dispatching its click callback.
+    MenuThemeScope theme(host_window);
+    cmd = static_cast<UINT>(TrackPopupMenu(
+        pimpl_->hmenu_, uFlags | TPM_RETURNCMD, pt.x, pt.y, 0, host_window, nullptr));
+  }
   pimpl_->opening_ = false;
   // With TPM_RETURNCMD, 0 means "dismissed without a pick" or "failed".
   // WM_INITMENUPOPUP tells them apart: a menu that never appeared is a failure.

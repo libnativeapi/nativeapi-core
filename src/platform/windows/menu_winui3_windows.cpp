@@ -1,4 +1,5 @@
 #include "menu_winui3_windows.h"
+#include "application_theme_windows.h"
 #include "winui3_runtime_windows.h"
 #undef GetCurrentTime
 
@@ -214,6 +215,17 @@ bool WinUI3MenuSession::Open(Menu& menu, HWND owner, POINT anchor, Placement pla
     impl.source.SiteBridge().MoveAndResize({0, 0, 1, 1});
     impl.source.SiteBridge().Show();
     impl.root = C::Grid();
+    switch (application_brightness.load()) {
+      case Brightness::Light:
+        impl.root.RequestedTheme(X::ElementTheme::Light);
+        break;
+      case Brightness::Dark:
+        impl.root.RequestedTheme(X::ElementTheme::Dark);
+        break;
+      case Brightness::System:
+        impl.root.RequestedTheme(X::ElementTheme::Default);
+        break;
+    }
     impl.root.Width(1);
     impl.root.Height(1);
     impl.source.Content(impl.root);

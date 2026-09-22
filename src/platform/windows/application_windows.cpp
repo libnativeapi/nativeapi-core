@@ -12,6 +12,7 @@
 #include "../../application.h"
 #include "../../menu.h"
 #include "../../window_manager.h"
+#include "application_theme_windows.h"
 #include "string_utils_windows.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -271,6 +272,7 @@ class Application::Impl {
   }
 
   bool SetBrightness(Brightness brightness) {
+    application_brightness.store(brightness);
     BOOL dark;
     switch (brightness) {
       case Brightness::Light:
@@ -285,20 +287,31 @@ class Application::Impl {
         break;
     }
 
-    bool ok = true;
-    for (const auto& window : WindowManager::GetInstance().GetAll()) {
-      HWND hwnd = static_cast<HWND>(window->GetNativeObject());
-      if (!hwnd || !IsWindow(hwnd)) {
-        continue;
-      }
-      HRESULT hr = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-      if (FAILED(hr)) {
-        hr = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &dark,
-                                   sizeof(dark));
-      }
-      ok = ok && SUCCEEDED(hr);
-    }
-    return ok;
+    struct ThemeUpdate {
+      BOOL dark;
+      bool ok = true;
+    } update{dark};
+    // Enumerate this application's actual top-level HWNDs directly. GetAll()
+    // includes other processes and creates wrappers; message-only menu hosts
+    // have no DWM frame and must not participate in this update.
+    EnumWindows(
+        [](HWND hwnd, LPARAM data) -> BOOL {
+          DWORD process_id = 0;
+          GetWindowThreadProcessId(hwnd, &process_id);
+          if (process_id != GetCurrentProcessId())
+            return TRUE;
+          auto& update = *reinterpret_cast<ThemeUpdate*>(data);
+          HRESULT hr = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &update.dark,
+                                             sizeof(update.dark));
+          if (FAILED(hr)) {
+            hr = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
+                                       &update.dark, sizeof(update.dark));
+          }
+          update.ok = update.ok && SUCCEEDED(hr);
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&update));
+    return update.ok;
   }
 
   bool SetMenuBar(std::shared_ptr<Menu> menu) {
