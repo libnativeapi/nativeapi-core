@@ -39,6 +39,11 @@ add_executable(shortcut_accelerator_test shortcut_accelerator_test.cpp)
 target_link_libraries(shortcut_accelerator_test PRIVATE nativeapi)
 add_test(NAME shortcut_accelerator_test COMMAND shortcut_accelerator_test)
 
+add_executable(callback_lifetime_test callback_lifetime_test.cpp)
+target_link_libraries(callback_lifetime_test PRIVATE nativeapi)
+add_test(NAME callback_lifetime_test COMMAND callback_lifetime_test)
+set_tests_properties(callback_lifetime_test PROPERTIES TIMEOUT 20)
+
 # The registry side of launch-at-login: the Run value, the StartupApproved flag that
 # Task Manager toggles, and a non-ASCII identifier. Writes only under HKCU, under a
 # test-only identifier, and removes what it writes.
