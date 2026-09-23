@@ -901,14 +901,18 @@ bool WindowManager::HasWillHideHook() const {
 }
 
 void WindowManager::HandleWillShow(WindowId id) {
-  if (pimpl_->will_show_hook_) {
-    (*pimpl_->will_show_hook_)(id);
+  // The hook may replace or clear itself. Keep this invocation alive.
+  auto hook = pimpl_->will_show_hook_;
+  if (hook) {
+    (*hook)(id);
   }
 }
 
 void WindowManager::HandleWillHide(WindowId id) {
-  if (pimpl_->will_hide_hook_) {
-    (*pimpl_->will_hide_hook_)(id);
+  // The hook may replace or clear itself. Keep this invocation alive.
+  auto hook = pimpl_->will_hide_hook_;
+  if (hook) {
+    (*hook)(id);
   }
 }
 

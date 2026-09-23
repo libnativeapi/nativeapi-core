@@ -89,6 +89,11 @@ bool ShortcutManager::Unregister(ShortcutId id) {
   shortcuts_by_id_.erase(it);
   shortcuts_by_accelerator_.erase(accelerator);
 
+  // Destroying captured objects may re-enter the manager. Do it outside the lock.
+  lock.unlock();
+  // Retained handles must not invoke a callback after its registration ends.
+  shortcut->SetCallback(nullptr);
+
   // Emit event
   EmitAsync<ShortcutUnregisteredEvent>(id, accelerator);
 

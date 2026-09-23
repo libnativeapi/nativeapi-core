@@ -49,8 +49,10 @@ bool Shortcut::IsEnabled() const {
 }
 
 void Shortcut::Invoke() {
-  if (enabled_ && callback_) {
-    callback_();
+  // A callback may replace or clear itself while it is executing.
+  auto callback = callback_;
+  if (enabled_ && callback) {
+    callback();
   }
 }
 
