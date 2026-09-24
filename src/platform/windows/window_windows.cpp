@@ -314,6 +314,15 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
     const LRESULT top = TopResizeHit(hwnd, lp);
     return top != 0 ? top : hit;
   }
+  if (message == WM_NCACTIVATE) {
+    // A window with a region has no DWM frame, so an activation change repaints the
+    // classic caption, over the content that took its place. lParam -1 keeps the
+    // activation handling but skips that repaint.
+    HRGN region = CreateRectRgn(0, 0, 0, 0);
+    const bool shaped = region && GetWindowRgn(hwnd, region) != ERROR;
+    if (region) DeleteObject(region);
+    if (shaped) return DefSubclassProc(hwnd, message, wp, -1);
+  }
   return std::nullopt;
 }
 #endif
@@ -346,7 +355,8 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     return result;
   }
 #ifndef NATIVEAPI_ENABLE_WINUI3
-  if (message == WM_NCCALCSIZE || message == WM_NCHITTEST || message == WM_PARENTNOTIFY) {
+  if (message == WM_NCCALCSIZE || message == WM_NCHITTEST || message == WM_PARENTNOTIFY ||
+      message == WM_NCACTIVATE) {
     if (auto handled = HandleHiddenTitleBarFrame(hwnd, message, wp, lp)) return *handled;
   }
 #endif
@@ -1786,15 +1796,15 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
   HWND hwnd = pimpl_->hwnd_;
   if (!IsWindow(hwnd)) return false;
   if (!shape) {
-    if (!SetWindowRgn(hwnd, nullptr, TRUE)) return false;
+    if (!SetWindowRgn(hwnd, nullptr, FALSE)) return false;
     if (HasShadow() && GetTitleBarStyle() == TitleBarStyle::Hidden) shape_shadow::Refresh(hwnd);
     else shape_shadow::Clear(hwnd);
     // A changed top-level region can invalidate child composition surfaces
     // without requesting their paint (e.g. Flutter's view). Repaint the whole
     // hierarchy so retained content is visible without another user interaction.
     // Let WM_PAINT run normally: a synchronous paint here can precede the
-    // embedding framework's pending layout/frame update.
-    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    // embedding framework's pending layout/frame update. No erase: see below.
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
     return true;
   }
   if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden) return false;
@@ -1810,7 +1820,12 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
   }
   HRGN region = CreatePolygonRgn(points.data(), static_cast<int>(points.size()), ALTERNATE);
   if (!region) return false;
-  if (!SetWindowRgn(hwnd, region, TRUE)) {
+  // No redraw from SetWindowRgn itself: it erases what the new region exposes, and a
+  // window whose content comes from a child swap chain (Flutter's view) shows that
+  // erased area white until the child presents again, which during an animated
+  // contour is a white flash on every frame the region grows. The children are
+  // invalidated below without an erase instead.
+  if (!SetWindowRgn(hwnd, region, FALSE)) {
     DeleteObject(region);
     return false;
   }
@@ -1821,7 +1836,7 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
     if (copy && GetWindowRgn(hwnd, copy) != ERROR) shape_shadow::Update(hwnd, copy, scale);
     if (copy) DeleteObject(copy);
   }
-  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
   return true;
 }
 
