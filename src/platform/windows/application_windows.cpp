@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../../application.h"
+#include "../../foundation/dispatcher.h"
 #include "../../menu.h"
 #include "../../window_manager.h"
 #include "application_theme_windows.h"
@@ -410,6 +411,9 @@ Application::~Application() {
 }
 
 int Application::Run() {
+  // Run() is on the main thread by definition: prime the dispatcher here, so
+  // a Quit() from a worker thread has a window to post to.
+  (void)IsMainThread();
   running_ = true;
 
   // Start the platform-specific main event loop
@@ -428,6 +432,8 @@ int Application::Run(std::shared_ptr<Window> window) {
     return -1;  // Invalid window
   }
 
+  // See Run() above.
+  (void)IsMainThread();
   running_ = true;
 
   // Start the platform-specific main event loop with window
@@ -442,13 +448,26 @@ int Application::Run(std::shared_ptr<Window> window) {
 }
 
 void Application::Quit(int exit_code) {
+  // The loop, and every listener, lives on the main thread; a quit requested
+  // from another thread is carried over there.
+  if (!IsMainThread() && RunOnMainThread([this, exit_code] { Quit(exit_code); })) {
+    return;
+  }
+
   exit_code_ = exit_code;
 
-  // Emit quit requested event
+  // A QuitRequested listener may itself call Quit(): record its exit code and
+  // let the outer call finish, instead of recursing.
+  static bool announcing = false;
+  if (announcing) {
+    return;
+  }
+  announcing = true;
   Emit<ApplicationQuitRequestedEvent>();
+  announcing = false;
 
-  // Request platform-specific quit
-  pimpl_->Quit(exit_code);
+  // Request platform-specific quit, with the last exit code asked for
+  pimpl_->Quit(exit_code_);
 }
 
 bool Application::IsRunning() const {

@@ -143,11 +143,11 @@ class Application : public EventEmitter<ApplicationEvent> {
   /**
    * @brief Run the application main event loop
    *
-   * Starts the main event loop and blocks until the application exits.
+   * Starts the main event loop and blocks until Quit() stops it.
    * This method handles platform-specific event processing and coordination
    * between different managers.
    *
-   * @return Exit code of the application (0 for success)
+   * @return The exit code passed to Quit()
    *
    * @code
    * auto& app = Application::GetInstance();
@@ -159,12 +159,12 @@ class Application : public EventEmitter<ApplicationEvent> {
   /**
    * @brief Run the application with the specified window
    *
-   * Starts the main event loop with the given window and blocks until the
-   * application exits. This method sets the window as the primary window
+   * Starts the main event loop with the given window and blocks until
+   * Quit() stops it. This method sets the window as the primary window
    * and starts the event loop.
    *
    * @param window The window to run the application with
-   * @return Exit code of the application (0 for success)
+   * @return The exit code passed to Quit(), or -1 when @p window is null
    *
    * @code
    * auto& app = Application::GetInstance();
@@ -177,8 +177,20 @@ class Application : public EventEmitter<ApplicationEvent> {
   /**
    * @brief Request the application to quit
    *
-   * Initiates the application shutdown process. This method emits an
-   * ApplicationQuitRequestedEvent and begins the cleanup process.
+   * Emits ApplicationQuitRequestedEvent, then stops the event loop: Run()
+   * returns @p exit_code after emitting ApplicationExitingEvent, and the
+   * process keeps going. Windows stay open until released. Callable from any
+   * thread: the request is carried over to the main thread, where the events
+   * are emitted.
+   *
+   * When the loop is not Run()'s own (a host such as a Flutter runner owns
+   * it), there is nothing to return to and the process ends instead; on
+   * macOS it goes through -[NSApplication terminate:], which exits with
+   * status 0 whatever @p exit_code is.
+   *
+   * A quit the user or the system starts outside Quit() (Cmd+Q, logout) also
+   * emits ApplicationQuitRequestedEvent. On macOS it cannot be vetoed and
+   * ends the process without Run() returning.
    *
    * @param exit_code The exit code to use when quitting (default: 0)
    *

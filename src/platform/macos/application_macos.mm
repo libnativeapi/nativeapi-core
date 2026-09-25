@@ -7,11 +7,16 @@
 #include <vector>
 
 #include "../../application.h"
+#include "../../foundation/dispatcher.h"
 #include "../../menu.h"
 #include "../../window_manager.h"
 
 @interface NativeApplicationDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, assign) nativeapi::Application* app;
+// Set by Application::Quit() before it hands termination to AppKit, which
+// already emitted ApplicationQuitRequestedEvent and knows the exit code.
+@property(nonatomic, assign) BOOL quitRequested;
+@property(nonatomic, assign) int exitCode;
 @end
 
 @implementation NativeApplicationDelegate
@@ -23,8 +28,8 @@
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
-  // Emit application exiting event
-  nativeapi::ApplicationExitingEvent event(0);
+  // AppKit is about to exit() the process: Run() will not return to emit this.
+  nativeapi::ApplicationExitingEvent event(self.exitCode);
   self.app->Emit(event);
 }
 
@@ -41,11 +46,14 @@
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
-  // Emit quit requested event
-  nativeapi::ApplicationQuitRequestedEvent event;
-  self.app->Emit(event);
+  // Cmd+Q, the Dock's Quit, logout: the request did not come through
+  // Application::Quit(), which has already announced itself.
+  if (!self.quitRequested) {
+    nativeapi::ApplicationQuitRequestedEvent event;
+    self.app->Emit(event);
+  }
 
-  // Allow termination
+  // Allow termination. Cancelling here would also cancel a logout or shutdown.
   return NSTerminateNow;
 }
 
@@ -82,10 +90,10 @@ class Application::Impl {
   }
 
   int Run() {
-    // Start the main event loop
+    // Start the main event loop; Quit() stops it.
     [NSApp run];
 
-    return 0;
+    return app_->exit_code_;
   }
 
   int Run(std::shared_ptr<Window> window) {
@@ -100,13 +108,38 @@ class Application::Impl {
     window->Show();
     window->Focus();
 
-    // Start the main event loop
+    // Start the main event loop; Quit() stops it.
     [NSApp run];
 
-    return 0;
+    return app_->exit_code_;
   }
 
-  void Quit(int exit_code) { [NSApp terminate:nil]; }
+  void Quit(int exit_code) {
+    if (app_->running_) {
+      // Our Run() owns the loop: stop it so Run() returns the exit code.
+      // -stop: only takes effect after the loop handles one more event, so
+      // post one in case the queue is empty.
+      [NSApp stop:nil];
+      NSEvent* wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                         location:NSZeroPoint
+                                    modifierFlags:0
+                                        timestamp:0
+                                     windowNumber:0
+                                          context:nil
+                                          subtype:0
+                                            data1:0
+                                            data2:0];
+      [NSApp postEvent:wake atStart:YES];
+      return;
+    }
+
+    // Someone else runs the loop (a Flutter runner, a host pumping it by
+    // hand): end the process the way AppKit does. -terminate: exits with
+    // status 0; the exit code only reaches ApplicationExitingEvent.
+    delegate_.quitRequested = YES;
+    delegate_.exitCode = exit_code;
+    [NSApp terminate:nil];
+  }
 
   bool SetIcon(const std::string& icon_path) {
     if (icon_path.empty()) {
@@ -254,6 +287,7 @@ Application::~Application() {
 
 int Application::Run() {
   running_ = true;
+  exit_code_ = 0;
 
   // Start the platform-specific main event loop
   int result = pimpl_->Run();
@@ -272,6 +306,7 @@ int Application::Run(std::shared_ptr<Window> window) {
   }
 
   running_ = true;
+  exit_code_ = 0;
 
   // Start the platform-specific main event loop with window
   int result = pimpl_->Run(window);
@@ -285,13 +320,26 @@ int Application::Run(std::shared_ptr<Window> window) {
 }
 
 void Application::Quit(int exit_code) {
+  // The loop, and every listener, lives on the main thread; a quit requested
+  // from another thread is carried over there.
+  if (!IsMainThread() && RunOnMainThread([this, exit_code] { Quit(exit_code); })) {
+    return;
+  }
+
   exit_code_ = exit_code;
 
-  // Emit quit requested event
+  // A QuitRequested listener may itself call Quit(): record its exit code and
+  // let the outer call finish, instead of recursing.
+  static bool announcing = false;
+  if (announcing) {
+    return;
+  }
+  announcing = true;
   Emit<ApplicationQuitRequestedEvent>();
+  announcing = false;
 
-  // Request platform-specific quit
-  pimpl_->Quit(exit_code);
+  // Request platform-specific quit, with the last exit code asked for
+  pimpl_->Quit(exit_code_);
 }
 
 bool Application::IsRunning() const {

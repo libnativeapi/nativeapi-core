@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../../application.h"
+#include "../../foundation/dispatcher.h"
 #include "../../menu.h"
 #include "../../window_manager.h"
 
@@ -25,8 +26,14 @@ class Application::Impl {
     // Initialize GTK
     gtk_init(nullptr, nullptr);
 
-    // Create GTK application with default ID
-    gtk_app_ = gtk_application_new("com.nativeapi.application", G_APPLICATION_DEFAULT_FLAGS);
+    // Create GTK application with default ID. G_APPLICATION_DEFAULT_FLAGS is
+    // GLib 2.74+; older distributions (and manylinux wheels) spell it _NONE.
+#if GLIB_CHECK_VERSION(2, 74, 0)
+    constexpr GApplicationFlags kFlags = G_APPLICATION_DEFAULT_FLAGS;
+#else
+    constexpr GApplicationFlags kFlags = G_APPLICATION_FLAGS_NONE;
+#endif
+    gtk_app_ = gtk_application_new("com.nativeapi.application", kFlags);
 
     if (!gtk_app_) {
       return false;
@@ -39,7 +46,6 @@ class Application::Impl {
     // Connect to GTK application signals
     g_signal_connect(gtk_app_, "startup", G_CALLBACK(OnStartup), this);
     g_signal_connect(gtk_app_, "activate", G_CALLBACK(OnActivate), this);
-    g_signal_connect(gtk_app_, "shutdown", G_CALLBACK(OnShutdown), this);
 
     return true;
   }
@@ -55,7 +61,8 @@ class Application::Impl {
     // Run the GTK main loop
     int status = g_application_run(G_APPLICATION(gtk_app_), 0, nullptr);
 
-    return status;
+    // g_application_quit() carries no status; Quit() recorded it.
+    return status != 0 ? status : app_->exit_code_;
   }
 
   int Run(std::shared_ptr<Window> window) {
@@ -87,7 +94,8 @@ class Application::Impl {
     // Run the GTK main loop
     int status = g_application_run(G_APPLICATION(gtk_app_), 0, nullptr);
 
-    return status;
+    // g_application_quit() carries no status; Quit() recorded it.
+    return status != 0 ? status : app_->exit_code_;
   }
 
   void Quit(int exit_code) { g_application_quit(G_APPLICATION(gtk_app_)); }
@@ -278,14 +286,6 @@ class Application::Impl {
     ApplicationActivatedEvent event;
     impl->app_->Emit(event);
   }
-
-  static void OnShutdown(GApplication* app, gpointer user_data) {
-    Impl* impl = static_cast<Impl*>(user_data);
-
-    // Emit application exiting event
-    ApplicationExitingEvent event(0);
-    impl->app_->Emit(event);
-  }
 };
 
 Application::Application()
@@ -304,6 +304,7 @@ Application::~Application() {
 
 int Application::Run() {
   running_ = true;
+  exit_code_ = 0;
 
   // Start the platform-specific main event loop
   int result = pimpl_->Run();
@@ -322,6 +323,7 @@ int Application::Run(std::shared_ptr<Window> window) {
   }
 
   running_ = true;
+  exit_code_ = 0;
 
   // Start the platform-specific main event loop with window
   int result = pimpl_->Run(window);
@@ -335,13 +337,26 @@ int Application::Run(std::shared_ptr<Window> window) {
 }
 
 void Application::Quit(int exit_code) {
+  // The loop, and every listener, lives on the main thread; a quit requested
+  // from another thread is carried over there.
+  if (!IsMainThread() && RunOnMainThread([this, exit_code] { Quit(exit_code); })) {
+    return;
+  }
+
   exit_code_ = exit_code;
 
-  // Emit quit requested event
+  // A QuitRequested listener may itself call Quit(): record its exit code and
+  // let the outer call finish, instead of recursing.
+  static bool announcing = false;
+  if (announcing) {
+    return;
+  }
+  announcing = true;
   Emit<ApplicationQuitRequestedEvent>();
+  announcing = false;
 
-  // Request platform-specific quit
-  pimpl_->Quit(exit_code);
+  // Request platform-specific quit, with the last exit code asked for
+  pimpl_->Quit(exit_code_);
 }
 
 bool Application::IsRunning() const {
