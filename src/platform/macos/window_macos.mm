@@ -276,8 +276,21 @@ namespace nativeapi {
 // Private implementation class
 class Window::Impl {
  public:
-  Impl(WindowId id, NSWindow* window)
-      : id_(id), ns_window_(window) {}
+  // Every wrapper keeps its NSWindow alive: a handle can outlive the window
+  // being closed, and AppKit releases a closed window unless someone else
+  // still holds it. Under ARC the strong member already does that.
+  Impl(WindowId id, NSWindow* window) : id_(id), ns_window_(window) {
+#if !__has_feature(objc_arc)
+    [ns_window_ retain];
+#endif
+  }
+  ~Impl() {
+#if !__has_feature(objc_arc)
+    [ns_window_ release];
+#endif
+  }
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
   WindowId id_;
   NSWindow* ns_window_;
 };

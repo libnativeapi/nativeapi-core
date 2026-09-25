@@ -16,6 +16,15 @@
 
 // External declaration of kWindowIdKey (defined in window_macos.mm)
 extern const void* kWindowIdKey;
+
+// Set on an NSWindow once it has closed. Handles to it stay valid, but it is
+// no longer one of the application's windows, and GetAll() must not register
+// it again — the registry would then keep it alive for good.
+static const void* kWindowClosedKey = &kWindowClosedKey;
+
+static bool NativeApiWindowIsClosed(NSWindow* window) {
+  return objc_getAssociatedObject(window, kWindowClosedKey) != nil;
+}
 // Attaches a window that became visible to its pending parent (window_macos.mm)
 void NativeApiAttachPendingParentWindow(NSWindow* window);
 
@@ -311,7 +320,13 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
         WindowClosedEvent event(closing_id);
         manager_->DispatchWindowEvent(event);
       }
+      // After the event, so its listeners can still look the window up. The
+      // registry is a cache of wrappers, not an owner: from here on the
+      // window is gone for WindowManager::Get() and GetAll(), while handles
+      // that callers still hold keep working on the closed window.
+      WindowRegistry::GetInstance().Remove(closing_id);
     }
+    objc_setAssociatedObject(window, kWindowClosedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return;
   }
 
@@ -320,6 +335,11 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
   // Report only what WindowManager::GetAll() would return.
   if (![[[NSApplication sharedApplication] windows] containsObject:window]) {
     return;
+  }
+
+  // A closed window that is shown again is back among the application's.
+  if ([window isVisible] && NativeApiWindowIsClosed(window)) {
+    objc_setAssociatedObject(window, kWindowClosedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
 
   WindowId window_id = ResolveWindowId(window);
@@ -426,6 +446,7 @@ std::vector<std::shared_ptr<Window>> WindowManager::GetAll() {
   // First, ensure all NSWindows are registered
   for (NSWindow* ns_window in ns_windows) {
     if ([ns_window isKindOfClass:NSClassFromString(@"NativeApiShadowWindow")]) continue;
+    if (NativeApiWindowIsClosed(ns_window)) continue;
     // Create or get Window wrapper - this will handle ID assignment via associated object
     auto window = std::make_shared<Window>((__bridge void*)ns_window);
     WindowId window_id = window->GetId();
@@ -436,8 +457,19 @@ std::vector<std::shared_ptr<Window>> WindowManager::GetAll() {
     }
   }
 
-  // Then return all windows from registry (which now includes all NSWindows)
-  return WindowRegistry::GetInstance().GetAll();
+  // Then return the registered wrappers of exactly those windows. The registry
+  // itself can still hold windows that went away without a close
+  // notification; those are not the application's windows any more.
+  std::vector<std::shared_ptr<Window>> windows;
+  for (NSWindow* ns_window in ns_windows) {
+    if (NativeApiWindowIsClosed(ns_window)) continue;
+    NSNumber* window_id = objc_getAssociatedObject(ns_window, kWindowIdKey);
+    if (auto window = window_id ? WindowRegistry::GetInstance().Get([window_id unsignedLongLongValue])
+                                : nullptr) {
+      windows.push_back(window);
+    }
+  }
+  return windows;
 }
 
 std::shared_ptr<Window> WindowManager::GetCurrent() {
