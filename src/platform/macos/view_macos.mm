@@ -20,6 +20,67 @@
 
 @end
 
+namespace {
+
+// The bridge is the delegate only while the view listens (HookControl), so a
+// field that nobody listens to reports nothing.
+NativeApiViewBridge* ListeningBridge(NSTextField* field) {
+  id delegate = field.delegate;
+  if (![delegate isKindOfClass:[NativeApiViewBridge class]]) {
+    return nil;
+  }
+  NativeApiViewBridge* bridge = delegate;
+  return bridge.impl ? bridge : nil;
+}
+
+void ReportFocus(NSTextField* field, bool focused) {
+  NativeApiViewBridge* bridge = ListeningBridge(field);
+  if (!bridge) {
+    return;
+  }
+  if (focused) {
+    bridge.impl->Emit(nativeapi::ViewFocusedEvent(bridge.impl->id));
+  } else {
+    bridge.impl->Emit(nativeapi::ViewBlurredEvent(bridge.impl->id));
+  }
+}
+
+}  // namespace
+
+@implementation NativeApiTextField
+
+- (BOOL)becomeFirstResponder {
+  BOOL became = [super becomeFirstResponder];
+  if (became) {
+    ReportFocus(self, true);
+  }
+  return became;
+}
+
+- (void)textDidEndEditing:(NSNotification*)notification {
+  [super textDidEndEditing:notification];
+  ReportFocus(self, false);
+}
+
+@end
+
+@implementation NativeApiSecureTextField
+
+- (BOOL)becomeFirstResponder {
+  BOOL became = [super becomeFirstResponder];
+  if (became) {
+    ReportFocus(self, true);
+  }
+  return became;
+}
+
+- (void)textDidEndEditing:(NSNotification*)notification {
+  [super textDidEndEditing:notification];
+  ReportFocus(self, false);
+}
+
+@end
+
 @implementation NativeApiViewBridge
 
 - (void)buttonClicked:(id)sender {
@@ -35,18 +96,6 @@
   NSTextField* field = notification.object;
   self.impl->Emit(nativeapi::TextFieldChangedEvent(
       self.impl->id, std::string([field.stringValue UTF8String] ?: "")));
-}
-
-- (void)controlTextDidBeginEditing:(NSNotification*)notification {
-  if (self.impl) {
-    self.impl->Emit(nativeapi::ViewFocusedEvent(self.impl->id));
-  }
-}
-
-- (void)controlTextDidEndEditing:(NSNotification*)notification {
-  if (self.impl) {
-    self.impl->Emit(nativeapi::ViewBlurredEvent(self.impl->id));
-  }
 }
 
 - (BOOL)control:(NSControl*)control
@@ -100,6 +149,7 @@ void View::Impl::Platform::HookControl() {
   if (!bridge) {
     bridge = [[NativeApiViewBridge alloc] init];
   }
+  bridge.impl = impl;
   bridge.multiline = multiline;
   if ([view isKindOfClass:[NSButton class]]) {
     NSButton* button = (NSButton*)view;
@@ -111,6 +161,7 @@ void View::Impl::Platform::HookControl() {
 }
 
 void View::Impl::Platform::UnhookControl() {
+  bridge.impl = nullptr;
   if ([view isKindOfClass:[NSButton class]]) {
     NSButton* button = (NSButton*)view;
     if (button.target == bridge) {

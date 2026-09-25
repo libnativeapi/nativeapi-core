@@ -26,6 +26,14 @@ class View;
 @interface NativeApiContainerView : NSView
 @end
 
+/// Text fields that report focus themselves. The delegate's begin / end editing
+/// callbacks only come once the user types; focus arrives earlier, when the
+/// field becomes first responder, and leaves when its field editor ends.
+@interface NativeApiTextField : NSTextField
+@end
+@interface NativeApiSecureTextField : NSSecureTextField
+@end
+
 namespace nativeapi {
 
 struct View::Impl::Platform {

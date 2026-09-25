@@ -43,8 +43,8 @@ NSTextField* MakeLabel(const std::string& text) {
 }
 
 NSTextField* MakeTextField(bool secure) {
-  NSTextField* field = secure ? [[NSSecureTextField alloc] initWithFrame:NSZeroRect]
-                              : [[NSTextField alloc] initWithFrame:NSZeroRect];
+  NSTextField* field = secure ? [[NativeApiSecureTextField alloc] initWithFrame:NSZeroRect]
+                              : [[NativeApiTextField alloc] initWithFrame:NSZeroRect];
   field.editable = YES;
   field.selectable = YES;
   field.bezeled = YES;
