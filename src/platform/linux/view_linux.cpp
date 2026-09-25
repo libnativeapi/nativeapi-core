@@ -109,9 +109,21 @@ gboolean OnFocusOut(GtkWidget*, GdkEventFocus*, gpointer data) {
   return FALSE;
 }
 
+gboolean RelayoutRootWhenIdle(gpointer data) {
+  auto* impl = static_cast<Impl*>(data);
+  impl->platform->relayout_source_id = 0;
+  impl->OnNativeResized();
+  return G_SOURCE_REMOVE;
+}
+
 /// A root's "size-allocate": lays the tree out again when the size changed.
-/// The relayout itself moves and resizes children, which queues another
-/// allocation; the size comparison is what stops that from looping.
+///
+/// Not from inside the handler: GTK is in the middle of an allocation pass
+/// there, and the size requests the relayout sets on nested containers (a Row
+/// growing with the window) are only queued, not applied, so their children
+/// end up outside their parent's old allocation — undrawn and unclickable. An
+/// idle callback runs the relayout in a fresh layout cycle. The size
+/// comparison stops the allocation that relayout causes from looping.
 void OnRootSizeAllocate(GtkWidget*, GtkAllocation* allocation, gpointer data) {
   auto* impl = static_cast<Impl*>(data);
   auto& platform = *impl->platform;
@@ -121,7 +133,10 @@ void OnRootSizeAllocate(GtkWidget*, GtkAllocation* allocation, gpointer data) {
   }
   platform.last_width = allocation->width;
   platform.last_height = allocation->height;
-  impl->OnNativeResized();
+  if (platform.relayout_source_id == 0) {
+    platform.relayout_source_id =
+        g_idle_add_full(G_PRIORITY_HIGH_IDLE, RelayoutRootWhenIdle, impl, nullptr);
+  }
 }
 
 /// GtkFixed paints no background of its own; render the one the stylesheet
@@ -163,6 +178,10 @@ View::Impl::Platform::Platform(Impl* impl, GtkWidget* widget, bool owned)
 }
 
 View::Impl::Platform::~Platform() {
+  if (relayout_source_id) {
+    g_source_remove(relayout_source_id);
+    relayout_source_id = 0;
+  }
   UnhookControl();
   if (widget) {
     DisconnectSignal(widget, size_allocate_id);
@@ -665,6 +684,10 @@ void View::Impl::ObserveNativeResize(bool observe) {
         g_signal_connect_after(widget, "size-allocate", G_CALLBACK(OnRootSizeAllocate), this);
   } else if (!observe) {
     DisconnectSignal(widget, platform->size_allocate_id);
+    if (platform->relayout_source_id) {
+      g_source_remove(platform->relayout_source_id);
+      platform->relayout_source_id = 0;
+    }
   }
 }
 

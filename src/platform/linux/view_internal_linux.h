@@ -46,6 +46,8 @@ struct View::Impl::Platform {
   gulong focus_in_id = 0;
   gulong focus_out_id = 0;
   gulong size_allocate_id = 0;
+  /// Idle source of a relayout the root's size-allocate asked for; 0 if none.
+  guint relayout_source_id = 0;
   gulong draw_id = 0;
   /// The last size "size-allocate" reported on a root, so a pass that only
   /// moved the widget does not lay the tree out again.
