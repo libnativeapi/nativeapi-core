@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
@@ -42,14 +43,14 @@ struct IdTypeTag;
 template <typename T, typename = void>
 struct HandleTypeChain {
   using Root = T;
-  static constexpr size_t kDepth = 1;
+  static constexpr std::size_t kDepth = 1;
   static constexpr void Fill(uint32_t* tags) { tags[0] = IdTypeTag<T>::value; }
 };
 template <typename T>
 struct HandleTypeChain<T, std::void_t<typename IdTypeTag<T>::Base>> {
   using Parent = HandleTypeChain<typename IdTypeTag<T>::Base>;
   using Root = typename Parent::Root;
-  static constexpr size_t kDepth = Parent::kDepth + 1;
+  static constexpr std::size_t kDepth = Parent::kDepth + 1;
   static constexpr void Fill(uint32_t* tags) {
     tags[0] = IdTypeTag<T>::value;
     Parent::Fill(tags + 1);
