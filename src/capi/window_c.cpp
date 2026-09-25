@@ -22,6 +22,8 @@
 #include "window_shape_c.h"
 #include "../window_shadow.h"
 #include "window_shadow_c.h"
+#include "../view.h"
+#include "view_c.h"
 #include "../window.h"
 
 native_window_t native_window_create(void) {
@@ -53,6 +55,19 @@ native_window_id_t native_window_get_id(native_window_t window) {
     return self->GetId();
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_id");
+    return 0;
+  }
+}
+
+native_view_t native_window_get_content_view(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return nativeapi::HandleTable::GetInstance().Insert(self->GetContentView());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_content_view");
     return 0;
   }
 }

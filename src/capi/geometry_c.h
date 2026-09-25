@@ -35,6 +35,19 @@ typedef struct {
   double height;
 } native_rectangle_t;
 
+typedef struct {
+  double top;
+  double right;
+  double bottom;
+  double left;
+} native_edge_insets_t;
+
+FFI_PLUGIN_EXPORT
+native_edge_insets_t native_edge_insets_all(double value);
+
+FFI_PLUGIN_EXPORT
+native_edge_insets_t native_edge_insets_symmetric(double vertical, double horizontal);
+
 #ifdef __cplusplus
 }
 #endif
@@ -52,6 +65,8 @@ inline native_size_t to_c_size(const nativeapi::Size& value);
 inline nativeapi::Size to_cpp_size(const native_size_t& value);
 inline native_rectangle_t to_c_rectangle(const nativeapi::Rectangle& value);
 inline nativeapi::Rectangle to_cpp_rectangle(const native_rectangle_t& value);
+inline native_edge_insets_t to_c_edge_insets(const nativeapi::EdgeInsets& value);
+inline nativeapi::EdgeInsets to_cpp_edge_insets(const native_edge_insets_t& value);
 
 inline native_point_t to_c_point(const nativeapi::Point& value) {
   native_point_t result = {};
@@ -96,6 +111,24 @@ inline nativeapi::Rectangle to_cpp_rectangle(const native_rectangle_t& value) {
   result.y = value.y;
   result.width = value.width;
   result.height = value.height;
+  return result;
+}
+
+inline native_edge_insets_t to_c_edge_insets(const nativeapi::EdgeInsets& value) {
+  native_edge_insets_t result = {};
+  result.top = value.top;
+  result.right = value.right;
+  result.bottom = value.bottom;
+  result.left = value.left;
+  return result;
+}
+
+inline nativeapi::EdgeInsets to_cpp_edge_insets(const native_edge_insets_t& value) {
+  nativeapi::EdgeInsets result = {};
+  result.top = value.top;
+  result.right = value.right;
+  result.bottom = value.bottom;
+  result.left = value.left;
   return result;
 }
 

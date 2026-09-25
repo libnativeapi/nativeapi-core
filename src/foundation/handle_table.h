@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -66,8 +67,15 @@ class HandleTable {
     if (!object) {
       return kInvalidHandle;
     }
-    return InsertErased(std::static_pointer_cast<void>(std::move(object)),
-                        IdTypeTag<T>::value);
+    using Chain = HandleTypeChain<T>;
+    static_assert(Chain::kDepth <= kMaxTypeDepth, "IdTypeTag base chain too deep");
+    TypeTags tags{};
+    Chain::Fill(tags.data());
+    // Stored as a pointer to the ROOT of the type's base chain, so that a
+    // Resolve<Base>() can cast it without knowing the concrete type.
+    auto root = std::static_pointer_cast<typename Chain::Root>(std::move(object));
+    return InsertErased(std::static_pointer_cast<void>(std::move(root)), tags,
+                        static_cast<uint8_t>(Chain::kDepth));
   }
 
   /**
@@ -77,8 +85,8 @@ class HandleTable {
    * releases the handle concurrently — which is precisely the guarantee the old
    * raw-pointer handles could not make.
    *
-   * @return nullptr if the handle is stale, unknown, or refers to a different
-   *         type than @p T.
+   * @return nullptr if the handle is stale, unknown, or refers to a type that
+   *         is neither @p T nor derived from it (per the IdTypeTag base chain).
    */
   template <typename T>
   std::shared_ptr<T> Resolve(HandleValue handle) const {
@@ -86,9 +94,10 @@ class HandleTable {
     if (!erased) {
       return nullptr;
     }
-    // Safe: the type tag check above proves this slot was filled by
-    // Insert<T>(), so the stored pointer really is a T*.
-    return std::static_pointer_cast<T>(std::move(erased));
+    // Safe: the tag check proves the slot holds a T or a type derived from it,
+    // and Insert() stored the pointer cast to the chain's root, which T shares.
+    using Root = typename HandleTypeChain<T>::Root;
+    return std::static_pointer_cast<T>(std::static_pointer_cast<Root>(std::move(erased)));
   }
 
   /**
@@ -106,8 +115,12 @@ class HandleTable {
   /** @brief Whether @p handle currently resolves, ignoring type. */
   bool Contains(HandleValue handle) const;
 
-  /** @brief Type tag stored for @p handle, or 0 if it does not resolve. */
+  /** @brief Concrete type tag stored for @p handle, or 0 if it does not resolve. */
   uint32_t GetTypeTag(HandleValue handle) const;
+
+  /// Longest IdTypeTag base chain a slot can record.
+  static constexpr size_t kMaxTypeDepth = 4;
+  using TypeTags = std::array<uint32_t, kMaxTypeDepth>;
 
   /** @brief Number of live handles. Intended for tests and leak checks. */
   size_t LiveCount() const;
@@ -132,11 +145,24 @@ class HandleTable {
     /// Odd/even is not used; a slot is live iff `object` is non-null.
     /// Starts at 1 so that Encode(0, 0) == kInvalidHandle is unreachable.
     uint32_t generation = 1;
-    uint32_t type_tag = 0;
+    /// Concrete tag first, then each base up the chain; `depth` entries are valid.
+    TypeTags type_tags{};
+    uint8_t depth = 0;
     std::shared_ptr<void> object;
+
+    uint32_t type_tag() const { return depth ? type_tags[0] : 0u; }
+    bool IsA(uint32_t tag) const {
+      for (uint8_t i = 0; i < depth; ++i) {
+        if (type_tags[i] == tag) {
+          return true;
+        }
+      }
+      return false;
+    }
   };
 
-  HandleValue InsertErased(std::shared_ptr<void> object, uint32_t type_tag);
+  HandleValue InsertErased(std::shared_ptr<void> object, const TypeTags& type_tags,
+                           uint8_t depth);
   std::shared_ptr<void> ResolveErased(HandleValue handle, uint32_t type_tag) const;
 
   /// Caller must hold mutex_. Returns nullptr if the handle does not resolve.

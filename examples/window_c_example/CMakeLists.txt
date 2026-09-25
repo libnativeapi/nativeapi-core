@@ -23,6 +23,6 @@ set_target_properties(window_c_example PROPERTIES
 if(APPLE)
     set_source_files_properties("main.cpp"
     PROPERTIES
-    COMPILE_FLAGS "-x objective-c++"
+    COMPILE_FLAGS "-x objective-c++ -std=gnu++17"
   )
 endif()

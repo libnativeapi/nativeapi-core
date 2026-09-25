@@ -9,6 +9,7 @@
 
 namespace nativeapi {
 
+class View;
 class WindowShape;
 class WindowShadow;
 
@@ -213,6 +214,22 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @return WindowId The unique identifier assigned to this window
    */
   WindowId GetId() const;
+
+  // === Content view ===
+
+  /**
+   * @brief Gets the view filling the window's content area.
+   *
+   * Created on first call and cached: the same instance is returned for the
+   * life of the window. It wraps the window's existing content view (a Flutter
+   * or GPUI view when a host framework owns the window), so subviews added to
+   * it sit on top of that content. Its frame follows the content area;
+   * View::SetFrame() on it is ignored.
+   *
+   * @return The root view, or nullptr when View::IsSupported() is false or
+   *         the native window is gone.
+   */
+  std::shared_ptr<View> GetContentView() const;
 
   // === Focus Management ===
 
@@ -1270,6 +1287,11 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
 
   /** @brief Pointer to the platform-specific implementation */
   std::unique_ptr<Impl> pimpl_;
+
+  // Shared by every platform's GetContentView(): wraps the native content view
+  // once and hands the same View back afterwards (view.cpp).
+  std::shared_ptr<View> ContentViewFor(void* native_content_view) const;
+  mutable std::shared_ptr<View> content_view_;
 };
 
 // ---------------------------------------------------------------------------

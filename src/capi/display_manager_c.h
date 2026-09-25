@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_display_t;
+
 #include "display_c.h"
 #include "geometry_c.h"
 

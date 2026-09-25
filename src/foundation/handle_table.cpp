@@ -7,7 +7,8 @@ HandleTable& HandleTable::GetInstance() {
   return instance;
 }
 
-HandleValue HandleTable::InsertErased(std::shared_ptr<void> object, uint32_t type_tag) {
+HandleValue HandleTable::InsertErased(std::shared_ptr<void> object, const TypeTags& type_tags,
+                                      uint8_t depth) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   uint32_t slot_index;
@@ -20,7 +21,8 @@ HandleValue HandleTable::InsertErased(std::shared_ptr<void> object, uint32_t typ
   }
 
   Slot& slot = slots_[slot_index];
-  slot.type_tag = type_tag;
+  slot.type_tags = type_tags;
+  slot.depth = depth;
   slot.object = std::move(object);
 
   return Encode(slot.generation, slot_index);
@@ -53,8 +55,8 @@ std::shared_ptr<void> HandleTable::ResolveErased(HandleValue handle, uint32_t ty
   if (!slot) {
     return nullptr;
   }
-  if (slot->type_tag != type_tag) {
-    return nullptr;  // Handle confusion: right slot, wrong type.
+  if (!slot->IsA(type_tag)) {
+    return nullptr;  // Handle confusion: right slot, unrelated type.
   }
 
   // Returning a copy, not a reference: the caller's strong reference must
@@ -80,7 +82,8 @@ bool HandleTable::Release(HandleValue handle) {
 
     doomed = std::move(slot.object);
     slot.object = nullptr;
-    slot.type_tag = 0;
+    slot.type_tags = {};
+    slot.depth = 0;
 
     // Invalidate every outstanding handle to this slot. Skip 0 on wraparound so
     // Encode(generation, 0) can never equal kInvalidHandle.
@@ -103,7 +106,7 @@ bool HandleTable::Contains(HandleValue handle) const {
 uint32_t HandleTable::GetTypeTag(HandleValue handle) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const Slot* slot = FindLiveSlotLocked(handle);
-  return slot ? slot->type_tag : 0u;
+  return slot ? slot->type_tag() : 0u;
 }
 
 size_t HandleTable::LiveCount() const {

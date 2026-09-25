@@ -59,6 +59,25 @@ struct IdTypeTag<SelfReleasingThing> {
   static constexpr uint32_t value = 202;
 };
 
+/// A small single-inheritance chain, mirroring View -> Button.
+struct FakeBase {
+  virtual ~FakeBase() = default;
+  virtual int Kind() const { return 0; }
+};
+struct FakeDerived : FakeBase {
+  int Kind() const override { return 1; }
+  int extra = 77;
+};
+template <>
+struct IdTypeTag<FakeBase> {
+  static constexpr uint32_t value = 203;
+};
+template <>
+struct IdTypeTag<FakeDerived> {
+  static constexpr uint32_t value = 204;
+  using Base = FakeBase;
+};
+
 }  // namespace nativeapi
 
 namespace {
@@ -175,6 +194,38 @@ void TestTypeConfusionRejected() {
   Check(Table().GetTypeTag(widget) == IdTypeTag<FakeWidget>::value, "type tag is readable");
 
   Table().Release(widget);
+}
+
+// A handle to a derived type resolves as its base, but a base handle never
+// resolves as a derived type and unrelated types stay rejected.
+void TestDerivedHandleResolvesAsBase() {
+  std::cout << "[safety] derived handle upcasts" << std::endl;
+
+  const auto derived = Table().Insert(std::make_shared<FakeDerived>());
+  auto as_base = Table().Resolve<FakeBase>(derived);
+  Check(as_base != nullptr, "derived handle resolves as its base");
+  Check(as_base && as_base->Kind() == 1, "the base pointer still reaches the derived object");
+  auto as_derived = Table().Resolve<FakeDerived>(derived);
+  Check(as_derived && as_derived->extra == 77, "derived handle resolves as itself");
+  Check(Table().Resolve<FakeWidget>(derived) == nullptr, "unrelated type is still rejected");
+  Check(Table().GetTypeTag(derived) == IdTypeTag<FakeDerived>::value,
+        "the concrete tag is reported");
+
+  const auto base = Table().Insert(std::make_shared<FakeBase>());
+  Check(Table().Resolve<FakeDerived>(base) == nullptr, "base handle never downcasts");
+  Check(Table().Resolve<FakeBase>(base) != nullptr, "base handle resolves as base");
+
+  // A derived object inserted through a base pointer is tagged as the base.
+  std::shared_ptr<FakeBase> upcast = std::make_shared<FakeDerived>();
+  const auto via_base = Table().Insert(upcast);
+  Check(Table().GetTypeTag(via_base) == IdTypeTag<FakeBase>::value,
+        "inserting through the base pointer tags it as the base");
+  Check(Table().Resolve<FakeDerived>(via_base) == nullptr,
+        "and it does not resolve as the derived type");
+
+  Table().Release(derived);
+  Table().Release(base);
+  Table().Release(via_base);
 }
 
 // Resolve() hands out a strong reference; releasing the handle must not pull the
@@ -312,6 +363,7 @@ int RunTests() {
   TestDoubleReleaseIsSafe();
   TestStaleHandleAfterSlotReuse();
   TestTypeConfusionRejected();
+  TestDerivedHandleResolvesAsBase();
   TestResolvedReferenceOutlivesRelease();
   TestDestructorMayReenterTable();
   TestSlotReuseKeepsTableCompact();

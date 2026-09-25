@@ -7,8 +7,13 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_view_t;
+typedef uint64_t native_window_shadow_t;
+typedef uint64_t native_window_shape_t;
+
 #include "color_c.h"
 #include "geometry_c.h"
+#include "view_c.h"
 #include "window_shadow_c.h"
 #include "window_shape_c.h"
 
@@ -110,6 +115,10 @@ native_window_t native_window_create_with_native_window(void* native_window);
 
 FFI_PLUGIN_EXPORT
 native_window_id_t native_window_get_id(native_window_t window);
+
+/// Caller owns the returned handle; release it with native_view_free().
+FFI_PLUGIN_EXPORT
+native_view_t native_window_get_content_view(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 void native_window_focus(native_window_t window);

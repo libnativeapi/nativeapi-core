@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_tray_icon_t;
+
 #include "tray_icon_c.h"
 
 #if _WIN32

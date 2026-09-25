@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_shortcut_t;
+
 #include "shortcut_c.h"
 
 #if _WIN32

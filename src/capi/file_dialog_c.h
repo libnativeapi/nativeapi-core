@@ -8,6 +8,8 @@
 
 #include "common_c.h"
 #include "string_utils_c.h"
+typedef uint64_t native_window_t;
+
 #include "dialog_c.h"
 #include "window_c.h"
 

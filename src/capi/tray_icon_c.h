@@ -7,6 +7,9 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_image_t;
+typedef uint64_t native_menu_t;
+
 #include "geometry_c.h"
 #include "image_c.h"
 #include "menu_c.h"

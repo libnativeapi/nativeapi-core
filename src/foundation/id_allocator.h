@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 
 namespace nativeapi {
@@ -29,6 +30,32 @@ namespace nativeapi {
 template <typename T>
 struct IdTypeTag;
 
+/**
+ * @brief Base-class chain of a tagged type, for handle-table upcasts.
+ *
+ * A tag may name the exported base of its type (`using Base = View;` inside
+ * `IdTypeTag<Button>`). The handle table then lets a handle to that type
+ * resolve as any type along the chain, so a `Button` handle is also a valid
+ * `View` handle across the C ABI. Only single inheritance is expressed; the
+ * chain is at most kMaxDepth long.
+ */
+template <typename T, typename = void>
+struct HandleTypeChain {
+  using Root = T;
+  static constexpr size_t kDepth = 1;
+  static constexpr void Fill(uint32_t* tags) { tags[0] = IdTypeTag<T>::value; }
+};
+template <typename T>
+struct HandleTypeChain<T, std::void_t<typename IdTypeTag<T>::Base>> {
+  using Parent = HandleTypeChain<typename IdTypeTag<T>::Base>;
+  using Root = typename Parent::Root;
+  static constexpr size_t kDepth = Parent::kDepth + 1;
+  static constexpr void Fill(uint32_t* tags) {
+    tags[0] = IdTypeTag<T>::value;
+    Parent::Fill(tags + 1);
+  }
+};
+
 // Forward declarations for the registry below; each type's real definition
 // lives in its own header.
 class Display;
@@ -50,6 +77,11 @@ class DropTarget;
 class DragSource;
 class WindowShape;
 class WindowShadow;
+class View;
+class Label;
+class Button;
+class TextField;
+class ImageView;
 
 // ---------------------------------------------------------------------------
 // Type tag registry — append only.
@@ -134,6 +166,32 @@ struct IdTypeTag<WindowShape> {
 template <>
 struct IdTypeTag<WindowShadow> {
   static constexpr uint32_t value = 19;
+};
+// The View family. Every control names View as its Base, so a handle to a
+// control also resolves as a View across the C ABI (handle_table.h).
+template <>
+struct IdTypeTag<View> {
+  static constexpr uint32_t value = 20;
+};
+template <>
+struct IdTypeTag<Label> {
+  static constexpr uint32_t value = 21;
+  using Base = View;
+};
+template <>
+struct IdTypeTag<Button> {
+  static constexpr uint32_t value = 22;
+  using Base = View;
+};
+template <>
+struct IdTypeTag<TextField> {
+  static constexpr uint32_t value = 23;
+  using Base = View;
+};
+template <>
+struct IdTypeTag<ImageView> {
+  static constexpr uint32_t value = 24;
+  using Base = View;
 };
 
 /**

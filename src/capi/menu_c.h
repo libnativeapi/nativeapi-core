@@ -7,6 +7,9 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_image_t;
+typedef uint64_t native_positioning_strategy_t;
+
 #include "image_c.h"
 #include "keyboard_c.h"
 #include "placement_c.h"

@@ -8,6 +8,9 @@
 
 #include "common_c.h"
 #include "string_utils_c.h"
+typedef uint64_t native_image_t;
+typedef uint64_t native_window_t;
+
 #include "geometry_c.h"
 #include "image_c.h"
 #include "window_c.h"
