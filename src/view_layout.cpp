@@ -10,6 +10,10 @@ double NonNegative(double value) {
   return value < 0.0 ? 0.0 : value;
 }
 
+double Natural(double preferred, double intrinsic) {
+  return preferred > 0.0 ? preferred : intrinsic;
+}
+
 }  // namespace
 
 std::vector<Rectangle> ComputeStackLayout(ViewLayout layout, Size container, EdgeInsets padding,
@@ -33,12 +37,10 @@ std::vector<Rectangle> ComputeStackLayout(ViewLayout layout, Size container, Edg
   auto main_of = [&](Size size) { return row ? size.width : size.height; };
   auto cross_of = [&](Size size) { return row ? size.height : size.width; };
   auto natural_main = [&](const LayoutChild& child) {
-    const double preferred = main_of(child.preferred);
-    return preferred > 0.0 ? preferred : main_of(child.intrinsic);
+    return Natural(main_of(child.preferred), main_of(child.intrinsic));
   };
   auto natural_cross = [&](const LayoutChild& child) {
-    const double preferred = cross_of(child.preferred);
-    return preferred > 0.0 ? preferred : cross_of(child.intrinsic);
+    return Natural(cross_of(child.preferred), cross_of(child.intrinsic));
   };
 
   size_t visible_count = 0;
@@ -94,6 +96,34 @@ std::vector<Rectangle> ComputeStackLayout(ViewLayout layout, Size container, Edg
     cursor += main_size;
   }
   return frames;
+}
+
+Size ComputeStackContentSize(ViewLayout layout, EdgeInsets padding, double spacing,
+                             const std::vector<LayoutChild>& children) {
+  if (layout == ViewLayout::Absolute) {
+    return Size{0.0, 0.0};
+  }
+  const bool row = layout == ViewLayout::Row;
+  double main_total = 0.0;
+  double cross_max = 0.0;
+  size_t visible_count = 0;
+  for (const auto& child : children) {
+    if (!child.visible) {
+      continue;
+    }
+    ++visible_count;
+    const double width = Natural(child.preferred.width, child.intrinsic.width);
+    const double height = Natural(child.preferred.height, child.intrinsic.height);
+    main_total += row ? width : height;
+    cross_max = std::max(cross_max, row ? height : width);
+  }
+  if (visible_count > 1) {
+    main_total += spacing * static_cast<double>(visible_count - 1);
+  }
+  const double horizontal = padding.left + padding.right;
+  const double vertical = padding.top + padding.bottom;
+  return row ? Size{main_total + horizontal, cross_max + vertical}
+             : Size{cross_max + horizontal, main_total + vertical};
 }
 
 }  // namespace nativeapi

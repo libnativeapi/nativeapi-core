@@ -196,7 +196,16 @@ class Application::Impl {
     return exit_code;
   }
 
-  void Quit(int exit_code) { PostQuitMessage(exit_code); }
+  void Quit(int exit_code) {
+    if (!app_->running_) {
+      // Someone else runs the loop (a Flutter runner, a host pumping it by
+      // hand): Run() will not return to emit this, and the host ends the
+      // process on WM_QUIT.
+      ApplicationExitingEvent event(exit_code);
+      app_->Emit(event);
+    }
+    PostQuitMessage(exit_code);
+  }
 
   bool SetIcon(const std::string& icon_path) {
     if (icon_path.empty()) {

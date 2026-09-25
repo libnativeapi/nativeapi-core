@@ -6,6 +6,10 @@ add_executable(window_shape_test window_shape_test.cpp)
 target_link_libraries(window_shape_test PRIVATE nativeapi)
 add_test(NAME window_shape_test COMMAND window_shape_test)
 
+add_executable(view_layout_test view_layout_test.cpp)
+target_link_libraries(view_layout_test PRIVATE nativeapi)
+add_test(NAME view_layout_test COMMAND view_layout_test)
+
 add_executable(window_shadow_blur_test window_shadow_blur_test.cpp)
 target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
 add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)

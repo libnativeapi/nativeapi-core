@@ -1,11 +1,34 @@
 #include "view.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "view_impl.h"
 #include "view_layout.h"
 
 namespace nativeapi {
+
+namespace {
+
+// Layout passes in progress on this thread, and a number per pass. Within one
+// pass nothing changes size, so IntrinsicSize() measures each view once; a
+// container's size depends on its whole subtree and would otherwise be
+// measured again at every level above it.
+thread_local int g_layout_depth = 0;
+thread_local uint64_t g_layout_pass = 0;
+
+class LayoutPass {
+ public:
+  LayoutPass() {
+    ++g_layout_depth;
+    ++g_layout_pass;
+  }
+  ~LayoutPass() { --g_layout_depth; }
+  LayoutPass(const LayoutPass&) = delete;
+  LayoutPass& operator=(const LayoutPass&) = delete;
+};
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Impl: the shared half
@@ -20,6 +43,7 @@ View* View::Impl::Root() const {
 }
 
 void View::Impl::RelayoutTree() {
+  LayoutPass pass;
   Root()->pimpl_->Relayout();
 }
 
@@ -28,14 +52,47 @@ void View::Impl::InvalidateIntrinsicSize() {
 }
 
 void View::Impl::OnNativeResized() {
+  LayoutPass pass;
   Relayout();
+}
+
+Size View::Impl::IntrinsicSize() const {
+  if (g_layout_depth > 0 && measured_pass == g_layout_pass) {
+    return measured;
+  }
+  Size size;
+  if (layout == ViewLayout::Absolute || subviews.empty()) {
+    size = GetNativeIntrinsicSize();
+  } else {
+    std::vector<LayoutChild> children;
+    children.reserve(subviews.size());
+    for (const auto& subview : subviews) {
+      children.push_back(subview->pimpl_->AsLayoutChild());
+    }
+    size = ComputeStackContentSize(layout, padding, spacing, children);
+  }
+  if (g_layout_depth > 0) {
+    measured = size;
+    measured_pass = g_layout_pass;
+  }
+  return size;
+}
+
+LayoutChild View::Impl::AsLayoutChild() const {
+  LayoutChild entry;
+  entry.visible = visible;
+  entry.preferred = preferred_size;
+  entry.intrinsic = visible ? IntrinsicSize() : Size{0.0, 0.0};
+  entry.flex = flex;
+  entry.alignment = alignment;
+  return entry;
 }
 
 Rectangle View::Impl::AbsoluteFrame() const {
   if (has_frame) {
     return frame;
   }
-  const Size intrinsic = GetNativeIntrinsicSize();
+  const Size intrinsic = IntrinsicSize();
   return Rectangle{0.0, 0.0, intrinsic.width, intrinsic.height};
 }
 
@@ -50,14 +107,7 @@ void View::Impl::Relayout() {
     std::vector<LayoutChild> children;
     children.reserve(subviews.size());
     for (const auto& subview : subviews) {
-      auto& child = *subview->pimpl_;
-      LayoutChild entry;
-      entry.visible = child.visible;
-      entry.preferred = child.preferred_size;
-      entry.intrinsic = child.visible ? child.GetNativeIntrinsicSize() : Size{0.0, 0.0};
-      entry.flex = child.flex;
-      entry.alignment = child.alignment;
-      children.push_back(entry);
+      children.push_back(subview->pimpl_->AsLayoutChild());
     }
     const Rectangle own = GetNativeFrame();
     const auto frames = ComputeStackLayout(layout, Size{own.width, own.height}, padding, spacing,
@@ -222,7 +272,7 @@ Size View::GetPreferredSize() const {
 }
 
 Size View::GetIntrinsicSize() const {
-  return pimpl_->GetNativeIntrinsicSize();
+  return pimpl_->IntrinsicSize();
 }
 
 void View::SetFlex(double flex) {

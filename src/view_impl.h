@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "view.h"
+#include "view_layout.h"
 #include "window.h"
 
 namespace nativeapi {
@@ -60,6 +62,11 @@ class View::Impl {
   static void InitializeRoot(const std::shared_ptr<View>& view, std::weak_ptr<Window> window);
   /// Called by a control after a change that alters its intrinsic size.
   void InvalidateIntrinsicSize();
+  /// What GetIntrinsicSize() reports: the control's own size, or for a Row or
+  /// Column container with subviews the size its content needs.
+  Size IntrinsicSize() const;
+  /// What a Row or Column parent needs to know about this view.
+  LayoutChild AsLayoutChild() const;
   /// Called by a platform that replaced the native view: keeps `native` and
   /// the tree's z-order bookkeeping consistent.
   void NativeReplaced(void* replacement) { native = replacement; }
@@ -95,6 +102,9 @@ class View::Impl {
   /// called, otherwise the intrinsic size at the origin.
   Rectangle AbsoluteFrame() const;
   bool visible = true;
+  /// IntrinsicSize() of the layout pass numbered `measured_pass` (view.cpp).
+  mutable Size measured{0.0, 0.0};
+  mutable uint64_t measured_pass = 0;
   Color background_color{0, 0, 0, 0};
   std::optional<std::string> tooltip;
 
@@ -107,7 +117,8 @@ class View::Impl {
   /// its parent pointer; the platform detaches or parks the native child).
   void SetNativeFrame(Rectangle frame);
   Rectangle GetNativeFrame() const;
-  /// The size the control wants; zero for a container.
+  /// The size the native control wants; zero for a container, whose size
+  /// comes from its content instead (IntrinsicSize()).
   Size GetNativeIntrinsicSize() const;
   /// Reparents `child`'s native view under this one at z-index `index`.
   /// Called after `subviews` already holds the child at `index`, so the

@@ -98,7 +98,20 @@ class Application::Impl {
     return status != 0 ? status : app_->exit_code_;
   }
 
-  void Quit(int exit_code) { g_application_quit(G_APPLICATION(gtk_app_)); }
+  void Quit(int exit_code) {
+    if (app_->running_) {
+      // Our Run() owns the loop: stop it so Run() returns the exit code.
+      g_application_quit(G_APPLICATION(gtk_app_));
+      return;
+    }
+
+    // Someone else runs the loop (a Flutter runner, a host pumping it by
+    // hand): there is nothing to return to, so end the process, as macOS
+    // does through -terminate:.
+    ApplicationExitingEvent event(exit_code);
+    app_->Emit(event);
+    std::exit(exit_code);
+  }
 
   // gtk_application_add_window() and g_application_hold() only take effect on a
   // registered application, and g_application_run() registers too late for that.

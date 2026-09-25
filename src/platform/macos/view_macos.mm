@@ -22,6 +22,12 @@
 
 namespace {
 
+// Non-zero while a view takes its native control out of the window on the way
+// to destruction. Removing a focused field (or a container holding one) ends
+// editing, and the blur that follows must not reach listeners: they may run
+// while the rest of the tree is going away, as at process exit.
+int g_views_being_destroyed = 0;
+
 // The bridge is the delegate only while the view listens (HookControl), so a
 // field that nobody listens to reports nothing.
 NativeApiViewBridge* ListeningBridge(NSTextField* field) {
@@ -35,7 +41,7 @@ NativeApiViewBridge* ListeningBridge(NSTextField* field) {
 
 void ReportFocus(NSTextField* field, bool focused) {
   NativeApiViewBridge* bridge = ListeningBridge(field);
-  if (!bridge) {
+  if (!bridge || g_views_being_destroyed > 0) {
     return;
   }
   if (focused) {
@@ -212,7 +218,9 @@ View::Impl::Impl(View* owner, void* native, bool owned)
 
 View::Impl::~Impl() {
   if (owned && platform && platform->view) {
+    ++g_views_being_destroyed;
     [platform->view removeFromSuperview];
+    --g_views_being_destroyed;
   }
   platform.reset();
   native = nullptr;
@@ -221,10 +229,14 @@ View::Impl::~Impl() {
 void* View::Impl::CreateNativeContainer() {
   NativeApiContainerView* view = [[NativeApiContainerView alloc] initWithFrame:NSZeroRect];
   view.autoresizingMask = NSViewNotSizable;
-#if !__has_feature(objc_arc)
+  // Handed over autoreleased, so it lives until Platform takes its own
+  // reference. Under ARC a plain __bridge return would free it on the way out.
+#if __has_feature(objc_arc)
+  return (void*)CFAutorelease((__bridge_retained CFTypeRef)view);
+#else
   [view autorelease];
-#endif
   return (__bridge void*)view;
+#endif
 }
 
 void View::Impl::SetNativeFrame(Rectangle frame) {
@@ -264,8 +276,20 @@ Size View::Impl::GetNativeIntrinsicSize() const {
     return Size{0, 0};
   }
   NSSize size = view.intrinsicContentSize;
+  // That is the size of the alignment rect; a frame also covers the alignment
+  // insets (a push button's shadow and bezel margin). A process linked against
+  // an older SDK has such insets on current macOS, and without them the title
+  // would be clipped.
+  const NSEdgeInsets insets = view.alignmentRectInsets;
+  if (size.width > 0) {
+    size.width += insets.left + insets.right;
+  }
+  if (size.height > 0) {
+    size.height += insets.top + insets.bottom;
+  }
   if ([view isKindOfClass:[NSControl class]]) {
     // Labels and buttons know their width; an editable field reports none.
+    // sizeThatFits: already answers in frame terms.
     NSSize fitting = [(NSControl*)view sizeThatFits:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)];
     if (size.width < 0) {
       size.width = [view isKindOfClass:[NSTextField class]] && ((NSTextField*)view).isEditable

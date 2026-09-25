@@ -184,9 +184,10 @@ class Application : public EventEmitter<ApplicationEvent> {
    * are emitted.
    *
    * When the loop is not Run()'s own (a host such as a Flutter runner owns
-   * it), there is nothing to return to and the process ends instead; on
-   * macOS it goes through -[NSApplication terminate:], which exits with
-   * status 0 whatever @p exit_code is.
+   * it), there is nothing to return to and the process ends instead, after
+   * ApplicationExitingEvent: on macOS through -[NSApplication terminate:],
+   * which exits with status 0 whatever @p exit_code is; on Linux with
+   * @p exit_code; on Windows the host's loop gets WM_QUIT and ends it.
    *
    * A quit the user or the system starts outside Quit() (Cmd+Q, logout) also
    * emits ApplicationQuitRequestedEvent. On macOS it cannot be vetoed and

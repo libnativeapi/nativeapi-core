@@ -437,9 +437,15 @@ class View : public EventEmitter<ViewEvent>,
   Size GetPreferredSize() const;
 
   /**
-   * @brief Gets the size the native control wants to be.
+   * @brief Gets the size the view wants to be when nothing stretches it.
    *
-   * @return The intrinsic size in logical points; zero for a container.
+   * A Row or Column parent uses it on every axis where SetPreferredSize()
+   * left 0, so nested rows and columns size to their content.
+   *
+   * @return The intrinsic size in logical points: the native control's own
+   *         size; for a Row or Column container, what its visible subviews
+   *         need at their preferred or intrinsic sizes, plus spacing and
+   *         padding; zero for an Absolute container.
    */
   Size GetIntrinsicSize() const;
 

@@ -32,4 +32,13 @@ struct LayoutChild {
 std::vector<Rectangle> ComputeStackLayout(ViewLayout layout, Size container, EdgeInsets padding,
                                           double spacing, const std::vector<LayoutChild>& children);
 
+/**
+ * The size a Row or Column needs to give every visible child its preferred or
+ * intrinsic size (flex children included) without stretching: the children end
+ * to end plus spacing on the main axis, the largest child on the cross axis,
+ * padding around both. Zero for Absolute, whose children place themselves.
+ */
+Size ComputeStackContentSize(ViewLayout layout, EdgeInsets padding, double spacing,
+                             const std::vector<LayoutChild>& children);
+
 }  // namespace nativeapi
