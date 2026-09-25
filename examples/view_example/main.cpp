@@ -10,10 +10,14 @@
 
 using namespace nativeapi;
 
-int main() {
+int main(int argc, char** argv) {
   if (!View::IsSupported()) {
     std::cerr << "Views are not supported on this platform." << std::endl;
     return 1;
+  }
+  // --native: the platform's own controls even where WinUI 3 is the default.
+  if (argc > 1 && std::string(argv[1]) == "--native") {
+    View::SetDefaultBackend(ViewBackend::Native);
   }
 
   auto& app = Application::GetInstance();
@@ -29,6 +33,8 @@ int main() {
     std::cerr << "The window has no content view." << std::endl;
     return 1;
   }
+  std::cout << "[view] backend: "
+            << (root->GetBackend() == ViewBackend::WinUI3 ? "WinUI3" : "Native") << std::endl;
   root->SetLayout(ViewLayout::Column);
   root->SetPadding(EdgeInsets::All(16));
   root->SetSpacing(8);

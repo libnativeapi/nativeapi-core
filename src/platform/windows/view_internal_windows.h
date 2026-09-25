@@ -17,6 +17,7 @@
 #include "../../view_impl.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
+#include "view_winui3_windows.h"
 
 namespace nativeapi {
 
@@ -46,6 +47,9 @@ struct View::Impl::Platform {
   HWND hwnd;
   ViewKind kind = ViewKind::Container;
   bool listening = false;
+  /// Set for a WinUI 3 view, whose `hwnd` is then null: every seam function
+  /// and control method forwards to it first (NATIVEAPI_VIEW_XAML).
+  std::unique_ptr<XamlView> xaml;
 
   /// Handler on the parent HWND that answers WM_CTLCOLOR* for this control.
   /// Registered while the control sits under a parent of the library's.

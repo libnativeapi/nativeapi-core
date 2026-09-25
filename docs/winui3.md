@@ -1,13 +1,13 @@
 # Optional WinUI 3 backend on Windows
 
-`NATIVEAPI_ENABLE_WINUI3=ON` selects WinUI 3 for new Windows menus and
-message dialogs, plus Windows App SDK title-bar and notification integration. Menus use `Microsoft.UI.Xaml.Controls.MenuFlyout`; message
+`NATIVEAPI_ENABLE_WINUI3=ON` selects WinUI 3 for new Windows menus,
+message dialogs and views, plus Windows App SDK title-bar and notification integration. Menus use `Microsoft.UI.Xaml.Controls.MenuFlyout`; message
 dialogs use `Microsoft.UI.Xaml.Controls.ContentDialog`. Both share a lazy XAML
 runtime and use private XAML Islands, including in tray-only applications.
 Future WinUI components should use this same option and runtime.
 File dialogs use the Windows system picker; they are not XAML controls.
 
-With the option OFF (the default), menus and dialogs retain their Win32
+With the option OFF (the default), menus, dialogs and views retain their Win32
 implementations. Public C++ and C interfaces stay platform independent.
 
 ## Build
@@ -118,6 +118,40 @@ No runtime switch or new API is required.
 - Hosts and example executables use PerMonitorV2 sizing, including monitor changes.
 
 The implementation follows Microsoft's [ContentDialog hosting requirements](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.contentdialog?view=windows-app-sdk-1.6).
+
+## Views
+
+`View`, `Label`, `Button`, `TextField` and `ImageView` use WinUI 3 XAML
+controls. Nothing changes in the calling code:
+
+```cpp
+auto root = window->GetContentView();   // a XAML Island over the client area
+auto button = std::make_shared<Button>("Sign in");
+root->AddSubview(button);               // a Microsoft.UI.Xaml.Controls.Button
+std::cout << (root->GetBackend() == ViewBackend::WinUI3);  // 1
+```
+
+- The backend is chosen when a view is created, from `View::GetDefaultBackend()`:
+  WinUI3 in this build. `View::SetDefaultBackend(ViewBackend::Native)` makes the
+  views created afterwards Win32 controls again (`view_example --native`). A view
+  keeps its backend; `AddSubview` ignores a view of the other backend.
+- If the Windows App Runtime cannot start on the calling thread, views created
+  there fall back to Native, `GetBackend()` says so, and one diagnostic goes to
+  stderr. The thread must be an STA (`Application::GetInstance()` sets that up).
+- A window's root view is a `DesktopWindowXamlSource` covering the whole client
+  area with a `Canvas`; it follows the window's size and DPI. It sits above any
+  child window a host framework put there, and it takes the input over the whole
+  area, so a WinUI 3 root does not suit a window whose content is another
+  framework's view. Use `ViewBackend::Native` there.
+- Containers are `Canvas`es; Label is a `TextBlock` in a `Border`, TextField a
+  `TextBox` with a `PasswordBox` shown in its place while secure, ImageView an
+  `Image`. `GetNativeObject()` returns the element as an `IInspectable*` (the
+  root still returns the window's `HWND`).
+- Differences from the Win32 controls: backgrounds apply to every control;
+  a secure TextField has no text alignment, multi-line mode or read-only mode of
+  its own (read-only disables it); XAML's own font sizes and paddings make the
+  intrinsic sizes larger.
+- `Focus()` before the window is shown takes effect when the control loads.
 
 ## Menu behavior and limits
 

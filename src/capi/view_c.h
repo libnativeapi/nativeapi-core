@@ -46,6 +46,11 @@ typedef enum {
   NATIVE_TEXT_ALIGNMENT_END = 2,
 } native_text_alignment_t;
 
+typedef enum {
+  NATIVE_VIEW_BACKEND_NATIVE = 0,
+  NATIVE_VIEW_BACKEND_WIN_UI3 = 1,
+} native_view_backend_t;
+
 /// Opaque View handle.
 ///
 /// A generational index into the library's handle table, NOT a pointer:
@@ -156,7 +161,19 @@ FFI_PLUGIN_EXPORT
 bool native_view_is_supported(void);
 
 FFI_PLUGIN_EXPORT
+bool native_view_is_backend_supported(native_view_backend_t backend);
+
+FFI_PLUGIN_EXPORT
+bool native_view_set_default_backend(native_view_backend_t backend);
+
+FFI_PLUGIN_EXPORT
+native_view_backend_t native_view_get_default_backend(void);
+
+FFI_PLUGIN_EXPORT
 native_view_id_t native_view_get_id(native_view_t view);
+
+FFI_PLUGIN_EXPORT
+native_view_backend_t native_view_get_backend(native_view_t view);
 
 FFI_PLUGIN_EXPORT
 void native_view_add_subview(native_view_t view, native_view_t subview);
@@ -451,6 +468,8 @@ inline native_view_alignment_t to_c_view_alignment(nativeapi::ViewAlignment valu
 inline nativeapi::ViewAlignment to_cpp_view_alignment(native_view_alignment_t value);
 inline native_text_alignment_t to_c_text_alignment(nativeapi::TextAlignment value);
 inline nativeapi::TextAlignment to_cpp_text_alignment(native_text_alignment_t value);
+inline native_view_backend_t to_c_view_backend(nativeapi::ViewBackend value);
+inline nativeapi::ViewBackend to_cpp_view_backend(native_view_backend_t value);
 
 inline native_view_layout_t to_c_view_layout(nativeapi::ViewLayout value) {
   switch (value) {
@@ -531,6 +550,28 @@ inline nativeapi::TextAlignment to_cpp_text_alignment(native_text_alignment_t va
       return nativeapi::TextAlignment::End;
     default:
       return nativeapi::TextAlignment::Start;
+  }
+}
+
+inline native_view_backend_t to_c_view_backend(nativeapi::ViewBackend value) {
+  switch (value) {
+    case nativeapi::ViewBackend::Native:
+      return NATIVE_VIEW_BACKEND_NATIVE;
+    case nativeapi::ViewBackend::WinUI3:
+      return NATIVE_VIEW_BACKEND_WIN_UI3;
+    default:
+      return NATIVE_VIEW_BACKEND_NATIVE;
+  }
+}
+
+inline nativeapi::ViewBackend to_cpp_view_backend(native_view_backend_t value) {
+  switch (value) {
+    case NATIVE_VIEW_BACKEND_NATIVE:
+      return nativeapi::ViewBackend::Native;
+    case NATIVE_VIEW_BACKEND_WIN_UI3:
+      return nativeapi::ViewBackend::WinUI3;
+    default:
+      return nativeapi::ViewBackend::Native;
   }
 }
 

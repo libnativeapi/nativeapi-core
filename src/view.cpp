@@ -105,6 +105,10 @@ ViewId View::GetId() const {
   return pimpl_->id;
 }
 
+ViewBackend View::GetBackend() const {
+  return pimpl_->backend;
+}
+
 // === Tree ===
 
 void View::AddSubview(std::shared_ptr<View> subview) {
@@ -112,7 +116,8 @@ void View::AddSubview(std::shared_ptr<View> subview) {
 }
 
 void View::InsertSubview(size_t index, std::shared_ptr<View> view) {
-  if (!view || view.get() == this || !pimpl_->native || !view->pimpl_->native) {
+  if (!view || view.get() == this || !pimpl_->native || !view->pimpl_->native ||
+      view->pimpl_->backend != pimpl_->backend) {
     return;
   }
   // No cycles: a view cannot be added under one of its own descendants.

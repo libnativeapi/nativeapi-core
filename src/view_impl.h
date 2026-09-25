@@ -75,6 +75,8 @@ class View::Impl {
   void* native = nullptr;
   bool owned = false;
   bool is_root = false;
+  /// Set by the platform in the constructor; views of one tree share it.
+  ViewBackend backend = ViewBackend::Native;
   ViewId id = IdAllocator::kInvalidId;
   std::weak_ptr<View> parent;
   std::weak_ptr<Window> window;  // root views only

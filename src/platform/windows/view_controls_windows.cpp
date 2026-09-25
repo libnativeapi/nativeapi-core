@@ -18,6 +18,17 @@ ViewInternal::NativeControl Adopt(HWND hwnd) {
   return ViewInternal::NativeControl{hwnd};
 }
 
+/// The control for the backend this thread creates views with now: a XAML
+/// element, or the HWND `make_hwnd` builds. The Impl constructor asks
+/// XamlView::IsActive() again and gets the same answer.
+template <typename MakeHwnd>
+ViewInternal::NativeControl AdoptFor(ViewKind kind, const std::string& text, MakeHwnd make_hwnd) {
+  if (XamlView::IsActive()) {
+    return ViewInternal::NativeControl{XamlView::CreateControl(kind, text)};
+  }
+  return Adopt(make_hwnd());
+}
+
 HWND CreateControl(const wchar_t* class_name, DWORD style, DWORD ex_style) {
   EnsureCommonControls();
   HWND host = WindowMessageDispatcher::GetInstance().GetHostWindow();
@@ -105,6 +116,7 @@ void SetCueBanner(HWND hwnd, const std::optional<std::string>& placeholder) {
 
 void SetControlTextColor(ViewInternal::Impl& impl, Color color) {
   impl.platform->text_color = color;
+  NATIVEAPI_VIEW_XAML(impl, SetTextColor(color))
   if (impl.platform->hwnd) {
     // Picked up by the next WM_CTLCOLOR* on the parent.
     InvalidateRect(impl.platform->hwnd, nullptr, TRUE);
@@ -113,6 +125,7 @@ void SetControlTextColor(ViewInternal::Impl& impl, Color color) {
 
 void SetControlFontSize(ViewInternal::Impl& impl, double size) {
   impl.platform->font_size = size < 0 ? 0 : size;
+  NATIVEAPI_VIEW_XAML(impl, SetFontSize(impl.platform->font_size))
   impl.platform->ApplyFont();
   impl.InvalidateIntrinsicSize();
 }
@@ -144,14 +157,17 @@ void RebuildEdit(ViewInternal::Impl& impl) {
 // Label
 // ---------------------------------------------------------------------------
 
-Label::Label(const std::string& text) : View(Adopt(CreateLabelHwnd(text))) {}
+Label::Label(const std::string& text)
+    : View(AdoptFor(ViewKind::Label, text, [&] { return CreateLabelHwnd(text); })) {}
 
 void Label::SetText(const std::string& text) {
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetText(text))
   SetWindowTextUtf8(pimpl_->platform->hwnd, text);
   pimpl_->InvalidateIntrinsicSize();
 }
 
 std::string Label::GetText() const {
+  NATIVEAPI_VIEW_XAML(*pimpl_, GetText())
   return WindowTextUtf8(pimpl_->platform->hwnd);
 }
 
@@ -173,6 +189,7 @@ double Label::GetFontSize() const {
 
 void Label::SetTextAlignment(TextAlignment alignment) {
   pimpl_->platform->text_alignment = alignment;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetTextAlignment(alignment))
   HWND hwnd = pimpl_->platform->hwnd;
   if (!hwnd) {
     return;
@@ -193,14 +210,17 @@ TextAlignment Label::GetTextAlignment() const {
 // Button
 // ---------------------------------------------------------------------------
 
-Button::Button(const std::string& text) : View(Adopt(CreateButtonHwnd(text))) {}
+Button::Button(const std::string& text)
+    : View(AdoptFor(ViewKind::Button, text, [&] { return CreateButtonHwnd(text); })) {}
 
 void Button::SetText(const std::string& text) {
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetText(text))
   SetWindowTextUtf8(pimpl_->platform->hwnd, text);
   pimpl_->InvalidateIntrinsicSize();
 }
 
 std::string Button::GetText() const {
+  NATIVEAPI_VIEW_XAML(*pimpl_, GetText())
   return WindowTextUtf8(pimpl_->platform->hwnd);
 }
 
@@ -209,13 +229,16 @@ std::string Button::GetText() const {
 // ---------------------------------------------------------------------------
 
 TextField::TextField(const std::string& text)
-    : View(Adopt(CreateEditHwnd(TextAlignment::Start, false, false, true))) {
-  if (!text.empty()) {
+    : View(AdoptFor(ViewKind::TextField, text, [] {
+        return CreateEditHwnd(TextAlignment::Start, false, false, true);
+      })) {
+  if (!text.empty() && GetBackend() == ViewBackend::Native) {
     SetText(text);
   }
 }
 
 void TextField::SetText(const std::string& text) {
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetText(text))
   auto& platform = *pimpl_->platform;
   if (!platform.hwnd) {
     return;
@@ -227,6 +250,7 @@ void TextField::SetText(const std::string& text) {
 }
 
 std::string TextField::GetText() const {
+  NATIVEAPI_VIEW_XAML(*pimpl_, GetText())
   return WindowTextUtf8(pimpl_->platform->hwnd);
 }
 
@@ -252,6 +276,7 @@ void TextField::SetTextAlignment(TextAlignment alignment) {
     return;
   }
   platform.text_alignment = alignment;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetTextAlignment(alignment))
   RebuildEdit(*pimpl_);
 }
 
@@ -261,6 +286,7 @@ TextAlignment TextField::GetTextAlignment() const {
 
 void TextField::SetPlaceholder(const std::optional<std::string>& placeholder) {
   pimpl_->platform->placeholder = placeholder;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetPlaceholder(placeholder))
   SetCueBanner(pimpl_->platform->hwnd, placeholder);
 }
 
@@ -271,6 +297,7 @@ std::optional<std::string> TextField::GetPlaceholder() const {
 void TextField::SetEditable(bool is_editable) {
   auto& platform = *pimpl_->platform;
   platform.editable = is_editable;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetEditable(is_editable))
   if (!platform.hwnd) {
     return;
   }
@@ -288,6 +315,7 @@ void TextField::SetSecure(bool is_secure) {
     return;
   }
   platform.secure = is_secure;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetSecure(is_secure))
   if (!platform.hwnd) {
     return;
   }
@@ -306,6 +334,7 @@ void TextField::SetMultiline(bool is_multiline) {
     return;
   }
   platform.multiline = is_multiline;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetMultiline(is_multiline))
   RebuildEdit(*pimpl_);
   pimpl_->InvalidateIntrinsicSize();
 }
@@ -318,10 +347,12 @@ bool TextField::IsMultiline() const {
 // ImageView
 // ---------------------------------------------------------------------------
 
-ImageView::ImageView() : View(Adopt(CreateImageViewHwnd())) {}
+ImageView::ImageView()
+    : View(AdoptFor(ViewKind::ImageView, "", [] { return CreateImageViewHwnd(); })) {}
 
 void ImageView::SetImage(std::shared_ptr<Image> image) {
   pimpl_->platform->image = std::move(image);
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetImage(pimpl_->platform->image))
   pimpl_->platform->RenderImage();
   pimpl_->InvalidateIntrinsicSize();
 }

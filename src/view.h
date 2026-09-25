@@ -88,6 +88,28 @@ enum class TextAlignment {
   End
 };
 
+/**
+ * @brief Which toolkit draws a view's controls.
+ *
+ * A view keeps the backend it was created with. Views of different backends
+ * cannot be put in one tree: View::AddSubview() ignores such a subview.
+ */
+enum class ViewBackend {
+  /**
+   * The platform's own controls: AppKit on macOS, Win32 common controls on
+   * Windows, GTK 3 on Linux.
+   */
+  Native,
+
+  /**
+   * WinUI 3 (Windows App SDK) XAML controls. Windows builds with
+   * NATIVEAPI_ENABLE_WINUI3 only, where it is the default, as for menus. A
+   * window's root view is then a XAML Island covering its content area, and
+   * GetNativeObject() of a control returns its XAML element as an IInspectable*.
+   */
+  WinUI3
+};
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -238,6 +260,32 @@ class View : public EventEmitter<ViewEvent>,
   static bool IsSupported();
 
   /**
+   * @brief Checks if a backend is available on this platform and build.
+   *
+   * @return true for Native wherever views are supported; true for WinUI3 only
+   *         in a Windows build with NATIVEAPI_ENABLE_WINUI3. Whether the Windows
+   *         App Runtime can actually start is known only when a view is created.
+   */
+  static bool IsBackendSupported(ViewBackend backend);
+
+  /**
+   * @brief Sets the backend of views created from now on, on every thread.
+   *
+   * Views that exist keep theirs.
+   *
+   * @return false, changing nothing, when @p backend is not supported.
+   */
+  static bool SetDefaultBackend(ViewBackend backend);
+
+  /**
+   * @brief Gets the backend new views are created with.
+   *
+   * @return WinUI3 in a Windows build with NATIVEAPI_ENABLE_WINUI3 until
+   *         SetDefaultBackend() says otherwise; Native everywhere else.
+   */
+  static ViewBackend GetDefaultBackend();
+
+  /**
    * @brief Creates an empty container.
    */
   View();
@@ -264,13 +312,23 @@ class View : public EventEmitter<ViewEvent>,
    */
   ViewId GetId() const;
 
+  /**
+   * @brief Gets the backend this view was created with.
+   *
+   * @return The default backend at creation time; Native if that was WinUI3
+   *         but the Windows App Runtime could not start on this thread (a
+   *         diagnostic is written to stderr once).
+   */
+  ViewBackend GetBackend() const;
+
   // === Tree ===
 
   /**
    * @brief Appends a subview, on top of the existing ones.
    *
    * A view already inside another parent is removed from it first. Ignored
-   * for nullptr and for this view itself.
+   * for nullptr, for this view itself, for one of its ancestors, and for a
+   * view of another backend (GetBackend()).
    *
    * @param subview The view to add.
    */

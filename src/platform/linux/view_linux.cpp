@@ -695,6 +695,18 @@ bool View::IsSupported() {
   return true;
 }
 
+bool View::IsBackendSupported(ViewBackend backend) {
+  return backend == ViewBackend::Native;
+}
+
+bool View::SetDefaultBackend(ViewBackend backend) {
+  return backend == ViewBackend::Native;
+}
+
+ViewBackend View::GetDefaultBackend() {
+  return ViewBackend::Native;
+}
+
 // ---------------------------------------------------------------------------
 // Window::GetContentView
 // ---------------------------------------------------------------------------

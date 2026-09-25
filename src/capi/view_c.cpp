@@ -53,6 +53,33 @@ bool native_view_is_supported(void) {
   }
 }
 
+bool native_view_is_backend_supported(native_view_backend_t backend) {
+  try {
+    return nativeapi::View::IsBackendSupported(to_cpp_view_backend(backend));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_is_backend_supported");
+    return false;
+  }
+}
+
+bool native_view_set_default_backend(native_view_backend_t backend) {
+  try {
+    return nativeapi::View::SetDefaultBackend(to_cpp_view_backend(backend));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_set_default_backend");
+    return false;
+  }
+}
+
+native_view_backend_t native_view_get_default_backend(void) {
+  try {
+    return to_c_view_backend(nativeapi::View::GetDefaultBackend());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_get_default_backend");
+    return (native_view_backend_t)NATIVE_VIEW_BACKEND_NATIVE;
+  }
+}
+
 native_view_id_t native_view_get_id(native_view_t view) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
   if (!self) {
@@ -63,6 +90,19 @@ native_view_id_t native_view_get_id(native_view_t view) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_get_id");
     return 0;
+  }
+}
+
+native_view_backend_t native_view_get_backend(native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return (native_view_backend_t)NATIVE_VIEW_BACKEND_NATIVE;
+  }
+  try {
+    return to_c_view_backend(self->GetBackend());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_get_backend");
+    return (native_view_backend_t)NATIVE_VIEW_BACKEND_NATIVE;
   }
 }
 

@@ -64,6 +64,18 @@ bool View::IsSupported() {
   return false;
 }
 
+bool View::IsBackendSupported(ViewBackend backend) {
+  return backend == ViewBackend::Native;
+}
+
+bool View::SetDefaultBackend(ViewBackend backend) {
+  return backend == ViewBackend::Native;
+}
+
+ViewBackend View::GetDefaultBackend() {
+  return ViewBackend::Native;
+}
+
 std::shared_ptr<View> Window::GetContentView() const {
   return nullptr;
 }

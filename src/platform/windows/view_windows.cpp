@@ -10,6 +10,7 @@ using std::max;
 using std::min;
 #include <gdiplus.h>
 // clang-format on
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
@@ -580,6 +581,16 @@ void View::Impl::Platform::DestroyTooltip() {
 
 View::Impl::Impl(View* owner, void* native, bool owned)
     : owner(owner), native(native), owned(owned), id(IdAllocator::Allocate<View>()) {
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  // The same question the control constructors asked, so a control and its
+  // Impl always agree on the backend.
+  if (XamlView::IsActive()) {
+    backend = ViewBackend::WinUI3;
+    platform = std::make_unique<Platform>(this, nullptr);
+    platform->xaml = std::make_unique<XamlView>(*this, native, owned);
+    return;
+  }
+#endif
   if (!this->native && owned) {
     this->native = CreateNativeContainer();
   }
@@ -587,6 +598,18 @@ View::Impl::Impl(View* owner, void* native, bool owned)
 }
 
 View::Impl::~Impl() {
+  if (platform && platform->xaml) {
+    // Take the subviews' elements out first: an element has one parent, and a
+    // subview that outlives this view may be added somewhere else.
+    for (const auto& subview : subviews) {
+      if (subview && subview->pimpl_) {
+        RemoveNativeSubview(*subview->pimpl_);
+      }
+    }
+    platform.reset();
+    native = nullptr;
+    return;
+  }
   // DestroyWindow takes every child with it; the subviews may outlive this
   // view through references elsewhere, so park their HWNDs first.
   if (platform && platform->hwnd) {
@@ -616,6 +639,7 @@ void* View::Impl::CreateNativeContainer() {
 }
 
 void View::Impl::SetNativeFrame(Rectangle frame) {
+  NATIVEAPI_VIEW_XAML(*this, SetFrame(frame))
   HWND hwnd = platform->hwnd;
   if (!hwnd || is_root) {
     return;
@@ -634,6 +658,7 @@ void View::Impl::SetNativeFrame(Rectangle frame) {
 }
 
 Rectangle View::Impl::GetNativeFrame() const {
+  NATIVEAPI_VIEW_XAML(*this, GetFrame())
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return Rectangle{0, 0, 0, 0};
@@ -655,6 +680,7 @@ Rectangle View::Impl::GetNativeFrame() const {
 }
 
 Size View::Impl::GetNativeIntrinsicSize() const {
+  NATIVEAPI_VIEW_XAML(*this, GetIntrinsicSize())
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return Size{0, 0};
@@ -700,6 +726,7 @@ Size View::Impl::GetNativeIntrinsicSize() const {
 }
 
 void View::Impl::AddNativeSubview(Impl& child, size_t index) {
+  NATIVEAPI_VIEW_XAML(*this, AddSubview(child.platform ? child.platform->xaml.get() : nullptr, index))
   HWND hwnd = platform->hwnd;
   HWND child_hwnd = child.platform ? child.platform->hwnd : nullptr;
   if (!hwnd || !child_hwnd) {
@@ -730,6 +757,7 @@ void View::Impl::AddNativeSubview(Impl& child, size_t index) {
 }
 
 void View::Impl::RemoveNativeSubview(Impl& child) {
+  NATIVEAPI_VIEW_XAML(*this, RemoveSubview(child.platform ? child.platform->xaml.get() : nullptr))
   HWND child_hwnd = child.platform ? child.platform->hwnd : nullptr;
   if (!child_hwnd || !platform->hwnd || GetAncestor(child_hwnd, GA_PARENT) != platform->hwnd) {
     return;
@@ -742,6 +770,7 @@ void View::Impl::RemoveNativeSubview(Impl& child) {
 }
 
 void View::Impl::SetNativeVisible(bool is_visible) {
+  NATIVEAPI_VIEW_XAML(*this, SetVisible(is_visible))
   HWND hwnd = platform->hwnd;
   if (!hwnd || is_root) {
     return;
@@ -750,6 +779,7 @@ void View::Impl::SetNativeVisible(bool is_visible) {
 }
 
 void View::Impl::SetNativeEnabled(bool is_enabled) {
+  NATIVEAPI_VIEW_XAML(*this, SetEnabled(is_enabled))
   HWND hwnd = platform->hwnd;
   if (!hwnd || is_root) {
     return;
@@ -758,6 +788,7 @@ void View::Impl::SetNativeEnabled(bool is_enabled) {
 }
 
 bool View::Impl::IsNativeEnabled() const {
+  NATIVEAPI_VIEW_XAML(*this, IsEnabled())
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return true;
@@ -766,6 +797,7 @@ bool View::Impl::IsNativeEnabled() const {
 }
 
 void View::Impl::SetNativeBackgroundColor(Color color) {
+  NATIVEAPI_VIEW_XAML(*this, SetBackgroundColor(color))
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return;
@@ -792,6 +824,7 @@ void View::Impl::SetNativeBackgroundColor(Color color) {
 }
 
 void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
+  NATIVEAPI_VIEW_XAML(*this, SetTooltip(tooltip))
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return;
@@ -823,6 +856,7 @@ void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
 }
 
 void View::Impl::NativeFocus() {
+  NATIVEAPI_VIEW_XAML(*this, Focus())
   HWND hwnd = platform->hwnd;
   if (!hwnd || is_root) {
     return;
@@ -833,6 +867,7 @@ void View::Impl::NativeFocus() {
 }
 
 void View::Impl::NativeBlur() {
+  NATIVEAPI_VIEW_XAML(*this, Blur())
   HWND hwnd = platform->hwnd;
   if (!hwnd || !IsNativeFocused()) {
     return;
@@ -841,17 +876,20 @@ void View::Impl::NativeBlur() {
 }
 
 bool View::Impl::IsNativeFocused() const {
+  NATIVEAPI_VIEW_XAML(*this, IsFocused())
   HWND hwnd = platform->hwnd;
   return hwnd && GetFocus() == hwnd;
 }
 
 void View::Impl::StartNativeListening() {
+  NATIVEAPI_VIEW_XAML(*this, StartListening())
   platform->listening = true;
   platform->HookParent();
   platform->Subclass();
 }
 
 void View::Impl::StopNativeListening() {
+  NATIVEAPI_VIEW_XAML(*this, StopListening())
   platform->listening = false;
   auto& dispatcher = WindowMessageDispatcher::GetInstance();
   if (platform->command_handler_id) {
@@ -866,6 +904,7 @@ void View::Impl::StopNativeListening() {
 }
 
 void View::Impl::ObserveNativeResize(bool observe) {
+  NATIVEAPI_VIEW_XAML(*this, ObserveResize(observe))
   HWND hwnd = platform->hwnd;
   if (!hwnd) {
     return;
@@ -896,6 +935,53 @@ void View::Impl::ObserveNativeResize(bool observe) {
 bool View::IsSupported() {
   return true;
 }
+
+namespace {
+// WinUI 3 is the default where it is compiled in, as for menus.
+std::atomic<ViewBackend> g_default_backend{
+#ifdef NATIVEAPI_ENABLE_WINUI3
+    ViewBackend::WinUI3
+#else
+    ViewBackend::Native
+#endif
+};
+}  // namespace
+
+bool View::IsBackendSupported(ViewBackend backend) {
+  if (backend == ViewBackend::Native) {
+    return true;
+  }
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  return backend == ViewBackend::WinUI3;
+#else
+  return false;
+#endif
+}
+
+bool View::SetDefaultBackend(ViewBackend backend) {
+  if (!IsBackendSupported(backend)) {
+    return false;
+  }
+  g_default_backend = backend;
+  return true;
+}
+
+ViewBackend View::GetDefaultBackend() {
+  return g_default_backend;
+}
+
+#ifndef NATIVEAPI_ENABLE_WINUI3
+// Without the WinUI 3 backend no XamlView is ever made; these keep the
+// Platform member linkable.
+struct XamlView::State {};
+bool XamlView::IsActive() {
+  return false;
+}
+void* XamlView::CreateControl(ViewKind, const std::string&) {
+  return nullptr;
+}
+XamlView::~XamlView() = default;
+#endif
 
 // ---------------------------------------------------------------------------
 // Window::GetContentView
