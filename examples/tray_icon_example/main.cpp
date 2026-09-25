@@ -42,16 +42,15 @@ int main(int argc, char** argv) {
   trayIcon->SetTitle(use_winui3 ? "nativeapi WinUI3 Tray Test" : "Test App");
   trayIcon->SetTooltip(use_winui3 ? "nativeapi WinUI3 Tray Test - right-click" : "This is a test tray icon");
   // Embedded blue four-pane icon keeps the example independent of asset paths.
-  if (use_winui3) {
-    auto icon = Image::FromBase64(
-        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAOElEQVR4nO3RwQkAMAgEQcu205ST1CB5"
-        "nI9ZuKcwYJVW1eeO9nsHAAAAALAPoPgLAAAAAADiAAV6s6MvzK1rffgAAAAASUVORK5CYII=");
-    if (!icon) {
-      std::cerr << "Failed to load the tray test icon." << std::endl;
-      return 1;
-    }
-    trayIcon->SetIcon(icon);
+  // Every platform needs one: KDE Plasma does not show a tray item without an icon.
+  auto icon = Image::FromBase64(
+      "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAOElEQVR4nO3RwQkAMAgEQcu205ST1CB5"
+      "nI9ZuKcwYJVW1eeO9nsHAAAAALAPoPgLAAAAAADiAAV6s6MvzK1rffgAAAAASUVORK5CYII=");
+  if (!icon) {
+    std::cerr << "Failed to load the tray test icon." << std::endl;
+    return 1;
   }
+  trayIcon->SetIcon(icon);
 
   // Set up event listeners
   trayIcon->AddListener<TrayIconClickedEvent>([](const TrayIconClickedEvent& event) {

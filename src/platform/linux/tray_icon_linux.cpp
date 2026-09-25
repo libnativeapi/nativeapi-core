@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../../foundation/id_allocator.h"
@@ -34,7 +35,7 @@ static const char kSniIntrospectionXml[] =
     "    <property name='Id'                 type='s'        access='read'/>"
     "    <property name='Title'              type='s'        access='read'/>"
     "    <property name='Status'             type='s'        access='read'/>"
-    "    <property name='WindowId'           type='u'        access='read'/>"
+    "    <property name='WindowId'           type='i'        access='read'/>"
     "    <property name='IconName'           type='s'        access='read'/>"
     "    <property name='IconPixmap'         type='a(iiay)'  access='read'/>"
     "    <property name='OverlayIconName'    type='s'        access='read'/>"
@@ -202,7 +203,12 @@ class TrayIcon::Impl {
   guint name_owner_id_;
   std::string service_name_;
   std::unordered_map<int, GtkWidget*> dbusmenu_items_;
+  // dbusmenu ids the host reported open (0 is the root menu), so that a repeated
+  // "opened" or a missing "closed" still yields one event of each.
+  std::unordered_set<int> open_dbusmenus_;
   unsigned int menu_revision_;
+  gint64 last_activate_us_ = 0;
+  std::unordered_map<std::string, bool> gnome_shell_callers_;
 
   explicit Impl(TrayIcon* owner)
       : owner_(owner),
@@ -367,23 +373,36 @@ class TrayIcon::Impl {
     if (error) g_error_free(error);
   }
 
+  // The host shows an exported menu itself, on a secondary click (and on GNOME
+  // also on a primary one). Without one, KDE calls ContextMenu instead.
   bool ShouldExposeMenu() const {
-    return context_menu_ != nullptr && context_menu_trigger_ == ContextMenuTrigger::Clicked;
+    return context_menu_ != nullptr && (context_menu_trigger_ == ContextMenuTrigger::Clicked ||
+                                        context_menu_trigger_ == ContextMenuTrigger::RightClicked);
+  }
+
+  // "No menu" is /NO_DBUSMENU, which KStatusNotifierItem uses and both Plasma and
+  // GNOME's extension check for. Plasma takes "/" for a menu, calls dbusmenu there
+  // and never falls back to ContextMenu.
+  const char* MenuObjectPath() const {
+    return ShouldExposeMenu() ? "/StatusNotifierItem/Menu" : "/NO_DBUSMENU";
+  }
+
+  // ItemIsMenu asks the host to show the menu on a primary click too (KDE).
+  bool ShouldActivateMenu() const {
+    return ShouldExposeMenu() && context_menu_trigger_ == ContextMenuTrigger::Clicked;
   }
 
   void EmitMenuPropertiesChanged() {
     if (!connection_ || registration_id_ == 0) return;
 
-    const bool expose_menu = ShouldExposeMenu();
-
     GVariantBuilder changed;
     GVariantBuilder invalidated;
     g_variant_builder_init(&changed, G_VARIANT_TYPE("a{sv}"));
     g_variant_builder_init(&invalidated, G_VARIANT_TYPE("as"));
-    g_variant_builder_add(&changed, "{sv}", "ItemIsMenu", g_variant_new_boolean(expose_menu));
+    g_variant_builder_add(&changed, "{sv}", "ItemIsMenu",
+                          g_variant_new_boolean(ShouldActivateMenu()));
     g_variant_builder_add(&changed, "{sv}", "Menu",
-                          g_variant_new_object_path(expose_menu ? "/StatusNotifierItem/Menu"
-                                                                : "/"));
+                          g_variant_new_object_path(MenuObjectPath()));
 
     GError* error = nullptr;
     g_dbus_connection_emit_signal(
@@ -434,22 +453,89 @@ class TrayIcon::Impl {
   static void OnMethodCall(GDBusConnection*, const gchar*, const gchar*, const gchar*,
                            const gchar* method_name, GVariant*,
                            GDBusMethodInvocation* invocation, gpointer user_data) {
-    if (!user_data) {
+    Impl* self = static_cast<Impl*>(user_data);
+    if (!self) {
       g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
                                              "Internal error");
       return;
     }
 
-    if (g_strcmp0(method_name, "Activate") == 0 ||
-        g_strcmp0(method_name, "SecondaryActivate") == 0 ||
-        g_strcmp0(method_name, "ContextMenu") == 0 ||
-        g_strcmp0(method_name, "Scroll") == 0) {
+    // What the host calls, and when:
+    // - Activate: a primary click on KDE; a double click on GNOME's AppIndicator
+    //   extension, which counts the clicks itself and toggles the exported menu on
+    //   a single one.
+    // - ContextMenu: a secondary click, on hosts that do not show an exported menu
+    //   themselves (KDE with Menu "/"). GNOME never calls it.
+    // - SecondaryActivate (middle click) and Scroll have no event yet.
+    // Reply first: a listener may run a nested loop, and the host is waiting.
+    if (g_strcmp0(method_name, "Activate") == 0) {
+      const gchar* sender_name = g_dbus_method_invocation_get_sender(invocation);
+      const std::string sender = sender_name ? sender_name : "";
+      g_dbus_method_invocation_return_value(invocation, nullptr);
+      self->OnActivate(sender);
+    } else if (g_strcmp0(method_name, "ContextMenu") == 0) {
+      g_dbus_method_invocation_return_value(invocation, nullptr);
+      if (self->owner_) self->owner_->Emit<TrayIconRightClickedEvent>(self->id_);
+    } else if (g_strcmp0(method_name, "SecondaryActivate") == 0 ||
+               g_strcmp0(method_name, "Scroll") == 0) {
       g_dbus_method_invocation_return_value(invocation, nullptr);
     } else {
       g_dbus_method_invocation_return_error(invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_UNKNOWN_METHOD,
                                              "Unknown method: %s", method_name);
     }
+  }
+
+  // SNI has no double click. GNOME's extension only calls Activate on the second
+  // click of a double click, so from gnome-shell it is one. From any other host a
+  // second Activate within the desktop's double-click time is one, reported instead
+  // of a second click, as NSEvent.clickCount does.
+  void OnActivate(const std::string& sender) {
+    if (!owner_) return;
+    if (IsGnomeShell(sender)) {
+      owner_->Emit<TrayIconDoubleClickedEvent>(id_);
+      return;
+    }
+    gint double_click_ms = 400;
+    if (GtkSettings* settings = gtk_settings_get_default()) {
+      g_object_get(settings, "gtk-double-click-time", &double_click_ms, nullptr);
+    }
+    const gint64 now = g_get_monotonic_time();
+    const bool is_double = last_activate_us_ != 0 &&
+                           now - last_activate_us_ <= gint64{double_click_ms} * 1000;
+    // A double click ends the pair: a third click starts a new one.
+    last_activate_us_ = is_double ? 0 : now;
+    if (is_double) {
+      owner_->Emit<TrayIconDoubleClickedEvent>(id_);
+    } else {
+      owner_->Emit<TrayIconClickedEvent>(id_);
+    }
+  }
+
+  // Whether a D-Bus caller is gnome-shell, asked of the bus once per caller.
+  bool IsGnomeShell(const std::string& sender) {
+    if (sender.empty() || !connection_) return false;
+    auto it = gnome_shell_callers_.find(sender);
+    if (it != gnome_shell_callers_.end()) return it->second;
+
+    bool is_gnome_shell = false;
+    GVariant* reply = g_dbus_connection_call_sync(
+        connection_, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID", g_variant_new("(s)", sender.c_str()),
+        G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1000, nullptr, nullptr);
+    if (reply) {
+      guint32 pid = 0;
+      g_variant_get(reply, "(u)", &pid);
+      g_variant_unref(reply);
+      gchar* comm = nullptr;
+      const std::string path = "/proc/" + std::to_string(pid) + "/comm";
+      if (pid != 0 && g_file_get_contents(path.c_str(), &comm, nullptr, nullptr)) {
+        is_gnome_shell = g_strcmp0(g_strstrip(comm), "gnome-shell") == 0;
+        g_free(comm);
+      }
+    }
+    gnome_shell_callers_[sender] = is_gnome_shell;
+    return is_gnome_shell;
   }
 
   // ── D-Bus property getter ─────────────────────────────────────────────────
@@ -473,7 +559,7 @@ class TrayIcon::Impl {
       return g_variant_new_string(self->visible_ ? "Active" : "Passive");
 
     if (g_strcmp0(property_name, "WindowId") == 0)
-      return g_variant_new_uint32(0);
+      return g_variant_new_int32(0);
 
     if (g_strcmp0(property_name, "IconName") == 0)
       return g_variant_new_string("");  // we use IconPixmap instead
@@ -500,10 +586,9 @@ class TrayIcon::Impl {
     }
 
     if (g_strcmp0(property_name, "ItemIsMenu") == 0)
-      return g_variant_new_boolean(self->ShouldExposeMenu());
+      return g_variant_new_boolean(self->ShouldActivateMenu());
     if (g_strcmp0(property_name, "Menu") == 0) {
-      const bool expose_menu = self->ShouldExposeMenu();
-      return g_variant_new_object_path(expose_menu ? "/StatusNotifierItem/Menu" : "/");
+      return g_variant_new_object_path(self->MenuObjectPath());
     }
 
     if (error) {
@@ -642,6 +727,53 @@ class TrayIcon::Impl {
     gtk_menu_item_activate(GTK_MENU_ITEM(it->second));
   }
 
+  // The MenuItem whose GtkMenuItem is widget, anywhere in menu's tree.
+  static std::shared_ptr<MenuItem> FindMenuItem(const std::shared_ptr<Menu>& menu,
+                                                void* widget) {
+    if (!menu) return nullptr;
+    for (const auto& item : menu->GetAllItems()) {
+      if (item->GetNativeObject() == widget) return item;
+      if (auto found = FindMenuItem(item->GetSubmenu(), widget)) return found;
+    }
+    return nullptr;
+  }
+
+  // The host shows the exported menu itself and reports it through dbusmenu
+  // events: "clicked" on an item, "opened" / "closed" on the root (id 0) or on the
+  // item that holds a submenu. They become the events the GTK menu would emit.
+  void HandleDbusMenuEvent(int id, const char* event_id) {
+    if (g_strcmp0(event_id, "clicked") == 0 || g_strcmp0(event_id, "activated") == 0) {
+      ActivateDbusMenuItem(id);
+      return;
+    }
+    const bool opened = g_strcmp0(event_id, "opened") == 0;
+    if (!opened && g_strcmp0(event_id, "closed") != 0) return;
+    if (opened ? !open_dbusmenus_.insert(id).second : open_dbusmenus_.erase(id) == 0) return;
+
+    if (id == 0) {
+      std::shared_ptr<Menu> menu = context_menu_;
+      if (!menu) return;
+      if (opened) {
+        menu->Emit(MenuOpenedEvent(menu->GetId()));
+        return;
+      }
+      // Closing the menu closes whatever submenu the host did not report closed.
+      std::vector<int> still_open(open_dbusmenus_.begin(), open_dbusmenus_.end());
+      for (int submenu_id : still_open) HandleDbusMenuEvent(submenu_id, "closed");
+      menu->Emit(MenuClosedEvent(menu->GetId()));
+      return;
+    }
+    auto it = dbusmenu_items_.find(id);
+    if (it == dbusmenu_items_.end()) return;
+    std::shared_ptr<MenuItem> item = FindMenuItem(context_menu_, it->second);
+    if (!item) return;
+    if (opened) {
+      item->Emit(MenuItemSubmenuOpenedEvent(item->GetId()));
+    } else {
+      item->Emit(MenuItemSubmenuClosedEvent(item->GetId()));
+    }
+  }
+
   static void OnMenuMethodCall(GDBusConnection*, const gchar*, const gchar*, const gchar*,
                                const gchar* method_name, GVariant* parameters,
                                GDBusMethodInvocation* invocation, gpointer user_data) {
@@ -739,11 +871,10 @@ class TrayIcon::Impl {
           g_variant_unref(data);
         }
       }
-      if (event_id && (g_strcmp0(event_id, "clicked") == 0 ||
-                       g_strcmp0(event_id, "activated") == 0)) {
-        self->ActivateDbusMenuItem(item_id);
-      }
+      const std::string event = event_id ? event_id : "";
+      // Reply first: a listener may run a nested loop, and the host is waiting.
       g_dbus_method_invocation_return_value(invocation, nullptr);
+      self->HandleDbusMenuEvent(item_id, event.c_str());
       return;
     }
 
@@ -752,16 +883,14 @@ class TrayIcon::Impl {
       if (parameters) {
         g_variant_get(parameters, "(a(isvu))", &events);
       }
+      std::vector<std::pair<int, std::string>> received;
       if (events) {
         gint item_id = 0;
         const gchar* event_id = nullptr;
         GVariant* data = nullptr;
         guint timestamp = 0;
         while (g_variant_iter_loop(events, "(i&svu)", &item_id, &event_id, &data, &timestamp)) {
-          if (event_id && (g_strcmp0(event_id, "clicked") == 0 ||
-                           g_strcmp0(event_id, "activated") == 0)) {
-            self->ActivateDbusMenuItem(item_id);
-          }
+          received.emplace_back(item_id, event_id ? event_id : "");
         }
         g_variant_iter_free(events);
       }
@@ -771,6 +900,9 @@ class TrayIcon::Impl {
       g_dbus_method_invocation_return_value(invocation,
                                              g_variant_new("(@ai)",
                                                            g_variant_builder_end(&errors)));
+      for (const auto& [item_id, event_id] : received) {
+        self->HandleDbusMenuEvent(item_id, event_id.c_str());
+      }
       return;
     }
 
@@ -901,6 +1033,7 @@ std::optional<std::string> TrayIcon::GetTooltip() {
 void TrayIcon::SetContextMenu(std::shared_ptr<Menu> menu) {
   pimpl_->context_menu_ = menu;
   ++pimpl_->menu_revision_;
+  pimpl_->open_dbusmenus_.clear();
   pimpl_->EmitSignal("NewStatus",
                      g_variant_new("(s)", pimpl_->visible_ ? "Active" : "Passive"));
   pimpl_->EmitMenuPropertiesChanged();
