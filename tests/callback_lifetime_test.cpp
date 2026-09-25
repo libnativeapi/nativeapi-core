@@ -5,9 +5,13 @@
 // The registration case needs a desktop session and skips if the platform cannot
 // register the accelerator. The self-replacement cases run without registration.
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <string>
+#include <thread>
 
 #include "../src/shortcut.h"
 #include "../src/shortcut_manager.h"
@@ -39,6 +43,31 @@ void TestShortcutSelfReplacement() {
   shortcut.Invoke();
   Check(replacements == 1, "replacement callback was not installed");
   shortcut.SetCallback(nullptr);
+}
+
+void TestShortcutKeepsMutableState() {
+  int seen = 0;
+  nativeapi::Shortcut shortcut(1, "Ctrl+A", [&seen, count = 0]() mutable { seen = ++count; });
+  shortcut.Invoke();
+  shortcut.Invoke();
+  Check(seen == 2, "mutable shortcut callback lost its state between invocations");
+}
+
+// Backends invoke shortcuts from their own threads while Unregister clears the
+// callback from the caller's. Meaningful under ThreadSanitizer.
+void TestShortcutConcurrentInvokeAndClear() {
+  std::atomic<int> calls{0};
+  for (int round = 0; round < 500; ++round) {
+    auto payload = std::make_shared<std::string>(256, 'x');
+    nativeapi::Shortcut shortcut(1, "Ctrl+A", [&calls, payload] { calls += payload->empty() ? 0 : 1; });
+    std::thread invoker([&] {
+      for (int i = 0; i < 20; ++i) {
+        shortcut.Invoke();
+      }
+    });
+    shortcut.SetCallback(nullptr);
+    invoker.join();
+  }
 }
 
 void TestHookSelfRemoval() {
@@ -93,6 +122,8 @@ int main() {
   std::cout << "callback_lifetime_test" << std::endl;
 
   TestShortcutSelfReplacement();
+  TestShortcutKeepsMutableState();
+  TestShortcutConcurrentInvokeAndClear();
   TestHookSelfRemoval();
   TestUnregisterClearsRetainedShortcut();
   if (g_failures > 0) {

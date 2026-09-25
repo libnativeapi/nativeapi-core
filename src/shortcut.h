@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "foundation/event.h"
@@ -243,6 +245,8 @@ class Shortcut {
    *
    * @note This method respects the enabled state - it won't invoke the
    *       callback if the shortcut is disabled.
+   * @note Safe to call from any thread, and the callback may replace or clear
+   *       itself while it runs.
    *
    * @example
    * ```cpp
@@ -306,12 +310,22 @@ class Shortcut {
   /**
    * @brief Whether the shortcut is currently enabled.
    */
-  bool enabled_;
+  std::atomic<bool> enabled_;
+
+  /**
+   * @brief Guards callback_. Platform backends invoke shortcuts from their own
+   *        threads, while Unregister clears the callback from the caller's.
+   */
+  mutable std::mutex callback_mutex_;
 
   /**
    * @brief The callback function to invoke when the shortcut is triggered.
+   *
+   * Held by shared_ptr so Invoke() can keep the running callback alive without
+   * copying it: a callback may replace or clear itself, and a mutable lambda
+   * keeps its state across invocations.
    */
-  std::function<void()> callback_;
+  std::shared_ptr<std::function<void()>> callback_;
 };
 
 // ---------------------------------------------------------------------------

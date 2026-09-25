@@ -640,8 +640,10 @@ class WindowManager::Impl {
  private:
   WindowManager* manager_;
   // Optional pre-show/hide hooks
-  std::optional<WindowManager::WindowWillShowHook> will_show_hook_;
-  std::optional<WindowManager::WindowWillHideHook> will_hide_hook_;
+  // Held by shared_ptr so HandleWillShow/Hide can keep a hook alive while it
+  // replaces or clears itself, without copying it.
+  std::shared_ptr<WindowManager::WindowWillShowHook> will_show_hook_;
+  std::shared_ptr<WindowManager::WindowWillHideHook> will_hide_hook_;
 
   friend class WindowManager;
 };
@@ -877,7 +879,8 @@ std::shared_ptr<Window> WindowManager::GetCurrent() {
 }
 
 void WindowManager::SetWillShowHook(std::optional<WindowWillShowHook> hook) {
-  pimpl_->will_show_hook_ = std::move(hook);
+  pimpl_->will_show_hook_ =
+      hook && *hook ? std::make_shared<WindowWillShowHook>(std::move(*hook)) : nullptr;
   if (pimpl_->will_show_hook_) {
     // Ensure global swizzling is installed when hook is set
     InstallGlobalSwizzling();
@@ -885,7 +888,8 @@ void WindowManager::SetWillShowHook(std::optional<WindowWillShowHook> hook) {
 }
 
 void WindowManager::SetWillHideHook(std::optional<WindowWillHideHook> hook) {
-  pimpl_->will_hide_hook_ = std::move(hook);
+  pimpl_->will_hide_hook_ =
+      hook && *hook ? std::make_shared<WindowWillHideHook>(std::move(*hook)) : nullptr;
   if (pimpl_->will_hide_hook_) {
     // Ensure global swizzling is installed when hook is set
     InstallGlobalSwizzling();
@@ -893,11 +897,11 @@ void WindowManager::SetWillHideHook(std::optional<WindowWillHideHook> hook) {
 }
 
 bool WindowManager::HasWillShowHook() const {
-  return pimpl_->will_show_hook_.has_value();
+  return pimpl_->will_show_hook_ != nullptr;
 }
 
 bool WindowManager::HasWillHideHook() const {
-  return pimpl_->will_hide_hook_.has_value();
+  return pimpl_->will_hide_hook_ != nullptr;
 }
 
 void WindowManager::HandleWillShow(WindowId id) {

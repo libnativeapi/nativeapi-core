@@ -2,13 +2,24 @@
 
 namespace nativeapi {
 
+namespace {
+
+std::shared_ptr<std::function<void()>> MakeCallback(std::function<void()> callback) {
+  if (!callback) {
+    return nullptr;
+  }
+  return std::make_shared<std::function<void()>>(std::move(callback));
+}
+
+}  // namespace
+
 Shortcut::Shortcut(ShortcutId id, const ShortcutOptions& options)
     : id_(id),
       accelerator_(options.accelerator),
       description_(options.description),
       scope_(options.scope),
       enabled_(options.enabled),
-      callback_(options.callback) {}
+      callback_(MakeCallback(options.callback)) {}
 
 Shortcut::Shortcut(ShortcutId id, const std::string& accelerator, std::function<void()> callback)
     : id_(id),
@@ -16,7 +27,7 @@ Shortcut::Shortcut(ShortcutId id, const std::string& accelerator, std::function<
       description_(""),
       scope_(ShortcutScope::Global),
       enabled_(true),
-      callback_(callback) {}
+      callback_(MakeCallback(std::move(callback))) {}
 
 Shortcut::~Shortcut() = default;
 
@@ -49,19 +60,33 @@ bool Shortcut::IsEnabled() const {
 }
 
 void Shortcut::Invoke() {
-  // A callback may replace or clear itself while it is executing.
-  auto callback = callback_;
-  if (enabled_ && callback) {
-    callback();
+  if (!enabled_) {
+    return;
+  }
+  // Keep the running callback alive: it may replace or clear itself.
+  std::shared_ptr<std::function<void()>> callback;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback = callback_;
+  }
+  if (callback) {
+    (*callback)();
   }
 }
 
 void Shortcut::SetCallback(std::function<void()> callback) {
-  callback_ = callback;
+  auto replacement = MakeCallback(std::move(callback));
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callback_.swap(replacement);
+  }
+  // The previous callback is released here, outside the lock: destroying its
+  // captures may call back into this shortcut.
 }
 
 std::function<void()> Shortcut::GetCallback() const {
-  return callback_;
+  std::lock_guard<std::mutex> lock(callback_mutex_);
+  return callback_ ? *callback_ : std::function<void()>();
 }
 
 }  // namespace nativeapi
