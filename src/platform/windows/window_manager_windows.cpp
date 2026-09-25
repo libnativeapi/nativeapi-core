@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -104,16 +105,22 @@ static void CALLBACK ForegroundEventProc(HWINEVENTHOOK hook,
 // Geometry and show-state tracking for WindowMinimizedEvent, WindowMaximizedEvent,
 // WindowRestoredEvent, WindowMovedEvent and WindowResizedEvent. The windows are
 // usually owned by someone else (Flutter's runner, the host application), so
-// there is no window procedure to read WM_SIZE / WM_MOVE from. A WinEvent hook
-// scoped to this process reports every change of a window's rectangle instead,
-// minimizing and maximizing included, and the snapshot kept per window tells
-// which of the five events a change amounts to.
+// the library subclasses each one it reports on and reads WM_WINDOWPOSCHANGED,
+// which every change of a window's rectangle goes through, minimizing and
+// maximizing included. The snapshot kept per window tells which of the five
+// events a change amounts to.
+//
+// Not a WinEvent hook on EVENT_OBJECT_LOCATIONCHANGE: out-of-context WinEvents
+// are queued to this thread and delivered whenever it next reads a message —
+// in the middle of Flutter's resize, which pumps messages while it waits for a
+// frame of the new size, among other places — and the listeners called from
+// there (Dart ones synchronously) made every resize step late. The subclass
+// reports after the window's own procedure, and so Flutter, is done with it.
 struct WindowSnapshot {
   bool minimized;
   bool maximized;
   RECT rect;
 };
-static HWINEVENTHOOK g_location_hook = nullptr;
 static HWINEVENTHOOK g_lifetime_hook = nullptr;
 static std::unordered_map<HWND, WindowSnapshot> g_window_snapshots;
 // Windows seen on screen, which is what WindowCreatedEvent and WindowClosedEvent
@@ -144,6 +151,31 @@ static bool IsReportableWindow(HWND hwnd) {
   return !(GetWindowLongPtr(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
 }
 
+static LRESULT CALLBACK WindowGeometryProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
+                                           UINT_PTR subclass_id, DWORD_PTR) {
+  if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(hwnd, WindowGeometryProc, subclass_id);
+  } else if (message == WM_WINDOWPOSCHANGED) {
+    const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
+    if (g_window_changed_fn && g_window_changed_context) {
+      g_window_changed_fn(g_window_changed_context, EVENT_OBJECT_LOCATIONCHANGE, hwnd);
+    }
+    return result;
+  }
+  return DefSubclassProc(hwnd, message, wp, lp);
+}
+
+// Starts reporting geometry changes of `hwnd`. Only windows of the calling
+// thread can be subclassed; the others are tracked for creation and closing
+// only.
+static void WatchWindowGeometry(HWND hwnd) {
+  SetWindowSubclass(hwnd, WindowGeometryProc, reinterpret_cast<UINT_PTR>(&WindowGeometryProc), 0);
+}
+
+static void UnwatchWindowGeometry(HWND hwnd) {
+  RemoveWindowSubclass(hwnd, WindowGeometryProc, reinterpret_cast<UINT_PTR>(&WindowGeometryProc));
+}
+
 static void CALLBACK WindowChangedEventProc(HWINEVENTHOOK hook,
                                             DWORD event,
                                             HWND hwnd,
@@ -155,8 +187,8 @@ static void CALLBACK WindowChangedEventProc(HWINEVENTHOOK hook,
   (void)event_thread;
   (void)event_time;
 
-  // OBJID_WINDOW leaves out the caret and the cursor, which report location
-  // changes through the same event.
+  // OBJID_WINDOW leaves out the caret and the cursor, which report showing
+  // through the same event.
   if (id_object != OBJID_WINDOW || id_child != CHILDID_SELF || !hwnd) {
     return;
   }
@@ -450,18 +482,13 @@ class WindowManager::Impl {
       static_cast<Impl*>(impl)->OnWindowChanged(event, hwnd);
     };
 
-    // Unlike the foreground hook these only concern our own windows, so they
-    // are scoped to this process and cost nothing while other applications work.
-    const DWORD process_id = GetCurrentProcessId();
-    if (!g_location_hook) {
-      g_location_hook =
-          SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr,
-                          WindowChangedEventProc, process_id, 0, WINEVENT_OUTOFCONTEXT);
-    }
+    // Unlike the foreground hook this only concerns our own windows, so it is
+    // scoped to this process and costs nothing while other applications work.
+    // Showing and destroying are rare, unlike location changes (see above).
     if (!g_lifetime_hook) {
       // EVENT_OBJECT_DESTROY and EVENT_OBJECT_SHOW are adjacent
       g_lifetime_hook = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW, nullptr,
-                                        WindowChangedEventProc, process_id, 0,
+                                        WindowChangedEventProc, GetCurrentProcessId(), 0,
                                         WINEVENT_OUTOFCONTEXT);
     }
 
@@ -470,6 +497,7 @@ class WindowManager::Impl {
         [](HWND hwnd, LPARAM) -> BOOL {
           if (IsOwnProcessWindow(hwnd) && IsReportableWindow(hwnd)) {
             g_window_snapshots[hwnd] = TakeSnapshot(hwnd);
+            WatchWindowGeometry(hwnd);
             // Already on screen, so not created under our eyes: no
             // WindowCreatedEvent for it, only the WindowClosedEvent.
             if (IsWindowVisible(hwnd)) {
@@ -489,10 +517,6 @@ class WindowManager::Impl {
       UnhookWinEvent(g_foreground_hook);
       g_foreground_hook = nullptr;
     }
-    if (g_location_hook) {
-      UnhookWinEvent(g_location_hook);
-      g_location_hook = nullptr;
-    }
     if (g_lifetime_hook) {
       UnhookWinEvent(g_lifetime_hook);
       g_lifetime_hook = nullptr;
@@ -502,6 +526,9 @@ class WindowManager::Impl {
     g_foreground_changed_context = nullptr;
     g_window_changed_fn = nullptr;
     g_window_changed_context = nullptr;
+    for (const auto& [hwnd, snapshot] : g_window_snapshots) {
+      UnwatchWindowGeometry(hwnd);
+    }
     g_window_snapshots.clear();
     g_shown_windows.clear();
   }
@@ -545,6 +572,7 @@ class WindowManager::Impl {
     if (it == g_window_snapshots.end()) {
       // First sight (a window being shown): nothing to compare with yet
       g_window_snapshots[hwnd] = current;
+      WatchWindowGeometry(hwnd);
       return;
     }
     if (event != EVENT_OBJECT_LOCATIONCHANGE) {
