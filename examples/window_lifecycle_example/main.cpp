@@ -9,11 +9,18 @@
 
 #include "nativeapi.h"
 
+// Only the desktop platforms have a native window to close; iOS, Android and
+// OpenHarmony (the latter two also define __linux__) build it as a no-op.
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+#define NATIVEAPI_EXAMPLE_COCOA 1
 #import <Cocoa/Cocoa.h>
 #elif defined(_WIN32)
 #include <windows.h>
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(__OHOS__)
+#define NATIVEAPI_EXAMPLE_GTK 1
 #include <gtk/gtk.h>
 #endif
 
@@ -28,12 +35,14 @@ using nativeapi::WindowManager;
 // (an embedding framework, the user) would.
 static void CloseNatively(const std::shared_ptr<Window>& window) {
   void* native = window->GetNativeObject();
-#if defined(__APPLE__)
+#if defined(NATIVEAPI_EXAMPLE_COCOA)
   [(__bridge NSWindow*)native close];
 #elif defined(_WIN32)
   DestroyWindow(static_cast<HWND>(native));
-#elif defined(__linux__)
+#elif defined(NATIVEAPI_EXAMPLE_GTK)
   gtk_widget_destroy(GTK_WIDGET(native));
+#else
+  (void)native;
 #endif
 }
 

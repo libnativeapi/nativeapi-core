@@ -121,8 +121,10 @@ int main(int argc, char** argv) {
                                     {"password", password},
                                     {"clear", clear},
                                     {"sign_in", sign_in}}) {
-    view->AddListener<ViewFocusedEvent>(
-        [label](const ViewFocusedEvent&) { std::cout << "[view] focused: " << label << std::endl; });
+    // An init-capture: C++17 cannot capture a structured binding by name.
+    view->AddListener<ViewFocusedEvent>([label = label](const ViewFocusedEvent&) {
+      std::cout << "[view] focused: " << label << std::endl;
+    });
   }
 
   root->AddSubview(heading);
