@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../tray_icon.h"
 #include "tray_icon_c.h"

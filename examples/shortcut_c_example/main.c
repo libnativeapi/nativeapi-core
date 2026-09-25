@@ -60,7 +60,7 @@ int main(void) {
 
   // Register event callback
   native_listener_id_t event_listener =
-      native_shortcut_manager_add_listener(on_shortcut_event, NULL);
+      native_shortcut_manager_add_listener(on_shortcut_event, NULL, NULL);
   if (event_listener == NATIVE_INVALID_LISTENER_ID) {
     printf("Failed to register event callback\n");
     return 1;
@@ -73,7 +73,7 @@ int main(void) {
 
   // Simple registration
   native_shortcut_t shortcut1 = native_shortcut_manager_register_with_accelerator_and_callback(
-      "Ctrl+Shift+A", on_shortcut_activated, (void*)"Shortcut 1");
+      "Ctrl+Shift+A", on_shortcut_activated, (void*)"Shortcut 1", NULL);
 
   if (shortcut1 == NATIVE_INVALID_SHORTCUT) {
     printf("Failed to register shortcut 1\n");

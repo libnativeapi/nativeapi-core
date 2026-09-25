@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../shortcut.h"
 
@@ -36,11 +37,12 @@ native_shortcut_t native_shortcut_create_with_id_and_options(native_shortcut_id_
   }
 }
 
-native_shortcut_t native_shortcut_create_with_id_and_accelerator_and_callback(native_shortcut_id_t id, const char* accelerator, native_shortcut_create_with_id_and_accelerator_and_callback_t callback, void* callback_user_data) {
+native_shortcut_t native_shortcut_create_with_id_and_accelerator_and_callback(native_shortcut_id_t id, const char* accelerator, native_shortcut_create_with_id_and_accelerator_and_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
+  auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_user_data]() { callback(callback_user_data); };
+      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
     }
     return nativeapi::HandleTable::GetInstance().Insert(
         std::make_shared<nativeapi::Shortcut>(id, std::string(accelerator ? accelerator : ""), callback_cpp));
@@ -157,7 +159,8 @@ void native_shortcut_invoke(native_shortcut_t shortcut) {
   }
 }
 
-void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_set_callback_t callback, void* callback_user_data) {
+void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_set_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
+  auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Shortcut>(shortcut);
   if (!self) {
     return;
@@ -165,7 +168,7 @@ void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_se
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_user_data]() { callback(callback_user_data); };
+      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
     }
     self->SetCallback(callback_cpp);
     return;

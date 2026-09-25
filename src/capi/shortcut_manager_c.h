@@ -26,7 +26,7 @@ bool native_shortcut_manager_is_supported(void);
 
 /// Caller owns the returned handle; release it with native_shortcut_free().
 FFI_PLUGIN_EXPORT
-native_shortcut_t native_shortcut_manager_register_with_accelerator_and_callback(const char* accelerator, native_shortcut_manager_register_callback_t callback, void* callback_user_data);
+native_shortcut_t native_shortcut_manager_register_with_accelerator_and_callback(const char* accelerator, native_shortcut_manager_register_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data);
 
 /// Caller owns the returned handle; release it with native_shortcut_free().
 FFI_PLUGIN_EXPORT
@@ -73,7 +73,7 @@ void native_shortcut_manager_emit_shortcut_activated(native_shortcut_id_t id, co
 /// Registers @p callback for every ShortcutEvent this ShortcutManager emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_callback_t callback, void* user_data);
+native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

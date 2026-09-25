@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/keyboard.h"
 #include "keyboard_c.h"
@@ -74,7 +75,8 @@ void native_keyboard_monitor_free(native_keyboard_monitor_t keyboard_monitor) {
   nativeapi::HandleTable::GetInstance().Release(keyboard_monitor);
 }
 
-native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monitor_t keyboard_monitor, native_keyboard_event_callback_t callback, void* user_data) {
+native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monitor_t keyboard_monitor, native_keyboard_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -84,12 +86,12 @@ native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monito
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::KeyboardEvent>(
-        [callback, user_data](const nativeapi::KeyboardEvent& event) {
+        [callback, holder](const nativeapi::KeyboardEvent& event) {
           native_keyboard_event_t c_event = {};
           if (!to_c_keyboard_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_keyboard_event(&c_event);
         }));
   } catch (...) {

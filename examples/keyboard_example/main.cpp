@@ -76,7 +76,7 @@ int main() {
   std::cout << "Keyboard monitor created successfully\n";
 
   // Register the single event listener
-  if (native_keyboard_monitor_add_listener(g_monitor, on_keyboard_event, nullptr) ==
+  if (native_keyboard_monitor_add_listener(g_monitor, on_keyboard_event, nullptr, nullptr) ==
       NATIVE_INVALID_LISTENER_ID) {
     std::cout << "Failed to add listener\n";
     native_keyboard_monitor_free(g_monitor);

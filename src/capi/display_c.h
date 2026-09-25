@@ -135,6 +135,7 @@ void free_c_display_event(native_display_event_t* value);
 #ifdef __cplusplus
 #include "../display.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

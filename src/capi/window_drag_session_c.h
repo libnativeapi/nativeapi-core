@@ -77,7 +77,7 @@ void native_window_drag_session_free(native_window_drag_session_t window_drag_se
 /// Registers @p callback for every WindowDragEvent this WindowDragSession emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_window_drag_session_add_listener(native_window_drag_session_t window_drag_session, native_window_drag_event_callback_t callback, void* user_data);
+native_listener_id_t native_window_drag_session_add_listener(native_window_drag_session_t window_drag_session, native_window_drag_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

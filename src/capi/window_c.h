@@ -421,6 +421,7 @@ void free_c_window_event(native_window_event_t* value);
 #ifdef __cplusplus
 #include "../window.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

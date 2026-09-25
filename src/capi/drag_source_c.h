@@ -109,7 +109,7 @@ void native_drag_source_free(native_drag_source_t drag_source);
 /// Registers @p callback for every DragSourceEvent this DragSource emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_source, native_drag_source_event_callback_t callback, void* user_data);
+native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_source, native_drag_source_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT
@@ -135,6 +135,7 @@ void free_c_drag_source_event(native_drag_source_event_t* value);
 #ifdef __cplusplus
 #include "../drag_source.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

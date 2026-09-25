@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -106,7 +107,8 @@ void native_window_drag_session_free(native_window_drag_session_t window_drag_se
   nativeapi::HandleTable::GetInstance().Release(window_drag_session);
 }
 
-native_listener_id_t native_window_drag_session_add_listener(native_window_drag_session_t window_drag_session, native_window_drag_event_callback_t callback, void* user_data) {
+native_listener_id_t native_window_drag_session_add_listener(native_window_drag_session_t window_drag_session, native_window_drag_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -116,12 +118,12 @@ native_listener_id_t native_window_drag_session_add_listener(native_window_drag_
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::WindowDragEvent>(
-        [callback, user_data](const nativeapi::WindowDragEvent& event) {
+        [callback, holder](const nativeapi::WindowDragEvent& event) {
           native_window_drag_event_t c_event = {};
           if (!to_c_window_drag_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_window_drag_event(&c_event);
         }));
   } catch (...) {

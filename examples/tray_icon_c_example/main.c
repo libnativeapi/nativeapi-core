@@ -113,10 +113,10 @@ int main() {
   native_menu_item_set_state(checkbox, NATIVE_MENU_ITEM_STATE_CHECKED);
 
   // Set up event listeners using new API
-  native_menu_item_add_listener(item1, on_menu_event, NULL);
-  native_menu_item_add_listener(item2, on_menu_event, NULL);
-  native_menu_item_add_listener(exit_item, on_menu_event, NULL);
-  native_menu_item_add_listener(checkbox, on_menu_event, NULL);
+  native_menu_item_add_listener(item1, on_menu_event, NULL, NULL);
+  native_menu_item_add_listener(item2, on_menu_event, NULL, NULL);
+  native_menu_item_add_listener(exit_item, on_menu_event, NULL, NULL);
+  native_menu_item_add_listener(checkbox, on_menu_event, NULL, NULL);
 
   // Add items to menu
   native_menu_add_item(menu, item1);
@@ -128,7 +128,7 @@ int main() {
   printf("Added %lu items to menu\n", native_menu_get_item_count(menu));
 
   // Set menu event listeners using new API
-  native_menu_add_listener(menu, on_menu_event, NULL);
+  native_menu_add_listener(menu, on_menu_event, NULL, NULL);
 
   // Create a submenu example
   native_menu_t submenu = native_menu_create();
@@ -193,7 +193,7 @@ int main() {
   }
 
   // Set up tray icon event listeners using new API
-  native_tray_icon_add_listener(tray_icon, on_tray_event, NULL);
+  native_tray_icon_add_listener(tray_icon, on_tray_event, NULL, NULL);
 
   // Show the tray icon
   if (native_tray_icon_set_visible(tray_icon, true)) {

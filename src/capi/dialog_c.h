@@ -31,6 +31,7 @@ typedef enum {
 #ifdef __cplusplus
 #include "../dialog.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

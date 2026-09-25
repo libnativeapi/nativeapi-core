@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../window.h"
 #include "window_c.h"
@@ -164,18 +165,19 @@ native_window_list_t native_application_get_all_windows(void) {
   }
 }
 
-native_listener_id_t native_application_add_listener(native_application_event_callback_t callback, void* user_data) {
+native_listener_id_t native_application_add_listener(native_application_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
   try {
     return static_cast<native_listener_id_t>(nativeapi::Application::GetInstance().AddListener<nativeapi::ApplicationEvent>(
-        [callback, user_data](const nativeapi::ApplicationEvent& event) {
+        [callback, holder](const nativeapi::ApplicationEvent& event) {
           native_application_event_t c_event = {};
           if (!to_c_application_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_application_event(&c_event);
         }));
   } catch (...) {

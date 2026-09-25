@@ -51,7 +51,7 @@ void native_keyboard_monitor_free(native_keyboard_monitor_t keyboard_monitor);
 /// Registers @p callback for every KeyboardEvent this KeyboardMonitor emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monitor_t keyboard_monitor, native_keyboard_event_callback_t callback, void* user_data);
+native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monitor_t keyboard_monitor, native_keyboard_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

@@ -40,10 +40,10 @@ FFI_PLUGIN_EXPORT
 native_window_t native_window_manager_get_window_at_point(native_point_t point, native_window_id_t excluded_window_id);
 
 FFI_PLUGIN_EXPORT
-void native_window_manager_set_will_show_hook(native_window_manager_set_will_show_hook_callback_t hook, void* hook_user_data);
+void native_window_manager_set_will_show_hook(native_window_manager_set_will_show_hook_callback_t hook, void* hook_user_data, native_release_user_data_t hook_release_user_data);
 
 FFI_PLUGIN_EXPORT
-void native_window_manager_set_will_hide_hook(native_window_manager_set_will_hide_hook_callback_t hook, void* hook_user_data);
+void native_window_manager_set_will_hide_hook(native_window_manager_set_will_hide_hook_callback_t hook, void* hook_user_data, native_release_user_data_t hook_release_user_data);
 
 FFI_PLUGIN_EXPORT
 bool native_window_manager_has_will_show_hook(void);
@@ -66,7 +66,7 @@ bool native_window_manager_call_original_hide(native_window_id_t id);
 /// Registers @p callback for every WindowEvent this WindowManager emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_window_manager_add_listener(native_window_event_callback_t callback, void* user_data);
+native_listener_id_t native_window_manager_add_listener(native_window_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

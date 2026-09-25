@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -389,7 +390,8 @@ void native_tray_icon_list_release(native_tray_icon_list_t* list) {
   list->count = 0;
 }
 
-native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon, native_tray_icon_event_callback_t callback, void* user_data) {
+native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon, native_tray_icon_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -399,12 +401,12 @@ native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon,
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::TrayIconEvent>(
-        [callback, user_data](const nativeapi::TrayIconEvent& event) {
+        [callback, holder](const nativeapi::TrayIconEvent& event) {
           native_tray_icon_event_t c_event = {};
           if (!to_c_tray_icon_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_tray_icon_event(&c_event);
         }));
   } catch (...) {

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -100,7 +101,8 @@ void native_drop_target_free(native_drop_target_t drop_target) {
   nativeapi::HandleTable::GetInstance().Release(drop_target);
 }
 
-native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_target, native_drop_target_event_callback_t callback, void* user_data) {
+native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_target, native_drop_target_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -110,12 +112,12 @@ native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_t
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::DropTargetEvent>(
-        [callback, user_data](const nativeapi::DropTargetEvent& event) {
+        [callback, holder](const nativeapi::DropTargetEvent& event) {
           native_drop_target_event_t c_event = {};
           if (!to_c_drop_target_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_drop_target_event(&c_event);
         }));
   } catch (...) {

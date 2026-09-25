@@ -71,6 +71,7 @@ unsigned int native_color_to_argb(native_color_t color);
 #ifdef __cplusplus
 #include "../foundation/color.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

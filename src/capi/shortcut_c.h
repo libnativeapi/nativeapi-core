@@ -35,6 +35,7 @@ typedef struct {
   char* accelerator;
   native_shortcut_options_callback_t callback;
   void* callback_user_data;
+  native_release_user_data_t callback_release_user_data;
   char* description;
   native_shortcut_scope_t scope;
   bool enabled;
@@ -92,7 +93,7 @@ native_shortcut_t native_shortcut_create_with_id_and_options(native_shortcut_id_
 
 /// Creates a Shortcut instance; release it with native_shortcut_free().
 FFI_PLUGIN_EXPORT
-native_shortcut_t native_shortcut_create_with_id_and_accelerator_and_callback(native_shortcut_id_t id, const char* accelerator, native_shortcut_create_with_id_and_accelerator_and_callback_t callback, void* callback_user_data);
+native_shortcut_t native_shortcut_create_with_id_and_accelerator_and_callback(native_shortcut_id_t id, const char* accelerator, native_shortcut_create_with_id_and_accelerator_and_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data);
 
 FFI_PLUGIN_EXPORT
 native_shortcut_id_t native_shortcut_get_id(native_shortcut_t shortcut);
@@ -121,7 +122,7 @@ FFI_PLUGIN_EXPORT
 void native_shortcut_invoke(native_shortcut_t shortcut);
 
 FFI_PLUGIN_EXPORT
-void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_set_callback_t callback, void* callback_user_data);
+void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_set_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data);
 
 /// Releases the caller's reference. Safe to call with an invalid or
 /// already-released handle.
@@ -156,6 +157,7 @@ void free_c_shortcut_event(native_shortcut_event_t* value);
 #ifdef __cplusplus
 #include "../shortcut.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 
@@ -198,10 +200,10 @@ inline native_shortcut_options_t to_c_shortcut_options(const nativeapi::Shortcut
 inline nativeapi::ShortcutOptions to_cpp_shortcut_options(const native_shortcut_options_t& value) {
   nativeapi::ShortcutOptions result = {};
   result.accelerator = value.accelerator ? value.accelerator : "";
+  auto callback_holder = nativeapi::capi::UserData::Make(value.callback_user_data, value.callback_release_user_data);
   if (value.callback) {
     auto callback = value.callback;
-    auto* data = value.callback_user_data;
-    result.callback = [callback, data]() { callback(data); };
+    result.callback = [callback, holder = callback_holder]() { callback(holder->get()); };
   }
   result.description = value.description ? value.description : "";
   result.scope = to_cpp_shortcut_scope(value.scope);

@@ -96,6 +96,7 @@ void native_file_dialog_free(native_file_dialog_t file_dialog);
 #ifdef __cplusplus
 #include "../file_dialog.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

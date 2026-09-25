@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -193,7 +194,8 @@ void native_drag_source_free(native_drag_source_t drag_source) {
   nativeapi::HandleTable::GetInstance().Release(drag_source);
 }
 
-native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_source, native_drag_source_event_callback_t callback, void* user_data) {
+native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_source, native_drag_source_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -203,12 +205,12 @@ native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_s
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::DragSourceEvent>(
-        [callback, user_data](const nativeapi::DragSourceEvent& event) {
+        [callback, holder](const nativeapi::DragSourceEvent& event) {
           native_drag_source_event_t c_event = {};
           if (!to_c_drag_source_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_drag_source_event(&c_event);
         }));
   } catch (...) {

@@ -77,17 +77,17 @@ int main() {
 
   // Add event listeners using the new event system
   native_listener_id_t file_listener =
-      native_menu_item_add_listener(file_item, on_menu_event, (void*)"New File");
+      native_menu_item_add_listener(file_item, on_menu_event, (void*)"New File", NULL);
 
   native_listener_id_t checkbox_listener =
-      native_menu_item_add_listener(checkbox_item, on_menu_event, (void*)"Word Wrap");
+      native_menu_item_add_listener(checkbox_item, on_menu_event, (void*)"Word Wrap", NULL);
 
   native_listener_id_t exit_listener =
-      native_menu_item_add_listener(exit_item, on_menu_event, (void*)"Exit");
+      native_menu_item_add_listener(exit_item, on_menu_event, (void*)"Exit", NULL);
 
   // Add menu event listeners
   native_listener_id_t menu_listener =
-      native_menu_add_listener(menu, on_menu_event, (void*)"Main Menu");
+      native_menu_add_listener(menu, on_menu_event, (void*)"Main Menu", NULL);
 
   // Check if listeners were added successfully
   if (file_listener == NATIVE_INVALID_LISTENER_ID ||
@@ -129,7 +129,7 @@ int main() {
   native_menu_add_item(menu, submenu_parent);
 
   // Add submenu event listener
-  native_menu_item_add_listener(submenu_parent, on_menu_event, (void*)"Tools");
+  native_menu_item_add_listener(submenu_parent, on_menu_event, (void*)"Tools", NULL);
 
   printf("Added submenu with %lu items\n", native_menu_get_item_count(submenu));
 
@@ -175,9 +175,9 @@ int main() {
 
   // Test that we can add multiple listeners for the same event
   native_listener_id_t additional_listener1 =
-      native_menu_item_add_listener(additional_item, on_menu_event, (void*)"Additional Test 1");
+      native_menu_item_add_listener(additional_item, on_menu_event, (void*)"Additional Test 1", NULL);
   native_listener_id_t additional_listener2 =
-      native_menu_item_add_listener(additional_item, on_menu_event, (void*)"Additional Test 2");
+      native_menu_item_add_listener(additional_item, on_menu_event, (void*)"Additional Test 2", NULL);
   (void)additional_listener2;
 
   printf("Added multiple listeners for the same event\n");

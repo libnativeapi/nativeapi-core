@@ -89,6 +89,7 @@ void free_c_keyboard_event(native_keyboard_event_t* value);
 #ifdef __cplusplus
 #include "../foundation/keyboard.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

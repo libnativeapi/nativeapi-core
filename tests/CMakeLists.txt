@@ -169,3 +169,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_aspect_ratio_linux_test window_aspect_ratio_linux_test.cpp)
   target_link_libraries(window_aspect_ratio_linux_test PRIVATE nativeapi)
 endif()
+
+# The C ABI releases every callback's user_data exactly once, on the main
+# thread, after the core lets the callback go.
+add_executable(user_data_release_test user_data_release_test.cpp)
+target_link_libraries(user_data_release_test PRIVATE nativeapi)
+add_test(NAME user_data_release_test COMMAND user_data_release_test)
+set_tests_properties(user_data_release_test PROPERTIES TIMEOUT 20)

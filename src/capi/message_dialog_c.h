@@ -117,6 +117,7 @@ void native_message_dialog_free(native_message_dialog_t message_dialog);
 #ifdef __cplusplus
 #include "../message_dialog.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

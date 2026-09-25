@@ -36,7 +36,7 @@ int main() {
   // receiver argument.
   printf("Single instance: %s\n", native_application_is_single_instance() ? "Yes" : "No");
 
-  native_listener_id_t listener_id = native_application_add_listener(on_application_event, NULL);
+  native_listener_id_t listener_id = native_application_add_listener(on_application_event, NULL, NULL);
   if (listener_id == NATIVE_INVALID_LISTENER_ID) {
     fprintf(stderr, "Failed to add event listener\n");
     return 1;

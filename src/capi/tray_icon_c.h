@@ -178,7 +178,7 @@ void native_tray_icon_list_release(native_tray_icon_list_t* list);
 /// Registers @p callback for every TrayIconEvent this TrayIcon emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon, native_tray_icon_event_callback_t callback, void* user_data);
+native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon, native_tray_icon_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT
@@ -204,6 +204,7 @@ void free_c_tray_icon_event(native_tray_icon_event_t* value);
 #ifdef __cplusplus
 #include "../tray_icon.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

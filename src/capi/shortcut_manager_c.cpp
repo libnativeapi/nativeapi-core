@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../shortcut.h"
 #include "shortcut_c.h"
@@ -26,11 +27,12 @@ bool native_shortcut_manager_is_supported(void) {
   }
 }
 
-native_shortcut_t native_shortcut_manager_register_with_accelerator_and_callback(const char* accelerator, native_shortcut_manager_register_callback_t callback, void* callback_user_data) {
+native_shortcut_t native_shortcut_manager_register_with_accelerator_and_callback(const char* accelerator, native_shortcut_manager_register_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
+  auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_user_data]() { callback(callback_user_data); };
+      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
     }
     return nativeapi::HandleTable::GetInstance().Insert(nativeapi::ShortcutManager::GetInstance().Register(std::string(accelerator ? accelerator : ""), callback_cpp));
   } catch (...) {
@@ -187,18 +189,19 @@ void native_shortcut_manager_emit_shortcut_activated(native_shortcut_id_t id, co
   }
 }
 
-native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_callback_t callback, void* user_data) {
+native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
   try {
     return static_cast<native_listener_id_t>(nativeapi::ShortcutManager::GetInstance().AddListener<nativeapi::ShortcutEvent>(
-        [callback, user_data](const nativeapi::ShortcutEvent& event) {
+        [callback, holder](const nativeapi::ShortcutEvent& event) {
           native_shortcut_event_t c_event = {};
           if (!to_c_shortcut_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_shortcut_event(&c_event);
         }));
   } catch (...) {

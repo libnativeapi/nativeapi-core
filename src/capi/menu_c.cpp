@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/keyboard.h"
 #include "keyboard_c.h"
@@ -339,7 +340,8 @@ void native_menu_item_list_release(native_menu_item_list_t* list) {
   list->count = 0;
 }
 
-native_listener_id_t native_menu_item_add_listener(native_menu_item_t menu_item, native_menu_event_callback_t callback, void* user_data) {
+native_listener_id_t native_menu_item_add_listener(native_menu_item_t menu_item, native_menu_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -349,12 +351,12 @@ native_listener_id_t native_menu_item_add_listener(native_menu_item_t menu_item,
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::MenuEvent>(
-        [callback, user_data](const nativeapi::MenuEvent& event) {
+        [callback, holder](const nativeapi::MenuEvent& event) {
           native_menu_event_t c_event = {};
           if (!to_c_menu_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_menu_event(&c_event);
         }));
   } catch (...) {
@@ -665,7 +667,8 @@ void native_menu_free(native_menu_t menu) {
   nativeapi::HandleTable::GetInstance().Release(menu);
 }
 
-native_listener_id_t native_menu_add_listener(native_menu_t menu, native_menu_event_callback_t callback, void* user_data) {
+native_listener_id_t native_menu_add_listener(native_menu_t menu, native_menu_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
@@ -675,12 +678,12 @@ native_listener_id_t native_menu_add_listener(native_menu_t menu, native_menu_ev
   }
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::MenuEvent>(
-        [callback, user_data](const nativeapi::MenuEvent& event) {
+        [callback, holder](const nativeapi::MenuEvent& event) {
           native_menu_event_t c_event = {};
           if (!to_c_menu_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_menu_event(&c_event);
         }));
   } catch (...) {

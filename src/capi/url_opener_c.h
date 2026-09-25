@@ -53,6 +53,7 @@ native_url_open_result_t native_url_opener_open(const char* url);
 #ifdef __cplusplus
 #include "../url_opener.h"
 #include "string_utils_c.h"
+#include "user_data.h"
 
 // Conversion helpers between these C types and their C++ originals.
 

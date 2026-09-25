@@ -85,7 +85,7 @@ void native_drop_target_free(native_drop_target_t drop_target);
 /// Registers @p callback for every DropTargetEvent this DropTarget emits.
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
-native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_target, native_drop_target_event_callback_t callback, void* user_data);
+native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_target, native_drop_target_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

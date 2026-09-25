@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "string_utils_c.h"
+#include "user_data.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -70,11 +71,12 @@ native_window_t native_window_manager_get_window_at_point(native_point_t point, 
   }
 }
 
-void native_window_manager_set_will_show_hook(native_window_manager_set_will_show_hook_callback_t hook, void* hook_user_data) {
+void native_window_manager_set_will_show_hook(native_window_manager_set_will_show_hook_callback_t hook, void* hook_user_data, native_release_user_data_t hook_release_user_data) {
+  auto hook_holder = nativeapi::capi::UserData::Make(hook_user_data, hook_release_user_data);
   try {
     std::optional<std::function<void(unsigned int)>> hook_cpp;
     if (hook) {
-      hook_cpp = [hook, hook_user_data](unsigned int arg0) { hook(arg0, hook_user_data); };
+      hook_cpp = [hook, hook_holder](unsigned int arg0) { hook(arg0, hook_holder->get()); };
     }
     nativeapi::WindowManager::GetInstance().SetWillShowHook(hook_cpp);
     return;
@@ -84,11 +86,12 @@ void native_window_manager_set_will_show_hook(native_window_manager_set_will_sho
   }
 }
 
-void native_window_manager_set_will_hide_hook(native_window_manager_set_will_hide_hook_callback_t hook, void* hook_user_data) {
+void native_window_manager_set_will_hide_hook(native_window_manager_set_will_hide_hook_callback_t hook, void* hook_user_data, native_release_user_data_t hook_release_user_data) {
+  auto hook_holder = nativeapi::capi::UserData::Make(hook_user_data, hook_release_user_data);
   try {
     std::optional<std::function<void(unsigned int)>> hook_cpp;
     if (hook) {
-      hook_cpp = [hook, hook_user_data](unsigned int arg0) { hook(arg0, hook_user_data); };
+      hook_cpp = [hook, hook_holder](unsigned int arg0) { hook(arg0, hook_holder->get()); };
     }
     nativeapi::WindowManager::GetInstance().SetWillHideHook(hook_cpp);
     return;
@@ -154,18 +157,19 @@ bool native_window_manager_call_original_hide(native_window_id_t id) {
   }
 }
 
-native_listener_id_t native_window_manager_add_listener(native_window_event_callback_t callback, void* user_data) {
+native_listener_id_t native_window_manager_add_listener(native_window_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
   if (!callback) {
     return 0;
   }
   try {
     return static_cast<native_listener_id_t>(nativeapi::WindowManager::GetInstance().AddListener<nativeapi::WindowEvent>(
-        [callback, user_data](const nativeapi::WindowEvent& event) {
+        [callback, holder](const nativeapi::WindowEvent& event) {
           native_window_event_t c_event = {};
           if (!to_c_window_event(event, &c_event)) {
             return;
           }
-          callback(&c_event, user_data);
+          callback(&c_event, holder->get());
           free_c_window_event(&c_event);
         }));
   } catch (...) {
