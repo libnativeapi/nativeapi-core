@@ -44,6 +44,15 @@ target_link_libraries(callback_lifetime_test PRIVATE nativeapi Threads::Threads)
 add_test(NAME callback_lifetime_test COMMAND callback_lifetime_test)
 set_tests_properties(callback_lifetime_test PROPERTIES TIMEOUT 20)
 
+if(WIN32)
+  # Global shortcuts reach the OS: the hotkey is held while registered and
+  # released by Unregister.
+  add_executable(shortcut_manager_windows_test shortcut_manager_windows_test.cpp)
+  target_link_libraries(shortcut_manager_windows_test PRIVATE nativeapi)
+  add_test(NAME shortcut_manager_windows_test COMMAND shortcut_manager_windows_test)
+  set_tests_properties(shortcut_manager_windows_test PROPERTIES TIMEOUT 20)
+endif()
+
 # The registry side of launch-at-login: the Run value, the StartupApproved flag that
 # Task Manager toggles, and a non-ASCII identifier. Writes only under HKCU, under a
 # test-only identifier, and removes what it writes.

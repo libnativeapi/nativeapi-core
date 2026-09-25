@@ -10,6 +10,7 @@
 
 #include <windows.h>
 
+#include "../../foundation/dispatcher.h"
 #include "../../shortcut_manager.h"
 
 namespace nativeapi {
@@ -188,6 +189,16 @@ bool ParseAcceleratorWindows(const std::string& accelerator, UINT& modifiers, UI
   return LookupWindowsKeyCode(key_token, vk);
 }
 
+// RegisterHotKey and UnregisterHotKey only accept a window owned by the calling
+// thread, so both are sent to the hotkey thread that owns hwnd_.
+constexpr UINT kRegisterHotKeyMessage = WM_APP + 1;
+constexpr UINT kUnregisterHotKeyMessage = WM_APP + 2;
+
+struct RegisterHotKeyRequest {
+  int hotkey_id;
+  UINT modifiers;
+  UINT vk;
+};
 
 }  // namespace
 
@@ -213,7 +224,8 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       std::lock_guard<std::mutex> lock(mutex_);
       hotkey_id = next_hotkey_id_++;
     }
-    if (!RegisterHotKey(hwnd_, hotkey_id, modifiers, vk)) {
+    RegisterHotKeyRequest request{hotkey_id, modifiers, vk};
+    if (!SendMessageW(hwnd_, kRegisterHotKeyMessage, 0, reinterpret_cast<LPARAM>(&request))) {
       return false;
     }
 
@@ -239,7 +251,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       hotkey_to_shortcut_.erase(hotkey_id);
     }
 
-    UnregisterHotKey(hwnd_, hotkey_id);
+    SendMessageW(hwnd_, kUnregisterHotKeyMessage, static_cast<WPARAM>(hotkey_id), 0);
     return true;
   }
 
@@ -268,6 +280,12 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       case WM_HOTKEY:
         self->HandleHotKey(static_cast<int>(wparam));
         return 0;
+      case kRegisterHotKeyMessage: {
+        const auto* request = reinterpret_cast<const RegisterHotKeyRequest*>(lparam);
+        return RegisterHotKey(hwnd, request->hotkey_id, request->modifiers, request->vk) ? 1 : 0;
+      }
+      case kUnregisterHotKeyMessage:
+        return UnregisterHotKey(hwnd, static_cast<int>(wparam)) ? 1 : 0;
       case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -290,17 +308,23 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       shortcut_id = it->second;
     }
 
-    auto shortcut = manager_->Get(shortcut_id);
-    if (!shortcut) {
-      return;
-    }
+    // Callbacks run on the main thread, as Shortcut documents. This thread must
+    // also never wait for the manager's lock: Register and Unregister hold it
+    // while they wait here in SendMessage.
+    ShortcutManager* manager = manager_;
+    RunOnMainThread([manager, shortcut_id]() {
+      auto shortcut = manager->Get(shortcut_id);
+      if (!shortcut) {
+        return;
+      }
 
-    if (!manager_->IsEnabled() || !shortcut->IsEnabled()) {
-      return;
-    }
+      if (!manager->IsEnabled() || !shortcut->IsEnabled()) {
+        return;
+      }
 
-    manager_->EmitShortcutActivated(shortcut_id, shortcut->GetAccelerator());
-    shortcut->Invoke();
+      manager->EmitShortcutActivated(shortcut_id, shortcut->GetAccelerator());
+      shortcut->Invoke();
+    });
   }
 
   void EnsureThread() {
