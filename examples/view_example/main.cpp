@@ -63,10 +63,31 @@ int main() {
   actions->AddSubview(clear);
   actions->AddSubview(sign_in);
 
+  // "[view] layout <name> x y w h" per control, in the root's coordinates; printed
+  // at start-up, after every resize and after every status change, so the re-flow can be
+  // checked from outside. (On Linux WindowResizedEvent comes before GTK has laid the
+  // content out, so the line printed at the next status change is the settled one.)
+  auto print_layout = [=] {
+    const Rectangle actions_frame = actions->GetFrame();
+    auto print = [&](const char* label, const std::shared_ptr<View>& view, double dx, double dy) {
+      const Rectangle f = view->GetFrame();
+      std::cout << "[view] layout " << label << " " << f.x + dx << " " << f.y + dy << " "
+                << f.width << " " << f.height << std::endl;
+    };
+    print("root", root, 0, 0);
+    print("heading", heading, 0, 0);
+    print("name", name, 0, 0);
+    print("password", password, 0, 0);
+    print("status", status, 0, 0);
+    print("actions", actions, 0, 0);
+    print("clear", clear, actions_frame.x, actions_frame.y);
+    print("sign_in", sign_in, actions_frame.x, actions_frame.y);
+  };
   // Every status change is echoed to stdout, so a GUI test can assert on it.
   auto set_status = [=](const std::string& text) {
     status->SetText(text);
     std::cout << "[view] status: " << text << std::endl;
+    print_layout();
   };
   auto submit = [=](const ViewEvent&) {
     if (name->GetText().empty()) {
@@ -104,24 +125,6 @@ int main() {
   root->AddSubview(status);
   root->AddSubview(actions);
 
-  // "[view] layout <name> x y w h" per control, in the root's coordinates; printed
-  // now and after every resize, so the re-flow can be checked from outside.
-  auto print_layout = [=] {
-    const Rectangle actions_frame = actions->GetFrame();
-    auto print = [&](const char* label, const std::shared_ptr<View>& view, double dx, double dy) {
-      const Rectangle f = view->GetFrame();
-      std::cout << "[view] layout " << label << " " << f.x + dx << " " << f.y + dy << " "
-                << f.width << " " << f.height << std::endl;
-    };
-    print("root", root, 0, 0);
-    print("heading", heading, 0, 0);
-    print("name", name, 0, 0);
-    print("password", password, 0, 0);
-    print("status", status, 0, 0);
-    print("actions", actions, 0, 0);
-    print("clear", clear, actions_frame.x, actions_frame.y);
-    print("sign_in", sign_in, actions_frame.x, actions_frame.y);
-  };
   print_layout();
   WindowManager::GetInstance().AddListener<WindowResizedEvent>(
       [=](const WindowResizedEvent& event) {
