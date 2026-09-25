@@ -53,6 +53,12 @@ struct View::Impl::Platform {
   /// Handler on the parent HWND that turns WM_COMMAND notifications into
   /// events. Registered only while listening.
   int command_handler_id = 0;
+  /// A second WM_COMMAND handler on the host window, for text fields only: an
+  /// EDIT remembers the parent it was created under (the host) and keeps
+  /// sending EN_* notifications there after SetParent(); a BUTTON asks
+  /// GetParent() each time. Matching on the control's HWND keeps one
+  /// notification from being handled twice.
+  int host_command_handler_id = 0;
   /// The parent the two handlers above are registered on.
   HWND hooked_parent = nullptr;
   /// Root views only: the WM_SIZE / WM_DPICHANGED handler on the window.

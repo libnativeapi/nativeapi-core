@@ -322,17 +322,21 @@ void View::Impl::Platform::HookParent() {
               self->platform->OnControlColor(reinterpret_cast<HDC>(wparam)));
         });
   }
+  auto on_command = [self](HWND, UINT msg, WPARAM wparam,
+                           LPARAM lparam) -> std::optional<LRESULT> {
+    if (msg != WM_COMMAND || !self->platform ||
+        reinterpret_cast<HWND>(lparam) != self->platform->hwnd) {
+      return std::nullopt;
+    }
+    self->platform->OnCommand(HIWORD(wparam));
+    // `self` may be gone: a listener can destroy the view.
+    return std::optional<LRESULT>(0);
+  };
   if (listening && !command_handler_id) {
-    command_handler_id = dispatcher.RegisterHandler(
-        parent, [self](HWND, UINT msg, WPARAM wparam, LPARAM lparam) -> std::optional<LRESULT> {
-          if (msg != WM_COMMAND || !self->platform ||
-              reinterpret_cast<HWND>(lparam) != self->platform->hwnd) {
-            return std::nullopt;
-          }
-          self->platform->OnCommand(HIWORD(wparam));
-          // `self` may be gone: a listener can destroy the view.
-          return std::optional<LRESULT>(0);
-        });
+    command_handler_id = dispatcher.RegisterHandler(parent, on_command);
+  }
+  if (listening && kind == ViewKind::TextField && !host_command_handler_id) {
+    host_command_handler_id = dispatcher.RegisterHandler(dispatcher.GetHostWindow(), on_command);
   }
 }
 
@@ -345,6 +349,10 @@ void View::Impl::Platform::UnhookParent() {
   if (command_handler_id) {
     dispatcher.UnregisterHandler(command_handler_id);
     command_handler_id = 0;
+  }
+  if (host_command_handler_id) {
+    dispatcher.UnregisterHandler(host_command_handler_id);
+    host_command_handler_id = 0;
   }
   hooked_parent = nullptr;
 }
@@ -845,9 +853,14 @@ void View::Impl::StartNativeListening() {
 
 void View::Impl::StopNativeListening() {
   platform->listening = false;
+  auto& dispatcher = WindowMessageDispatcher::GetInstance();
   if (platform->command_handler_id) {
-    WindowMessageDispatcher::GetInstance().UnregisterHandler(platform->command_handler_id);
+    dispatcher.UnregisterHandler(platform->command_handler_id);
     platform->command_handler_id = 0;
+  }
+  if (platform->host_command_handler_id) {
+    dispatcher.UnregisterHandler(platform->host_command_handler_id);
+    platform->host_command_handler_id = 0;
   }
   platform->Unsubclass();
 }
