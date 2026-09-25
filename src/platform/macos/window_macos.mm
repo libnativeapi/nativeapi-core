@@ -1026,8 +1026,26 @@ static void NativeApiSendMouseUp(NSWindow* window, NSEvent* mouse_up) {
 void Window::StartDragging() {
   NSWindow* window = pimpl_->ns_window_;
   NSEvent* event = window.currentEvent;
-  if (!event) {
-    return;
+  // The current event is the press only when this runs while AppKit handles
+  // it. A caller that reacts later — a web view's script, a binding whose
+  // calls hop to the main thread — finds some other event there, often not
+  // even this window's, and AppKit would then anchor the drag at a wrong
+  // point. As long as the button is still down, start from where it is now.
+  if (!(event.window == window && (event.type == NSEventTypeLeftMouseDown ||
+                                   event.type == NSEventTypeLeftMouseDragged))) {
+    if (([NSEvent pressedMouseButtons] & 1) == 0) {
+      return;
+    }
+    NSPoint location = [window convertPointFromScreen:NSEvent.mouseLocation];
+    event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                               location:location
+                          modifierFlags:0
+                              timestamp:NSProcessInfo.processInfo.systemUptime
+                           windowNumber:window.windowNumber
+                                context:nil
+                            eventNumber:0
+                             clickCount:1
+                               pressure:1];
   }
   [window performWindowDragWithEvent:event];
   if (event.type == NSEventTypeLeftMouseDown || event.type == NSEventTypeLeftMouseDragged) {
