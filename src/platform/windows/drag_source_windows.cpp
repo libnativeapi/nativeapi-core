@@ -129,9 +129,7 @@ bool PrimaryButtonDown() {
 Point CursorPosition() {
   POINT cursor = {0, 0};
   GetCursorPos(&cursor);
-  double scale = GetScaleFactorForMonitor(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST));
-  if (scale <= 0.0) scale = 1.0;
-  return {cursor.x / scale, cursor.y / scale};
+  return PhysicalToLogicalPoint(cursor);
 }
 
 }  // namespace

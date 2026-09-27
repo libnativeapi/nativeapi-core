@@ -48,42 +48,27 @@ std::string Display::GetName() const {
   return WCharArrayToString(monitorInfo.szDevice);
 }
 
+// Bounds and work area are in the library's screen coordinates, which lay the
+// monitors out side by side in logical pixels (see screen_layout_windows.h).
 Point Display::GetPosition() const {
-  if (!pimpl_->h_monitor_)
+  Rectangle bounds = {0.0, 0.0, 0.0, 0.0};
+  if (!pimpl_->h_monitor_ || !GetMonitorLogicalRects(pimpl_->h_monitor_, &bounds, nullptr))
     return {0.0, 0.0};
-  MONITORINFOEXW monitorInfo = GetMonitorInfoEx(pimpl_->h_monitor_);
-  RECT rect = monitorInfo.rcMonitor;
-  double scale = GetScaleFactorForMonitor(pimpl_->h_monitor_);
-  if (scale <= 0.0)
-    scale = 1.0;
-  return {static_cast<double>(rect.left) / scale,
-          static_cast<double>(rect.top) / scale};
+  return {bounds.x, bounds.y};
 }
 
 Size Display::GetSize() const {
-  if (!pimpl_->h_monitor_)
+  Rectangle bounds = {0.0, 0.0, 0.0, 0.0};
+  if (!pimpl_->h_monitor_ || !GetMonitorLogicalRects(pimpl_->h_monitor_, &bounds, nullptr))
     return {0.0, 0.0};
-  MONITORINFOEXW monitorInfo = GetMonitorInfoEx(pimpl_->h_monitor_);
-  RECT rect = monitorInfo.rcMonitor;
-  double scale = GetScaleFactorForMonitor(pimpl_->h_monitor_);
-  if (scale <= 0.0)
-    scale = 1.0;
-  return {static_cast<double>(rect.right - rect.left) / scale,
-          static_cast<double>(rect.bottom - rect.top) / scale};
+  return {bounds.width, bounds.height};
 }
 
 Rectangle Display::GetWorkArea() const {
-  if (!pimpl_->h_monitor_)
+  Rectangle work_area = {0.0, 0.0, 0.0, 0.0};
+  if (!pimpl_->h_monitor_ || !GetMonitorLogicalRects(pimpl_->h_monitor_, nullptr, &work_area))
     return {0.0, 0.0, 0.0, 0.0};
-  MONITORINFOEXW monitorInfo = GetMonitorInfoEx(pimpl_->h_monitor_);
-  RECT workRect = monitorInfo.rcWork;
-  double scale = GetScaleFactorForMonitor(pimpl_->h_monitor_);
-  if (scale <= 0.0)
-    scale = 1.0;
-  return {static_cast<double>(workRect.left) / scale,
-          static_cast<double>(workRect.top) / scale,
-          static_cast<double>(workRect.right - workRect.left) / scale,
-          static_cast<double>(workRect.bottom - workRect.top) / scale};
+  return work_area;
 }
 
 double Display::GetScaleFactor() const {

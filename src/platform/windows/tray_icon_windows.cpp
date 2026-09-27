@@ -15,6 +15,7 @@
 #include "../../menu.h"
 #include "../../positioning_strategy.h"
 #include "../../tray_icon.h"
+#include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 #include "window_message_dispatcher.h"
 
@@ -450,10 +451,10 @@ Rectangle TrayIcon::GetBounds() {
 
     // Get the rectangle of the notification icon
     if (Shell_NotifyIconGetRect(&niid, &rect) == S_OK) {
-      bounds.x = rect.left;
-      bounds.y = rect.top;
-      bounds.width = rect.right - rect.left;
-      bounds.height = rect.bottom - rect.top;
+      // In the screen coordinates windows are placed with, so that a popup
+      // window can be put next to the icon.
+      bounds = PhysicalToLogicalRect(
+          rect, GetScaleFactorForMonitor(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST)));
     }
   }
 

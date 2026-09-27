@@ -453,6 +453,17 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
     }
     case WM_SHOWWINDOW:
       return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    case WM_DPICHANGED: {
+      // Moved onto a monitor with another scale factor: take the size Windows
+      // suggests for it, so the window keeps its logical size, as a per-monitor
+      // DPI aware window should. Window::SetBounds() corrects it afterwards
+      // when it asked for a size of its own.
+      const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+      SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                   suggested->right - suggested->left, suggested->bottom - suggested->top,
+                   SWP_NOZORDER | SWP_NOACTIVATE);
+      return 0;
+    }
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
@@ -723,33 +734,34 @@ bool Window::IsFullScreen() const {
   return pimpl_->hwnd_ && g_full_screen_windows.count(pimpl_->hwnd_) != 0;
 }
 
+// Moves and sizes a window to a physical rectangle. Moving it onto a monitor
+// with another scale factor makes Windows send WM_DPICHANGED, and the window's
+// handler (ours, or the Flutter runner's) resizes the window to what Windows
+// suggests for the new factor. That is not the size asked for, which already
+// accounts for the new factor: put the rectangle back once the DPI has changed.
+static void MoveWindowTo(HWND hwnd, const RECT& target) {
+  const UINT dpi_before = static_cast<UINT>(std::lround(GetScaleFactorForWindow(hwnd) * 96));
+  SetWindowPos(hwnd, nullptr, target.left, target.top, target.right - target.left,
+               target.bottom - target.top, SWP_NOZORDER);
+  RECT actual;
+  if (static_cast<UINT>(std::lround(GetScaleFactorForWindow(hwnd) * 96)) != dpi_before &&
+      GetWindowRect(hwnd, &actual) && !EqualRect(&actual, &target)) {
+    SetWindowPos(hwnd, nullptr, target.left, target.top, target.right - target.left,
+                 target.bottom - target.top, SWP_NOZORDER);
+  }
+}
+
 void Window::SetBounds(Rectangle bounds) {
   if (pimpl_->hwnd_) {
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-    SetWindowPos(pimpl_->hwnd_, nullptr,
-                 static_cast<int>(std::lround(bounds.x * scale)),
-                 static_cast<int>(std::lround(bounds.y * scale)),
-                 static_cast<int>(std::lround(bounds.width * scale)),
-                 static_cast<int>(std::lround(bounds.height * scale)), SWP_NOZORDER);
+    MoveWindowTo(pimpl_->hwnd_, LogicalToPhysicalRect(bounds));
   }
 }
 
 Rectangle Window::GetBounds() const {
-  Rectangle bounds = {0, 0, 0, 0};
-  if (pimpl_->hwnd_) {
-    RECT rect;
-    GetWindowRect(pimpl_->hwnd_, &rect);
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-    bounds.x = static_cast<double>(rect.left) / scale;
-    bounds.y = static_cast<double>(rect.top) / scale;
-    bounds.width = static_cast<double>(rect.right - rect.left) / scale;
-    bounds.height = static_cast<double>(rect.bottom - rect.top) / scale;
-  }
-  return bounds;
+  RECT rect;
+  if (!pimpl_->hwnd_ || !GetWindowRect(pimpl_->hwnd_, &rect))
+    return {0, 0, 0, 0};
+  return PhysicalToLogicalRect(rect, GetScaleFactorForWindow(pimpl_->hwnd_));
 }
 
 void Window::SetSize(Size size, bool animate) {
@@ -815,60 +827,41 @@ Size Window::GetContentSize() const {
 }
 
 void Window::SetContentBounds(Rectangle bounds) {
-  if (pimpl_->hwnd_) {
-    RECT windowRect, clientRect;
-    GetWindowRect(pimpl_->hwnd_, &windowRect);
-    GetClientRect(pimpl_->hwnd_, &clientRect);
-
-    // Calculate the difference between window and client area
-    int borderWidth = (windowRect.right - windowRect.left) - clientRect.right;
-    int borderHeight = (windowRect.bottom - windowRect.top) - clientRect.bottom;
-
-    // Get current client area position in screen coordinates
-    POINT clientTopLeft = {0, 0};
-    ClientToScreen(pimpl_->hwnd_, &clientTopLeft);
-
-    // Calculate the offset from window top-left to client top-left
-    int offsetX = clientTopLeft.x - windowRect.left;
-    int offsetY = clientTopLeft.y - windowRect.top;
-
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-
-    // Calculate window position so that client area is at bounds position
-    int windowX = static_cast<int>(std::lround(bounds.x * scale)) - offsetX;
-    int windowY = static_cast<int>(std::lround(bounds.y * scale)) - offsetY;
-    int windowWidth = static_cast<int>(std::lround(bounds.width * scale)) + borderWidth;
-    int windowHeight = static_cast<int>(std::lround(bounds.height * scale)) + borderHeight;
-
-    SetWindowPos(pimpl_->hwnd_, nullptr, windowX, windowY, windowWidth, windowHeight, SWP_NOZORDER);
+  if (!pimpl_->hwnd_)
+    return;
+  HWND hwnd = pimpl_->hwnd_;
+  const RECT content = LogicalToPhysicalRect(bounds);
+  // The frame around the content changes with the DPI, so after a move onto a
+  // monitor with another factor measure it again and correct.
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    RECT window_rect, client_rect;
+    POINT client_origin = {0, 0};
+    if (!GetWindowRect(hwnd, &window_rect) || !GetClientRect(hwnd, &client_rect) ||
+        !ClientToScreen(hwnd, &client_origin))
+      return;
+    if (attempt > 0 && client_origin.x == content.left && client_origin.y == content.top &&
+        client_rect.right == content.right - content.left &&
+        client_rect.bottom == content.bottom - content.top)
+      return;
+    const LONG left_inset = client_origin.x - window_rect.left;
+    const LONG top_inset = client_origin.y - window_rect.top;
+    const LONG right_inset = window_rect.right - (client_origin.x + client_rect.right);
+    const LONG bottom_inset = window_rect.bottom - (client_origin.y + client_rect.bottom);
+    SetWindowPos(hwnd, nullptr, content.left - left_inset, content.top - top_inset,
+                 (content.right - content.left) + left_inset + right_inset,
+                 (content.bottom - content.top) + top_inset + bottom_inset, SWP_NOZORDER);
   }
 }
 
 Rectangle Window::GetContentBounds() const {
-  Rectangle bounds = {0, 0, 0, 0};
-  if (pimpl_->hwnd_) {
-    RECT clientRect;
-    GetClientRect(pimpl_->hwnd_, &clientRect);
-
-    // Convert client rect to screen coordinates (physical pixels)
-    POINT topLeft = {clientRect.left, clientRect.top};
-    POINT bottomRight = {clientRect.right, clientRect.bottom};
-    ClientToScreen(pimpl_->hwnd_, &topLeft);
-    ClientToScreen(pimpl_->hwnd_, &bottomRight);
-
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-
-    // Return logical pixels (DIP) by dividing by scale
-    bounds.x = static_cast<double>(topLeft.x) / scale;
-    bounds.y = static_cast<double>(topLeft.y) / scale;
-    bounds.width = static_cast<double>(bottomRight.x - topLeft.x) / scale;
-    bounds.height = static_cast<double>(bottomRight.y - topLeft.y) / scale;
-  }
-  return bounds;
+  RECT client_rect;
+  POINT origin = {0, 0};
+  if (!pimpl_->hwnd_ || !GetClientRect(pimpl_->hwnd_, &client_rect) ||
+      !ClientToScreen(pimpl_->hwnd_, &origin))
+    return {0, 0, 0, 0};
+  const RECT screen = {origin.x, origin.y, origin.x + client_rect.right,
+                       origin.y + client_rect.bottom};
+  return PhysicalToLogicalRect(screen, GetScaleFactorForWindow(pimpl_->hwnd_));
 }
 
 // Helper function: resolves the nativeapi Window that owns an HWND via the
@@ -1319,28 +1312,18 @@ bool Window::IsNonActivating() const {
 
 void Window::SetPosition(Point point) {
   if (pimpl_->hwnd_) {
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-    SetWindowPos(pimpl_->hwnd_, nullptr,
-                 static_cast<int>(std::lround(point.x * scale)),
-                 static_cast<int>(std::lround(point.y * scale)),
-                 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    // The logical size stays; on a monitor with another factor that is another
+    // physical size.
+    const Size size = GetSize();
+    MoveWindowTo(pimpl_->hwnd_, LogicalToPhysicalRect({point.x, point.y, size.width, size.height}));
   }
 }
 
 Point Window::GetPosition() const {
-  Point point = {0, 0};
-  if (pimpl_->hwnd_) {
-    RECT rect;
-    GetWindowRect(pimpl_->hwnd_, &rect);
-    double scale = GetScaleFactorForWindow(pimpl_->hwnd_);
-    if (scale <= 0.0)
-      scale = 1.0;
-    point.x = static_cast<double>(rect.left) / scale;
-    point.y = static_cast<double>(rect.top) / scale;
-  }
-  return point;
+  RECT rect;
+  if (!pimpl_->hwnd_ || !GetWindowRect(pimpl_->hwnd_, &rect))
+    return {0, 0};
+  return PhysicalToLogicalPoint({rect.left, rect.top});
 }
 
 void Window::Center() {

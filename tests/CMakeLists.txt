@@ -10,6 +10,11 @@ add_executable(view_layout_test view_layout_test.cpp)
 target_link_libraries(view_layout_test PRIVATE nativeapi)
 add_test(NAME view_layout_test COMMAND view_layout_test)
 
+# Plain arithmetic behind the Windows screen coordinates; runs everywhere.
+add_executable(screen_layout_test screen_layout_test.cpp)
+target_link_libraries(screen_layout_test PRIVATE nativeapi)
+add_test(NAME screen_layout_test COMMAND screen_layout_test)
+
 add_executable(window_shadow_blur_test window_shadow_blur_test.cpp)
 target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
 add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)

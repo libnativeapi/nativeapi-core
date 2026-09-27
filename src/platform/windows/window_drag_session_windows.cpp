@@ -77,12 +77,7 @@ bool WindowDragSession::QueryPointer(Point& position, bool& primary_button_down)
   if (!GetCursorPos(&cursor)) {
     return false;
   }
-  HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
-  double scale = GetScaleFactorForMonitor(monitor);
-  if (scale <= 0.0) {
-    scale = 1.0;
-  }
-  position = {static_cast<double>(cursor.x) / scale, static_cast<double>(cursor.y) / scale};
+  position = PhysicalToLogicalPoint(cursor);
 
   // The primary button is the right one when the user swapped buttons.
   int primary = GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;

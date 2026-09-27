@@ -1,4 +1,9 @@
-#include <windows.h>
+#include "dpi_utils_windows.h"
+
+#include <cmath>
+#include <vector>
+
+#include "screen_layout_windows.h"
 
 namespace nativeapi {
 
@@ -64,6 +69,99 @@ double GetScaleFactorForWindow(HWND hwnd) {
     }
   }
   return 1.0;
+}
+
+namespace {
+
+struct LaidOutMonitor {
+  HMONITOR handle;
+  RECT work;
+};
+
+// Enumerates the monitors and lays them out. Cheap enough to do per call, and
+// never stale: monitors come and go, and their factors change.
+std::vector<screen_layout::Monitor> CurrentLayout(std::vector<LaidOutMonitor>* handles = nullptr) {
+  struct Collected {
+    std::vector<screen_layout::Monitor> monitors;
+    std::vector<LaidOutMonitor> handles;
+  } collected;
+  EnumDisplayMonitors(
+      nullptr, nullptr,
+      [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+        auto* c = reinterpret_cast<Collected*>(data);
+        MONITORINFO info = {sizeof(info)};
+        if (!GetMonitorInfoW(monitor, &info))
+          return TRUE;
+        const RECT& r = info.rcMonitor;
+        c->monitors.push_back({{r.left, r.top, r.right, r.bottom},
+                               GetScaleFactorForMonitor(monitor),
+                               (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                               {0, 0, 0, 0}});
+        c->handles.push_back({monitor, info.rcWork});
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&collected));
+  screen_layout::Arrange(collected.monitors);
+  if (handles)
+    *handles = std::move(collected.handles);
+  return collected.monitors;
+}
+
+double SafeScale(double scale) {
+  return scale > 0.0 ? scale : 1.0;
+}
+
+}  // namespace
+
+Point PhysicalToLogicalPoint(POINT point) {
+  return screen_layout::PhysicalToLogical(CurrentLayout(), point.x, point.y);
+}
+
+POINT LogicalToPhysicalPoint(Point point) {
+  long x = 0, y = 0;
+  screen_layout::LogicalToPhysical(CurrentLayout(), point, &x, &y);
+  return {x, y};
+}
+
+Rectangle PhysicalToLogicalRect(const RECT& rect, double scale) {
+  const Point origin = PhysicalToLogicalPoint({rect.left, rect.top});
+  scale = SafeScale(scale);
+  return {origin.x, origin.y, (rect.right - rect.left) / scale, (rect.bottom - rect.top) / scale};
+}
+
+RECT LogicalToPhysicalRect(Rectangle bounds) {
+  const POINT origin = LogicalToPhysicalPoint({bounds.x, bounds.y});
+  auto sized = [&](double scale) {
+    scale = SafeScale(scale);
+    return RECT{origin.x, origin.y, origin.x + static_cast<LONG>(std::lround(bounds.width * scale)),
+                origin.y + static_cast<LONG>(std::lround(bounds.height * scale))};
+  };
+  const double at_origin =
+      GetScaleFactorForMonitor(MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST));
+  RECT rect = sized(at_origin);
+  const double landing = GetScaleFactorForMonitor(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST));
+  return landing == at_origin ? rect : sized(landing);
+}
+
+bool GetMonitorLogicalRects(HMONITOR monitor, Rectangle* bounds, Rectangle* work_area) {
+  std::vector<LaidOutMonitor> handles;
+  const auto monitors = CurrentLayout(&handles);
+  for (size_t i = 0; i < monitors.size(); ++i) {
+    if (handles[i].handle != monitor)
+      continue;
+    const auto& m = monitors[i];
+    if (bounds)
+      *bounds = m.logical;
+    if (work_area) {
+      const RECT& w = handles[i].work;
+      const double s = SafeScale(m.scale);
+      *work_area = {m.logical.x + (w.left - m.physical.left) / s,
+                    m.logical.y + (w.top - m.physical.top) / s, (w.right - w.left) / s,
+                    (w.bottom - w.top) / s};
+    }
+    return true;
+  }
+  return false;
 }
 
 }  // namespace nativeapi

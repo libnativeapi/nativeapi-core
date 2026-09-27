@@ -897,8 +897,8 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
   // Determine position based on strategy type
   switch (strategy.GetType()) {
     case PositioningStrategy::Type::Absolute:
-      pt.x = static_cast<int>(strategy.GetAbsolutePosition().x);
-      pt.y = static_cast<int>(strategy.GetAbsolutePosition().y);
+      // Screen coordinates are logical, as Window::GetBounds() reports them.
+      pt = LogicalToPhysicalPoint(strategy.GetAbsolutePosition());
       break;
 
     case PositioningStrategy::Type::CursorPosition: {
@@ -907,21 +907,11 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
     }
 
     case PositioningStrategy::Type::Relative: {
+      // A window's rectangle comes from Window::GetBounds(), a plain one from
+      // the caller: both in logical screen coordinates.
       Rectangle rect = strategy.GetRelativeRectangle();
       Point offset = strategy.GetRelativeOffset();
-      if (strategy.GetRelativeWindow() != nullptr) {
-        // rect and offset are in logical pixels (DIP) for Window-relative
-        HWND rel_hwnd = static_cast<HWND>(strategy.GetRelativeWindow()->GetNativeObject());
-        double scale = GetScaleFactorForWindow(rel_hwnd);
-        if (scale <= 0.0)
-          scale = 1.0;
-        pt.x = static_cast<int>(std::lround((rect.x + offset.x) * scale));
-        pt.y = static_cast<int>(std::lround((rect.y + offset.y) * scale));
-      } else {
-        // For plain rectangles, assume inputs already in screen pixels
-        pt.x = static_cast<int>(rect.x + offset.x);
-        pt.y = static_cast<int>(rect.y + offset.y);
-      }
+      pt = LogicalToPhysicalPoint({rect.x + offset.x, rect.y + offset.y});
       break;
     }
   }

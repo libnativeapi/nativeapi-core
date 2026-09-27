@@ -813,45 +813,10 @@ std::shared_ptr<Window> WindowManager::GetCurrent() {
 
 namespace {
 
-// Library positions are physical pixels divided by the scale factor of the
-// monitor they fall on, so a logical point maps back to whichever monitor
-// contains it once scaled by that monitor's own factor.
-struct LogicalPointSearch {
-  Point logical;
-  POINT physical;
-  bool found;
-};
-
-BOOL CALLBACK FindMonitorForLogicalPoint(HMONITOR monitor, HDC, LPRECT rect, LPARAM data) {
-  auto* search = reinterpret_cast<LogicalPointSearch*>(data);
-  double scale = GetScaleFactorForMonitor(monitor);
-  if (scale <= 0.0) {
-    scale = 1.0;
-  }
-  POINT candidate = {static_cast<LONG>(std::lround(search->logical.x * scale)),
-                     static_cast<LONG>(std::lround(search->logical.y * scale))};
-  if (PtInRect(rect, candidate)) {
-    search->physical = candidate;
-    search->found = true;
-    return FALSE;
-  }
-  return TRUE;
-}
-
+// Library positions are logical pixels in the screen space that
+// screen_layout_windows.h lays out.
 POINT LogicalToPhysicalScreenPoint(Point point) {
-  LogicalPointSearch search = {point, {0, 0}, false};
-  EnumDisplayMonitors(nullptr, nullptr, FindMonitorForLogicalPoint,
-                      reinterpret_cast<LPARAM>(&search));
-  if (search.found) {
-    return search.physical;
-  }
-  POINT origin = {0, 0};
-  double scale = GetScaleFactorForMonitor(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY));
-  if (scale <= 0.0) {
-    scale = 1.0;
-  }
-  return {static_cast<LONG>(std::lround(point.x * scale)),
-          static_cast<LONG>(std::lround(point.y * scale))};
+  return LogicalToPhysicalPoint(point);
 }
 
 // Whether `hwnd`, a top-level window, visibly covers `point`. Used below the
