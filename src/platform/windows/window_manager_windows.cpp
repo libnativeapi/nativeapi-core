@@ -132,6 +132,23 @@ using WindowChangedFn = void (*)(void* impl, DWORD event, HWND hwnd);
 static WindowChangedFn g_window_changed_fn = nullptr;
 static void* g_window_changed_context = nullptr;
 
+// Window::SetFullScreen() reports its changes here: Windows has no full-screen
+// window state of its own, so there is nothing to be notified about.
+using FullScreenChangedFn = void (*)(void* impl, HWND hwnd, bool is_full_screen);
+static FullScreenChangedFn g_full_screen_changed_fn = nullptr;
+static void* g_full_screen_changed_context = nullptr;
+
+}  // namespace
+
+// Declared in window_windows.cpp, hence outside the anonymous namespace.
+void NotifyWindowFullScreenChanged(HWND hwnd, bool is_full_screen) {
+  if (g_full_screen_changed_fn && g_full_screen_changed_context) {
+    g_full_screen_changed_fn(g_full_screen_changed_context, hwnd, is_full_screen);
+  }
+}
+
+namespace {
+
 // Top-level windows that a listener can make sense of: anything already known
 // to the library, otherwise what the user sees as a window. Tooltips, menus and
 // other helper windows move and resize as well and must not get an id for it.
@@ -481,6 +498,11 @@ class WindowManager::Impl {
     g_window_changed_fn = [](void* impl, DWORD event, HWND hwnd) {
       static_cast<Impl*>(impl)->OnWindowChanged(event, hwnd);
     };
+    g_full_screen_changed_context = this;
+    g_full_screen_changed_fn = [](void* impl, HWND hwnd, bool is_full_screen) {
+      static_cast<Impl*>(impl)->OnWindowEvent(
+          hwnd, is_full_screen ? "entered_full_screen" : "exited_full_screen");
+    };
 
     // Unlike the foreground hook this only concerns our own windows, so it is
     // scoped to this process and costs nothing while other applications work.
@@ -526,6 +548,8 @@ class WindowManager::Impl {
     g_foreground_changed_context = nullptr;
     g_window_changed_fn = nullptr;
     g_window_changed_context = nullptr;
+    g_full_screen_changed_fn = nullptr;
+    g_full_screen_changed_context = nullptr;
     for (const auto& [hwnd, snapshot] : g_window_snapshots) {
       UnwatchWindowGeometry(hwnd);
     }
@@ -647,6 +671,12 @@ class WindowManager::Impl {
       manager_->DispatchWindowEvent(event);
     } else if (event_type == "maximized") {
       WindowMaximizedEvent event(window_id);
+      manager_->DispatchWindowEvent(event);
+    } else if (event_type == "entered_full_screen") {
+      WindowEnteredFullScreenEvent event(window_id);
+      manager_->DispatchWindowEvent(event);
+    } else if (event_type == "exited_full_screen") {
+      WindowExitedFullScreenEvent event(window_id);
       manager_->DispatchWindowEvent(event);
     } else if (event_type == "resized" || event_type == "moved") {
       // Report what the getters return (logical pixels), not the raw rectangle

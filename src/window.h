@@ -342,7 +342,10 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @param is_full_screen true to enter fullscreen mode, false to exit
    *
    * In fullscreen mode, the window occupies the entire screen with no
-   * window decorations (title bar, borders) visible.
+   * window decorations (title bar, borders) visible. The change is reported by
+   * WindowEnteredFullScreenEvent and WindowExitedFullScreenEvent; on macOS and
+   * Linux it completes asynchronously, so IsFullScreen() may still return the old
+   * state right after this call.
    */
   void SetFullScreen(bool is_full_screen);
 
@@ -1594,6 +1597,52 @@ class WindowClosedEvent : public WindowEvent {
    * Get a string representation of the event type
    */
   std::string GetTypeName() const override { return "WindowClosedEvent"; }
+};
+
+/**
+ * Event class for a window entering full screen
+ *
+ * This event is emitted once a window is full screen, whoever made it so: SetFullScreen(),
+ * or the user through the system's own controls where there are any. IsFullScreen()
+ * already returns true. The new size is reported by WindowResizedEvent.
+ *
+ * @note Platform availability:
+ * - macOS: ✅ Fully supported - The green button, the View menu and SetFullScreen() alike;
+ *   emitted once the full-screen animation has finished.
+ * - Windows: ⚠️ SetFullScreen() only - Windows has no full-screen window state, so a window
+ *   another component makes borderless and monitor-sized is not reported.
+ * - Linux: ✅ Fully supported - Whatever the window manager reports, SetFullScreen() and
+ *   its own shortcuts (F11 in many) alike; emitted when the window manager confirms it.
+ * - Android: ❌ Not applicable - Never emitted
+ * - iOS: ❌ Not applicable - Never emitted
+ * - OpenHarmony: ❌ Not applicable - Never emitted
+ */
+class WindowEnteredFullScreenEvent : public WindowEvent {
+ public:
+  explicit WindowEnteredFullScreenEvent(WindowId window_id) : WindowEvent(window_id) {}
+
+  std::string GetTypeName() const override { return "WindowEnteredFullScreenEvent"; }
+};
+
+/**
+ * Event class for a window leaving full screen
+ *
+ * This event is emitted once a window is no longer full screen, whoever ended it.
+ * IsFullScreen() already returns false.
+ *
+ * @note Platform availability:
+ * - macOS: ✅ Fully supported - Emitted once the animation back has finished.
+ * - Windows: ⚠️ SetFullScreen() only - See WindowEnteredFullScreenEvent.
+ * - Linux: ✅ Fully supported - Emitted when the window manager confirms it.
+ * - Android: ❌ Not applicable - Never emitted
+ * - iOS: ❌ Not applicable - Never emitted
+ * - OpenHarmony: ❌ Not applicable - Never emitted
+ */
+class WindowExitedFullScreenEvent : public WindowEvent {
+ public:
+  explicit WindowExitedFullScreenEvent(WindowId window_id) : WindowEvent(window_id) {}
+
+  std::string GetTypeName() const override { return "WindowExitedFullScreenEvent"; }
 };
 
 }  // namespace nativeapi

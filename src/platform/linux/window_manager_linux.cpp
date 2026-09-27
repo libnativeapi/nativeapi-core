@@ -284,7 +284,7 @@ static void InstallGlobalSwizzling() {
 }
 
 // Show-state and geometry tracking for WindowMinimizedEvent, WindowMaximizedEvent,
-// WindowRestoredEvent, WindowMovedEvent and WindowResizedEvent. The windows are
+// WindowRestoredEvent, the full-screen pair, WindowMovedEvent and WindowResizedEvent. The windows are
 // usually created by someone else (Flutter's runner, the host application), so
 // the two toplevel signals are watched with emission hooks, like the focus pair.
 static gulong g_window_state_hook_id = 0;
@@ -374,6 +374,11 @@ static gboolean on_window_state_emission_hook(GSignalInvocationHint* ihint,
   if (changed & GDK_WINDOW_STATE_MAXIMIZED) {
     g_window_signal_fn(g_window_signal_context, id,
                        (state & GDK_WINDOW_STATE_MAXIMIZED) ? "maximized" : "restored");
+  }
+  if (changed & GDK_WINDOW_STATE_FULLSCREEN) {
+    g_window_signal_fn(g_window_signal_context, id,
+                       (state & GDK_WINDOW_STATE_FULLSCREEN) ? "entered_full_screen"
+                                                             : "exited_full_screen");
   }
   return TRUE;  // Continue emission
 }
@@ -609,6 +614,12 @@ class WindowManager::Impl {
       manager_->DispatchWindowEvent(event);
     } else if (event_type == "restored") {
       WindowRestoredEvent event(window_id);
+      manager_->DispatchWindowEvent(event);
+    } else if (event_type == "entered_full_screen") {
+      WindowEnteredFullScreenEvent event(window_id);
+      manager_->DispatchWindowEvent(event);
+    } else if (event_type == "exited_full_screen") {
+      WindowExitedFullScreenEvent event(window_id);
       manager_->DispatchWindowEvent(event);
     } else if (event_type == "moved" || event_type == "resized") {
       // Report what the getters return (the frame, decorations included), not

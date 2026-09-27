@@ -1390,6 +1390,16 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
     (void)typed;
     return true;
   }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowEnteredFullScreenEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_ENTERED_FULL_SCREEN;
+    (void)typed;
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowExitedFullScreenEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_EXITED_FULL_SCREEN;
+    (void)typed;
+    return true;
+  }
   return false;
 }
 

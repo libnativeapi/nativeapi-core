@@ -207,6 +207,10 @@ struct FullScreenState {
 };
 static std::unordered_map<HWND, FullScreenState> g_full_screen_windows;
 
+// Emits the full-screen pair; defined with the rest of the window events in
+// window_manager_windows.cpp.
+void NotifyWindowFullScreenChanged(HWND hwnd, bool is_full_screen);
+
 // The frame bits taken away while a window is full screen, and put back afterwards.
 static constexpr LONG_PTR kFullScreenRemovedStyle = WS_CAPTION | WS_THICKFRAME;
 static constexpr LONG_PTR kFullScreenRemovedExStyle =
@@ -297,7 +301,9 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
     auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
     const LONG top = params->rgrc[0].top;
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
-    if (!IsZoomed(hwnd)) {
+    // A full screen window keeps WS_MAXIMIZE when it was maximized, but it has no
+    // frame to hang past the monitor and must cover the taskbar too.
+    if (!IsZoomed(hwnd) || g_full_screen_windows.count(hwnd)) {
       params->rgrc[0].top = top;
       return result;
     }
@@ -690,6 +696,7 @@ void Window::SetFullScreen(bool is_full_screen) {
                  monitor.rcMonitor.right - monitor.rcMonitor.left,
                  monitor.rcMonitor.bottom - monitor.rcMonitor.top,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    NotifyWindowFullScreenChanged(hwnd, true);
     return;
   }
 
@@ -709,6 +716,7 @@ void Window::SetFullScreen(bool is_full_screen) {
   SetWindowPlacement(hwnd, &state.placement);
   SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  NotifyWindowFullScreenChanged(hwnd, false);
 }
 
 bool Window::IsFullScreen() const {
@@ -1393,13 +1401,19 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
 #ifdef NATIVEAPI_ENABLE_WINUI3
   if (!SetWinUI3TitleBarStyle(pimpl_->hwnd_, style)) return;
 #else
-  LONG_PTR flags = GetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE);
   // Keep the native caption style even when its non-client area is hidden by
   // HandleHiddenTitleBarFrame. Removing it makes Windows maximize the outer
   // window over the entire monitor, which also hides the taskbar. Clamping only
   // the client area in WM_NCCALCSIZE cannot fix the shell's fullscreen detection.
-  flags |= WS_CAPTION;
-  SetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE, flags);
+  const auto full_screen = g_full_screen_windows.find(pimpl_->hwnd_);
+  if (full_screen != g_full_screen_windows.end()) {
+    // A full screen window shows no caption; leaving full screen puts it back,
+    // also on a window that had none when it went full screen.
+    full_screen->second.style |= WS_CAPTION;
+  } else {
+    SetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE,
+                      GetWindowLongPtrW(pimpl_->hwnd_, GWL_STYLE) | WS_CAPTION);
+  }
 #endif
   // Read by WM_NCCALCSIZE during the frame change below.
   if (style == TitleBarStyle::Hidden) {

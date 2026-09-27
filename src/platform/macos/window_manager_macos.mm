@@ -196,6 +196,20 @@ static void NativeAPIInstallNSWindowWillHideSwizzleOnce() {
   }
 }
 
+- (void)windowDidEnterFullScreen:(NSNotification*)notification {
+  NSWindow* window = [notification object];
+  if (_impl && window && nativeapi::g_window_event_trampoline) {
+    nativeapi::g_window_event_trampoline(_impl, window, "entered_full_screen");
+  }
+}
+
+- (void)windowDidExitFullScreen:(NSNotification*)notification {
+  NSWindow* window = [notification object];
+  if (_impl && window && nativeapi::g_window_event_trampoline) {
+    nativeapi::g_window_event_trampoline(_impl, window, "exited_full_screen");
+  }
+}
+
 - (void)windowDidChangeOcclusionState:(NSNotification*)notification {
   // Posted when a window comes on screen, for which AppKit has no notification
   // of its own
@@ -278,6 +292,14 @@ void WindowManager::Impl::StartEventListening() {
     [center addObserver:delegate_
                selector:@selector(windowDidMove:)
                    name:NSWindowDidMoveNotification
+                 object:nil];
+    [center addObserver:delegate_
+               selector:@selector(windowDidEnterFullScreen:)
+                   name:NSWindowDidEnterFullScreenNotification
+                 object:nil];
+    [center addObserver:delegate_
+               selector:@selector(windowDidExitFullScreen:)
+                   name:NSWindowDidExitFullScreenNotification
                  object:nil];
     [center addObserver:delegate_
                selector:@selector(windowDidChangeOcclusionState:)
@@ -376,6 +398,12 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
     manager_->DispatchWindowEvent(event);
   } else if (event_type == "restored") {
     WindowRestoredEvent event(window_id);
+    manager_->DispatchWindowEvent(event);
+  } else if (event_type == "entered_full_screen") {
+    WindowEnteredFullScreenEvent event(window_id);
+    manager_->DispatchWindowEvent(event);
+  } else if (event_type == "exited_full_screen") {
+    WindowExitedFullScreenEvent event(window_id);
     manager_->DispatchWindowEvent(event);
   } else if (event_type == "resized") {
     // The frame size, which is what Window::GetSize() returns
