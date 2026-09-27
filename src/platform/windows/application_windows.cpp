@@ -197,14 +197,44 @@ class Application::Impl {
   }
 
   void Quit(int exit_code) {
-    if (!app_->running_) {
-      // Someone else runs the loop (a Flutter runner, a host pumping it by
-      // hand): Run() will not return to emit this, and the host ends the
-      // process on WM_QUIT.
-      ApplicationExitingEvent event(exit_code);
-      app_->Emit(event);
+    if (app_->running_) {
+      PostQuitMessage(exit_code);
+      return;
     }
-    PostQuitMessage(exit_code);
+    // Someone else runs the loop (a Flutter runner, a host pumping it by
+    // hand): Run() will not return to emit this, and the host ends the
+    // process on WM_QUIT.
+    ApplicationExitingEvent event(exit_code);
+    app_->Emit(event);
+
+    // Destroy the windows before the loop ends. Otherwise the host tears them
+    // down after it, and a Flutter runner does that wrongly: ~FlutterWindow
+    // destroys its view controller while the top-level window is still alive,
+    // the destroyed Flutter view sends WM_PARENTNOTIFY to that window, and its
+    // handler calls into the half-destroyed controller (an access violation in
+    // flutter_windows.dll that skips the engine's shutdown). Destroying the
+    // window first takes the runner's own path: OnDestroy releases the
+    // controller, and the engine shuts down while messages are still pumped.
+    // Posted rather than done inline: with merged platform and UI threads this
+    // call is inside a Dart FFI call, and a Flutter engine must not be shut
+    // down under its own running isolate.
+    pending_exit_code_ = exit_code;
+    if (quit_posted_) {
+      return;
+    }
+    quit_posted_ = true;
+    const bool posted = RunOnMainThread([this] {
+      DestroyThreadWindows();
+      // Last: a window procedure may post WM_QUIT with its own code when it is
+      // destroyed (the Flutter runner's does, with 0), and the last one wins.
+      PostQuitMessage(pending_exit_code_);
+      quit_posted_ = false;
+    });
+    if (!posted) {
+      quit_posted_ = false;
+      DestroyThreadWindows();
+      PostQuitMessage(exit_code);
+    }
   }
 
   bool SetIcon(const std::string& icon_path) {
@@ -369,6 +399,30 @@ class Application::Impl {
   HANDLE mutex_ = nullptr;
   ITaskbarList3* taskbar_ = nullptr;
   HICON badge_icon_ = nullptr;
+  bool quit_posted_ = false;
+  int pending_exit_code_ = 0;
+
+  // Destroys the calling thread's top-level windows. DestroyWindow, not
+  // WM_CLOSE: a close handler must not veto a quit.
+  // Message-only windows (the dispatcher's, the menu and shortcut hosts) are
+  // not enumerated and stay.
+  static void DestroyThreadWindows() {
+    std::vector<HWND> windows;
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND hwnd, LPARAM data) -> BOOL {
+          reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&windows));
+    // Destroying an owner takes its owned windows with it; the rest may be gone
+    // by the time their turn comes.
+    for (HWND hwnd : windows) {
+      if (IsWindow(hwnd)) {
+        DestroyWindow(hwnd);
+      }
+    }
+  }
 
   // Taskbar progress and overlays are per window; use the primary window, or
   // the first known window when none has been designated.

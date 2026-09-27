@@ -187,7 +187,9 @@ class Application : public EventEmitter<ApplicationEvent> {
    * it), there is nothing to return to and the process ends instead, after
    * ApplicationExitingEvent: on macOS through -[NSApplication terminate:],
    * which exits with status 0 whatever @p exit_code is; on Linux with
-   * @p exit_code; on Windows the host's loop gets WM_QUIT and ends it.
+   * @p exit_code; on Windows the main thread's windows are destroyed while
+   * the host's loop still runs (a Flutter view shuts its engine down then),
+   * and the loop gets WM_QUIT and ends it.
    *
    * A quit the user or the system starts outside Quit() (Cmd+Q, logout) also
    * emits ApplicationQuitRequestedEvent. On macOS it cannot be vetoed and
