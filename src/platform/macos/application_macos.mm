@@ -350,6 +350,23 @@ bool Application::IsSingleInstance() const {
   return false;
 }
 
+bool Application::Show() {
+  // unhide: brings the hidden windows back and activates the application; an
+  // application that is not hidden is only brought to the front.
+  [NSApp unhide:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+  return true;
+}
+
+bool Application::Hide() {
+  [NSApp hide:nil];
+  return true;
+}
+
+bool Application::IsVisible() const {
+  return ![NSApp isHidden];
+}
+
 bool Application::SetIcon(const std::string& icon_path) {
   return pimpl_->SetIcon(icon_path);
 }

@@ -67,6 +67,33 @@ bool native_application_is_single_instance(void) {
   }
 }
 
+bool native_application_show(void) {
+  try {
+    return nativeapi::Application::GetInstance().Show();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_application_show");
+    return false;
+  }
+}
+
+bool native_application_hide(void) {
+  try {
+    return nativeapi::Application::GetInstance().Hide();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_application_hide");
+    return false;
+  }
+}
+
+bool native_application_is_visible(void) {
+  try {
+    return nativeapi::Application::GetInstance().IsVisible();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_application_is_visible");
+    return false;
+  }
+}
+
 bool native_application_set_icon(const char* icon_path) {
   try {
     return nativeapi::Application::GetInstance().SetIcon(std::string(icon_path ? icon_path : ""));

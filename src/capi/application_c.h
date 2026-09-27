@@ -69,6 +69,15 @@ FFI_PLUGIN_EXPORT
 bool native_application_is_single_instance(void);
 
 FFI_PLUGIN_EXPORT
+bool native_application_show(void);
+
+FFI_PLUGIN_EXPORT
+bool native_application_hide(void);
+
+FFI_PLUGIN_EXPORT
+bool native_application_is_visible(void);
+
+FFI_PLUGIN_EXPORT
 bool native_application_set_icon(const char* icon_path);
 
 FFI_PLUGIN_EXPORT

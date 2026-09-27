@@ -219,6 +219,64 @@ class Application : public EventEmitter<ApplicationEvent> {
   bool IsSingleInstance() const;
 
   /**
+   * @brief Shows the application again after Hide(), and makes it active.
+   *
+   * The windows that Hide() took away come back where they were, and the
+   * application moves to the front, as when the user picks it in the Dock.
+   * Calling it on an application that is not hidden only activates it.
+   *
+   * @return true if the application was shown, false where the platform has no
+   *         application-level hiding
+   *
+   * @see Hide() for platform availability.
+   */
+  bool Show();
+
+  /**
+   * @brief Hides the application: all of its windows at once.
+   *
+   * This is the system's own hiding (Cmd+H on macOS), not Window::Hide() on
+   * every window: the system knows the application is hidden, so the Dock
+   * offers "Show" rather than "Hide", clicking the Dock icon brings the
+   * windows back, and the application that was active before gets the focus.
+   * Hiding a hidden application does nothing.
+   *
+   * The system hides the application asynchronously: right after this call
+   * IsVisible() may still return true. While the application is hidden,
+   * Window::IsVisible() returns false for its windows, and Window::Show() on
+   * one of them shows the whole application again.
+   *
+   * @return true if the application was hidden, false where the platform has no
+   *         application-level hiding
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - -[NSApplication hide:], for an application
+   *   without a Dock icon (SetDockIconVisible(false)) as well.
+   * - Windows: ❌ Not applicable - No application-level hiding; always returns
+   *   false. Hide the windows with Window::Hide().
+   * - Linux: ❌ Not applicable - No application-level hiding; always returns
+   *   false. Hide the windows with Window::Hide().
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   */
+  bool Hide();
+
+  /**
+   * @brief Checks if the application is visible, that is, not hidden.
+   *
+   * An application without any window on screen is still visible; only Hide(),
+   * or the user hiding the application through the system (Cmd+H, the Dock
+   * menu), makes this false.
+   *
+   * @return false while the application is hidden; always true where the
+   *         platform has no application-level hiding
+   *
+   * @see Hide() for platform availability.
+   */
+  bool IsVisible() const;
+
+  /**
    * @brief Set the application icon
    *
    * Sets the application icon that appears in the dock (macOS), taskbar (Windows),

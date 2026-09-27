@@ -37,6 +37,19 @@ bool Application::IsSingleInstance() const {
   return false;
 }
 
+// No application-level hiding here; see Application::Hide().
+bool Application::Show() {
+  return false;
+}
+
+bool Application::Hide() {
+  return false;
+}
+
+bool Application::IsVisible() const {
+  return true;
+}
+
 bool Application::SetIcon(const std::string& icon_path) {
   ALOGW("Application::SetIcon not implemented on Android");
   return false;
