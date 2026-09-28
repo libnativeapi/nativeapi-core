@@ -420,7 +420,7 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    *        view to another parent while it is the content view.
    *
    * @note Platform availability:
-   * - macOS: ✅ Fully supported - Hosted in the NSStatusItem's button
+   * - macOS: ✅ Fully supported - Fills the NSStatusItem's whole window, padding included
    * - Windows: ⚠️ Recorded only - The notification area shows only an icon
    * - Linux: ⚠️ Recorded only - StatusNotifierItem shows only an icon
    * - Android: ❌ Not applicable - Always ignored

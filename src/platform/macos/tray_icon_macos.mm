@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <optional>
 #include "../../foundation/geometry.h"
 #include "../../image.h"
@@ -31,10 +32,15 @@ static const void* kTrayIconIdKey = &kTrayIconIdKey;
 - (void)handleStatusItemEvent:(id)sender;
 @end
 
-// Fills the status bar button and holds the content view. Top-left origin like
-// every View container. Only interactive controls are hit: a click anywhere
-// else goes to the button, which turns it into tray icon events.
+// Holds the content view. It fills the status item's window, padding included,
+// so the view covers the whole item and not just the button inside it.
+// Top-left origin like every View container. Interactive controls get their own
+// clicks; a click anywhere else is handed to the button's action, which turns
+// it into tray icon events.
 @interface NativeApiTrayContentHost : NSView
+@property(nonatomic, assign) NSStatusBarButton* button;
+// Called after the host changed size: the menu bar placed or re-sized the item.
+@property(nonatomic, copy) void (^resized)(void);
 @end
 
 namespace nativeapi {
@@ -49,6 +55,7 @@ class TrayIcon::Impl {
   std::optional<std::string> title_;
   std::shared_ptr<View> content_view_;
   NativeApiTrayContentHost* content_host_ = nil;
+  bool laying_out_content_ = false;
 
   Impl(NSStatusItem* status_item)
       : ns_status_item_(status_item),
@@ -155,16 +162,26 @@ class TrayIcon::Impl {
     }
 
     NSStatusBarButton* button = ns_status_item_.button;
-    content_host_ = [[NativeApiTrayContentHost alloc] initWithFrame:button.bounds];
+    // The button sits inset in the item's window; the window's content view is
+    // the whole item.
+    NSView* container = button.window.contentView ?: button;
+    content_host_ = [[NativeApiTrayContentHost alloc] initWithFrame:container.bounds];
     content_host_.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [button addSubview:content_host_];
+    content_host_.button = button;
+    [container addSubview:content_host_];
     [content_host_ addSubview:native];
     content_view_ = std::move(view);
 
     // Every layout pass of the view's tree (a label's text changing, a
-    // subview added, a new preferred size) sizes the item first.
+    // subview added, a new preferred size) sizes the item first, and so does
+    // the menu bar giving the item its final height once it is placed.
     auto& impl = ViewInternal::Of(*content_view_);
     impl.host_layout = [this] { LayoutContentView(); };
+    content_host_.resized = ^{
+      if (content_view_ && !laying_out_content_) {
+        ViewInternal::Of(*content_view_).RelayoutTree();
+      }
+    };
     impl.RelayoutTree();
   }
 
@@ -174,6 +191,7 @@ class TrayIcon::Impl {
     }
     auto& impl = ViewInternal::Of(*content_view_);
     impl.host_layout = nullptr;
+    content_host_.resized = nil;
     NSView* native = (__bridge NSView*)content_view_->GetNativeObject();
     if (native && native.superview == content_host_) {
       [native removeFromSuperview];
@@ -189,24 +207,37 @@ class TrayIcon::Impl {
     }
   }
 
-  // Sizes the item to the content view and centres the view in the bar.
+  // Sizes the item to the content view and centres the view in the item.
   void LayoutContentView() {
-    if (!content_view_ || !ns_status_item_ || !ns_status_item_.button) {
+    if (!content_view_ || !content_host_ || !ns_status_item_ || !ns_status_item_.button) {
       return;
     }
+    laying_out_content_ = true;
     auto& impl = ViewInternal::Of(*content_view_);
     const Size preferred = content_view_->GetPreferredSize();
     const Size intrinsic = impl.IntrinsicSize();
     const double width = preferred.width > 0 ? preferred.width : intrinsic.width;
 
-    CGFloat bar = ns_status_item_.button.bounds.size.height;
+    // The item is the status item's length plus the padding the menu bar puts
+    // around the button (none before macOS 26); the length asked for leaves
+    // room for it so the whole item is `width` wide.
+    // The window follows the length synchronously, so the padding is measured
+    // after the first assignment; before the item exists there is none to see.
+    NSStatusBarButton* button = ns_status_item_.button;
+    auto padding = [&] {
+      return std::max<CGFloat>(0, content_host_.bounds.size.width - button.frame.size.width);
+    };
+    ns_status_item_.length = std::max<CGFloat>(0, width - padding());
+    ns_status_item_.length = std::max<CGFloat>(0, width - padding());
+
+    // Until the item is placed its window has no height yet.
+    CGFloat bar = content_host_.bounds.size.height;
     if (bar <= 0) {
       bar = [[NSStatusBar systemStatusBar] thickness];
     }
     const double height = preferred.height > 0 ? preferred.height : bar;
-
-    ns_status_item_.length = width;
     impl.SetNativeFrame(Rectangle{0, (bar - height) / 2, width, height});
+    laying_out_content_ = false;
   }
 
   void SetupEventHandlers() {
@@ -445,9 +476,11 @@ Rectangle TrayIcon::GetBounds() {
   Rectangle bounds = {0, 0, 0, 0};
 
   if (pimpl_->ns_status_item_ && pimpl_->ns_status_item_.button && pimpl_->ns_status_item_.button.window) {
-    NSStatusBarButton* button = pimpl_->ns_status_item_.button;
-    NSRect window_rect = [button convertRect:button.bounds toView:nil];
-    NSRect screen_rect = [button.window convertRectToScreen:window_rect];
+    // With a content view the whole item is what the user sees and clicks.
+    NSView* item = pimpl_->content_host_ ? (NSView*)pimpl_->content_host_
+                                         : (NSView*)pimpl_->ns_status_item_.button;
+    NSRect window_rect = [item convertRect:item.bounds toView:nil];
+    NSRect screen_rect = [item.window convertRectToScreen:window_rect];
 
     // Flip against the primary screen ([NSScreen screens][0]), matching every
     // other coordinate conversion in this library. Do NOT use mainScreen here:
@@ -565,19 +598,56 @@ void* TrayIcon::GetNativeObjectInternal() const {
   return YES;
 }
 
+- (void)setFrameSize:(NSSize)size {
+  const NSSize old_size = self.frame.size;
+  [super setFrameSize:size];
+  if (!NSEqualSizes(old_size, size) && self.resized) {
+    self.resized();
+  }
+}
+
+// Containers, labels and image views take no clicks of their own: the host
+// takes them instead and passes them on to the button.
 - (NSView*)hitTest:(NSPoint)point {
   NSView* hit = [super hitTest:point];
-  if (!hit || hit == self || [hit isKindOfClass:[NativeApiContainerView class]] ||
+  if (!hit || [hit isKindOfClass:[NativeApiContainerView class]] ||
       [hit isKindOfClass:[NSImageView class]]) {
-    return nil;
+    return hit ? self : nil;
   }
   if ([hit isKindOfClass:[NSTextField class]]) {
     NSTextField* field = (NSTextField*)hit;
     if (!field.isEditable && !field.isSelectable) {
-      return nil;
+      return self;
     }
   }
   return hit;
+}
+
+- (void)mouseDown:(NSEvent*)event {
+  [self.button highlight:YES];
+}
+
+- (void)rightMouseDown:(NSEvent*)event {
+  [self.button highlight:YES];
+}
+
+- (void)mouseUp:(NSEvent*)event {
+  [self sendButtonActionFor:event];
+}
+
+- (void)rightMouseUp:(NSEvent*)event {
+  [self sendButtonActionFor:event];
+}
+
+// The button's action reads the current event to tell left, right and double
+// clicks apart, as it does for a click on the button itself.
+- (void)sendButtonActionFor:(NSEvent*)event {
+  NSStatusBarButton* button = self.button;
+  [button highlight:NO];
+  NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (button && button.action && NSPointInRect(point, self.bounds)) {
+    [NSApp sendAction:button.action to:button.target from:button];
+  }
 }
 
 @end
