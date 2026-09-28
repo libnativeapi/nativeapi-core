@@ -44,7 +44,11 @@ View* View::Impl::Root() const {
 
 void View::Impl::RelayoutTree() {
   LayoutPass pass;
-  Root()->pimpl_->Relayout();
+  Impl& root = *Root()->pimpl_;
+  if (root.host_layout) {
+    root.host_layout();
+  }
+  root.Relayout();
 }
 
 void View::Impl::InvalidateIntrinsicSize() {

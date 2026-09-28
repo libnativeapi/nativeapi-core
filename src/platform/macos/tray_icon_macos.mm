@@ -4,7 +4,10 @@
 #include "../../menu.h"
 #include "../../positioning_strategy.h"
 #include "../../tray_icon.h"
+#include "../../view.h"
+#include "../../view_impl.h"
 #include "coordinate_utils_macos.h"
+#include "view_internal_macos.h"
 
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
@@ -28,6 +31,12 @@ static const void* kTrayIconIdKey = &kTrayIconIdKey;
 - (void)handleStatusItemEvent:(id)sender;
 @end
 
+// Fills the status bar button and holds the content view. Top-left origin like
+// every View container. Only interactive controls are hit: a click anywhere
+// else goes to the button, which turns it into tray icon events.
+@interface NativeApiTrayContentHost : NSView
+@end
+
 namespace nativeapi {
 
 // Private implementation class
@@ -37,6 +46,9 @@ class TrayIcon::Impl {
   bool icon_template_ = false;
   Size icon_size_ = Size{18, 18};
   TrayIconPosition icon_position_ = TrayIconPosition::Left;
+  std::optional<std::string> title_;
+  std::shared_ptr<View> content_view_;
+  NativeApiTrayContentHost* content_host_ = nil;
 
   Impl(NSStatusItem* status_item)
       : ns_status_item_(status_item),
@@ -71,6 +83,9 @@ class TrayIcon::Impl {
       CleanupEventHandlers();
     }
 
+    // The content view's layout hook points at this Impl.
+    DetachContentView();
+
     // Then clean up the status item
     if (ns_status_item_) {
       // Clear menu reference
@@ -100,7 +115,8 @@ class TrayIcon::Impl {
     NSStatusBarButton* button = ns_status_item_.button;
     button.imagePosition = icon_position_ == TrayIconPosition::Right ? NSImageRight : NSImageLeft;
 
-    NSImage* source = image_ ? (__bridge NSImage*)image_->GetNativeObject() : nil;
+    // A content view replaces the image; image_ stays for when it is cleared.
+    NSImage* source = image_ && !content_view_ ? (__bridge NSImage*)image_->GetNativeObject() : nil;
     if (!source) {
       [button setImage:nil];
       return;
@@ -112,6 +128,85 @@ class TrayIcon::Impl {
     }
     [ns_image setTemplate:icon_template_ ? YES : NO];
     [button setImage:ns_image];
+  }
+
+  // Puts title_ on the button, or nothing while a content view is shown.
+  void ApplyTitle() {
+    if (!ns_status_item_ || !ns_status_item_.button) {
+      return;
+    }
+    NSString* title = @"";
+    if (title_.has_value() && !content_view_) {
+      title = [NSString stringWithUTF8String:title_->c_str()];
+    }
+    [ns_status_item_.button setTitle:title ?: @""];
+  }
+
+  void AttachContentView(std::shared_ptr<View> view) {
+    if (!ns_status_item_ || !ns_status_item_.button) {
+      return;
+    }
+    NSView* native = (__bridge NSView*)view->GetNativeObject();
+    if (!native) {
+      return;
+    }
+    if (auto parent = view->GetParent()) {
+      parent->RemoveSubview(view);
+    }
+
+    NSStatusBarButton* button = ns_status_item_.button;
+    content_host_ = [[NativeApiTrayContentHost alloc] initWithFrame:button.bounds];
+    content_host_.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [button addSubview:content_host_];
+    [content_host_ addSubview:native];
+    content_view_ = std::move(view);
+
+    // Every layout pass of the view's tree (a label's text changing, a
+    // subview added, a new preferred size) sizes the item first.
+    auto& impl = ViewInternal::Of(*content_view_);
+    impl.host_layout = [this] { LayoutContentView(); };
+    impl.RelayoutTree();
+  }
+
+  void DetachContentView() {
+    if (!content_view_) {
+      return;
+    }
+    auto& impl = ViewInternal::Of(*content_view_);
+    impl.host_layout = nullptr;
+    NSView* native = (__bridge NSView*)content_view_->GetNativeObject();
+    if (native && native.superview == content_host_) {
+      [native removeFromSuperview];
+    }
+    [content_host_ removeFromSuperview];
+#if !__has_feature(objc_arc)
+    [content_host_ release];
+#endif
+    content_host_ = nil;
+    content_view_.reset();
+    if (ns_status_item_) {
+      ns_status_item_.length = NSVariableStatusItemLength;
+    }
+  }
+
+  // Sizes the item to the content view and centres the view in the bar.
+  void LayoutContentView() {
+    if (!content_view_ || !ns_status_item_ || !ns_status_item_.button) {
+      return;
+    }
+    auto& impl = ViewInternal::Of(*content_view_);
+    const Size preferred = content_view_->GetPreferredSize();
+    const Size intrinsic = impl.IntrinsicSize();
+    const double width = preferred.width > 0 ? preferred.width : intrinsic.width;
+
+    CGFloat bar = ns_status_item_.button.bounds.size.height;
+    if (bar <= 0) {
+      bar = [[NSStatusBar systemStatusBar] thickness];
+    }
+    const double height = preferred.height > 0 ? preferred.height : bar;
+
+    ns_status_item_.length = width;
+    impl.SetNativeFrame(Rectangle{0, (bar - height) / 2, width, height});
   }
 
   void SetupEventHandlers() {
@@ -270,22 +365,13 @@ TrayIconPosition TrayIcon::GetIconPosition() const {
 }
 
 void TrayIcon::SetTitle(std::optional<std::string> title) {
-  if (pimpl_->ns_status_item_ && pimpl_->ns_status_item_.button) {
-    if (title.has_value()) {
-      NSString* title_string = [NSString stringWithUTF8String:title.value().c_str()];
-      [pimpl_->ns_status_item_.button setTitle:title_string];
-    } else {
-      [pimpl_->ns_status_item_.button setTitle:@""];
-    }
-  }
+  pimpl_->title_ = std::move(title);
+  pimpl_->ApplyTitle();
 }
 
 std::optional<std::string> TrayIcon::GetTitle() {
-  if (pimpl_->ns_status_item_ && pimpl_->ns_status_item_.button) {
-    NSString* title_string = [pimpl_->ns_status_item_.button title];
-    if (title_string && [title_string length] > 0) {
-      return std::string([title_string UTF8String]);
-    }
+  if (pimpl_->title_.has_value() && !pimpl_->title_->empty()) {
+    return pimpl_->title_;
   }
   return std::nullopt;
 }
@@ -309,6 +395,22 @@ std::optional<std::string> TrayIcon::GetTooltip() {
     }
   }
   return std::nullopt;
+}
+
+void TrayIcon::SetContentView(std::shared_ptr<View> view) {
+  if (view == pimpl_->content_view_) {
+    return;
+  }
+  pimpl_->DetachContentView();
+  if (view) {
+    pimpl_->AttachContentView(std::move(view));
+  }
+  pimpl_->ApplyIcon();
+  pimpl_->ApplyTitle();
+}
+
+std::shared_ptr<View> TrayIcon::GetContentView() const {
+  return pimpl_->content_view_;
 }
 
 void TrayIcon::SetContextMenu(std::shared_ptr<Menu> menu) {
@@ -453,6 +555,29 @@ void* TrayIcon::GetNativeObjectInternal() const {
       }
     }
   }
+}
+
+@end
+
+@implementation NativeApiTrayContentHost
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+- (NSView*)hitTest:(NSPoint)point {
+  NSView* hit = [super hitTest:point];
+  if (!hit || hit == self || [hit isKindOfClass:[NativeApiContainerView class]] ||
+      [hit isKindOfClass:[NSImageView class]]) {
+    return nil;
+  }
+  if ([hit isKindOfClass:[NSTextField class]]) {
+    NSTextField* field = (NSTextField*)hit;
+    if (!field.isEditable && !field.isSelectable) {
+      return nil;
+    }
+  }
+  return hit;
 }
 
 @end

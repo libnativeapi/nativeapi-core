@@ -15,6 +15,7 @@
 #include "../../menu.h"
 #include "../../positioning_strategy.h"
 #include "../../tray_icon.h"
+#include "../../view.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 #include "window_message_dispatcher.h"
@@ -105,6 +106,7 @@ class TrayIcon::Impl {
   bool icon_template_ = false;
   Size icon_size_ = Size{18, 18};
   TrayIconPosition icon_position_ = TrayIconPosition::Left;
+  std::shared_ptr<View> content_view_;
 
   // Callback function types
   using ClickedCallback = std::function<void(TrayIconId)>;
@@ -399,6 +401,15 @@ void TrayIcon::SetIconPosition(TrayIconPosition position) {
 
 TrayIconPosition TrayIcon::GetIconPosition() const {
   return pimpl_->icon_position_;
+}
+
+void TrayIcon::SetContentView(std::shared_ptr<View> view) {
+  // Recorded only: the notification area shows only an icon.
+  pimpl_->content_view_ = std::move(view);
+}
+
+std::shared_ptr<View> TrayIcon::GetContentView() const {
+  return pimpl_->content_view_;
 }
 
 void TrayIcon::SetTitle(std::optional<std::string> title) {

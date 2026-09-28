@@ -67,6 +67,14 @@ TrayIconPosition TrayIcon::GetIconPosition() const {
   return TrayIconPosition::Left;
 }
 
+void TrayIcon::SetContentView(std::shared_ptr<View> view) {
+  // Not applicable to OpenHarmony
+}
+
+std::shared_ptr<View> TrayIcon::GetContentView() const {
+  return nullptr;
+}
+
 void TrayIcon::SetTitle(std::optional<std::string> title) {
   // Not implemented on OpenHarmony yet
 }

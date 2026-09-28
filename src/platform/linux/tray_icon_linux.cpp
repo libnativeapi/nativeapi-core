@@ -23,6 +23,7 @@
 #include "../../image.h"
 #include "../../menu.h"
 #include "../../tray_icon.h"
+#include "../../view.h"
 
 namespace nativeapi {
 
@@ -190,6 +191,7 @@ class TrayIcon::Impl {
   bool icon_template_ = false;
   Size icon_size_ = Size{18, 18};
   TrayIconPosition icon_position_ = TrayIconPosition::Left;
+  std::shared_ptr<View> content_view_;
   std::optional<std::string> title_;
   std::optional<std::string> tooltip_;
   std::shared_ptr<Menu> context_menu_;
@@ -1010,6 +1012,15 @@ void TrayIcon::SetIconPosition(TrayIconPosition position) {
 
 TrayIconPosition TrayIcon::GetIconPosition() const {
   return pimpl_->icon_position_;
+}
+
+void TrayIcon::SetContentView(std::shared_ptr<View> view) {
+  // Recorded only: a StatusNotifierItem shows only an icon.
+  pimpl_->content_view_ = std::move(view);
+}
+
+std::shared_ptr<View> TrayIcon::GetContentView() const {
+  return pimpl_->content_view_;
 }
 
 void TrayIcon::SetTitle(std::optional<std::string> title) {

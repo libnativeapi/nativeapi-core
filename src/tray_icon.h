@@ -13,6 +13,7 @@
 namespace nativeapi {
 
 class Image;
+class View;
 
 typedef IdAllocator::IdType TrayIconId;
 
@@ -394,6 +395,48 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * @return The current tooltip text as an optional string, or std::nullopt if no tooltip is set
    */
   std::optional<std::string> GetTooltip();
+
+  /**
+   * @brief Sets a view that replaces the icon and title with custom content.
+   *
+   * The view becomes the root of its own tree, like a window's content view:
+   * build it with any View, Label, Button, ImageView or other control, or wrap
+   * a native view (a Flutter view, say) with View(void*). While a content
+   * view is set, the icon and title are not drawn; they are kept and come back
+   * once the content view is cleared.
+   *
+   * The item is as wide as the view's preferred width, or its intrinsic width
+   * where the preferred width is 0 (a Row or Column sizes to its content), and
+   * follows it when either changes. The height is the menu bar's thickness
+   * unless a preferred height is set; the view is centred vertically and
+   * clipped to the menu bar. SetFrame() on the view is ignored.
+   *
+   * Clicks on containers, labels and image views fall through to the tray
+   * icon and emit its events as usual; interactive controls (a Button, a
+   * TextField, a wrapped native view) receive their own input.
+   *
+   * @param view The view to show, or nullptr to go back to the icon and title.
+   *        A view that has a parent is removed from it first. Do not add the
+   *        view to another parent while it is the content view.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - Hosted in the NSStatusItem's button
+   * - Windows: ⚠️ Recorded only - The notification area shows only an icon
+   * - Linux: ⚠️ Recorded only - StatusNotifierItem shows only an icon
+   * - Android: ❌ Not applicable - Always ignored
+   * - iOS: ❌ Not applicable - Always ignored
+   * - OpenHarmony: ❌ Not applicable - Always ignored
+   */
+  void SetContentView(std::shared_ptr<View> view);
+
+  /**
+   * @brief Gets the custom content view.
+   *
+   * @return The view passed to SetContentView(), or nullptr if none is set.
+   *
+   * @see SetContentView() for platform availability.
+   */
+  std::shared_ptr<View> GetContentView() const;
 
   /**
    * @brief Set the context menu for the tray icon.

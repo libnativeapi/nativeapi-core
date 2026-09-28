@@ -9,10 +9,12 @@
 #include "common_c.h"
 typedef uint64_t native_image_t;
 typedef uint64_t native_menu_t;
+typedef uint64_t native_view_t;
 
 #include "geometry_c.h"
 #include "image_c.h"
 #include "menu_c.h"
+#include "view_c.h"
 
 #if _WIN32
 #define FFI_PLUGIN_EXPORT __declspec(dllexport)
@@ -132,6 +134,13 @@ void native_tray_icon_set_tooltip(native_tray_icon_t tray_icon, const char* tool
 /// Caller owns the returned string; free it with free_c_str().
 FFI_PLUGIN_EXPORT
 char* native_tray_icon_get_tooltip(native_tray_icon_t tray_icon);
+
+FFI_PLUGIN_EXPORT
+void native_tray_icon_set_content_view(native_tray_icon_t tray_icon, native_view_t view);
+
+/// Caller owns the returned handle; release it with native_view_free().
+FFI_PLUGIN_EXPORT
+native_view_t native_tray_icon_get_content_view(native_tray_icon_t tray_icon);
 
 FFI_PLUGIN_EXPORT
 void native_tray_icon_set_context_menu(native_tray_icon_t tray_icon, native_menu_t menu);

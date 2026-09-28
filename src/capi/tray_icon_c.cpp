@@ -18,6 +18,8 @@
 #include "geometry_c.h"
 #include "../image.h"
 #include "image_c.h"
+#include "../view.h"
+#include "view_c.h"
 #include "../menu.h"
 #include "menu_c.h"
 #include "../tray_icon.h"
@@ -229,6 +231,34 @@ char* native_tray_icon_get_tooltip(native_tray_icon_t tray_icon) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_get_tooltip");
     return nullptr;
+  }
+}
+
+void native_tray_icon_set_content_view(native_tray_icon_t tray_icon, native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TrayIcon>(tray_icon);
+  if (!self) {
+    return;
+  }
+  try {
+    auto view_cpp = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+    self->SetContentView(view_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_set_content_view");
+    return;
+  }
+}
+
+native_view_t native_tray_icon_get_content_view(native_tray_icon_t tray_icon) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TrayIcon>(tray_icon);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return nativeapi::HandleTable::GetInstance().Insert(self->GetContentView());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_get_content_view");
+    return 0;
   }
 }
 

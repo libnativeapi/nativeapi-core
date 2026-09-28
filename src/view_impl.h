@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +23,8 @@ struct View::NativeControl {
 struct ViewInternal {
   using Impl = View::Impl;
   using NativeControl = View::NativeControl;
+  /// The shared state of `view`, for library code outside the View classes.
+  static Impl& Of(View& view) { return *view.pimpl_; }
 };
 
 /**
@@ -87,6 +90,10 @@ class View::Impl {
   ViewId id = IdAllocator::kInvalidId;
   std::weak_ptr<View> parent;
   std::weak_ptr<Window> window;  // root views only
+  /// Set by a host other than a window (a tray icon) on the detached root it
+  /// shows: called at the start of every layout pass of the tree, so the host
+  /// can size the root before its subviews are laid out.
+  std::function<void()> host_layout;
   std::vector<std::shared_ptr<View>> subviews;
 
   ViewLayout layout = ViewLayout::Absolute;
