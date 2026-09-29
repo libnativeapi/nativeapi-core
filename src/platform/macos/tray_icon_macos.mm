@@ -236,7 +236,11 @@ class TrayIcon::Impl {
       bar = [[NSStatusBar systemStatusBar] thickness];
     }
     const double height = preferred.height > 0 ? preferred.height : bar;
-    impl.SetNativeFrame(Rectangle{0, (bar - height) / 2, width, height});
+    // Stretched to the item's real width: the menu bar rounds the length, and
+    // an item may not be narrower than its padding. A sliver left uncovered at
+    // either edge would show the menu bar through it.
+    const double item_width = std::max<double>(width, content_host_.bounds.size.width);
+    impl.SetNativeFrame(Rectangle{0, (bar - height) / 2, item_width, height});
     laying_out_content_ = false;
   }
 
@@ -623,12 +627,12 @@ void* TrayIcon::GetNativeObjectInternal() const {
   return hit;
 }
 
+// No highlight: the content view draws the whole item, and the system's
+// highlight would only show around its edges.
 - (void)mouseDown:(NSEvent*)event {
-  [self.button highlight:YES];
 }
 
 - (void)rightMouseDown:(NSEvent*)event {
-  [self.button highlight:YES];
 }
 
 - (void)mouseUp:(NSEvent*)event {
@@ -643,7 +647,6 @@ void* TrayIcon::GetNativeObjectInternal() const {
 // clicks apart, as it does for a click on the button itself.
 - (void)sendButtonActionFor:(NSEvent*)event {
   NSStatusBarButton* button = self.button;
-  [button highlight:NO];
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
   if (button && button.action && NSPointInRect(point, self.bounds)) {
     [NSApp sendAction:button.action to:button.target from:button];
