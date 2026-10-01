@@ -837,10 +837,8 @@ void Window::SetContentSize(Size size) {
     pimpl_->requested_content_size_ = size;
   }
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
-    if (linux_shadow::Get(pimpl_->widget_)) {
-      size.width += linux_shadow::Get(pimpl_->widget_)->margin * 2;
-      size.height += linux_shadow::Get(pimpl_->widget_)->margin * 2;
-    }
+    size.width += linux_shadow::Gutter(pimpl_->widget_) * 2;
+    size.height += linux_shadow::Gutter(pimpl_->widget_) * 2;
     GtkWindow* gtk_window = GTK_WINDOW(pimpl_->widget_);
     if (!gtk_window_get_resizable(gtk_window)) {
       // GTK derives a non-resizable window's fixed geometry from its default
@@ -1141,7 +1139,7 @@ void Window::SetPosition(Point point) {
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     // gtk_window_move() positions the frame, and remembers the position for a window
     // that is not mapped yet — which gdk_window_move() does not.
-    const int margin = linux_shadow::Get(pimpl_->widget_) ? linux_shadow::Get(pimpl_->widget_)->margin : 0;
+    const int margin = linux_shadow::Gutter(pimpl_->widget_);
     gtk_window_move(GTK_WINDOW(pimpl_->widget_), (gint)point.x - margin, (gint)point.y - margin);
   } else if (pimpl_->gdk_window_) {
     gdk_window_move(pimpl_->gdk_window_, (gint)point.x, (gint)point.y);
