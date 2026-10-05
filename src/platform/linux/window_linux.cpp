@@ -839,6 +839,7 @@ void Window::SetContentSize(Size size) {
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     size.width += linux_shadow::Gutter(pimpl_->widget_) * 2;
     size.height += linux_shadow::Gutter(pimpl_->widget_) * 2;
+    linux_shadow::NoteRequestedSize(pimpl_->widget_, (gint)size.width, (gint)size.height);
     GtkWindow* gtk_window = GTK_WINDOW(pimpl_->widget_);
     if (!gtk_window_get_resizable(gtk_window)) {
       // GTK derives a non-resizable window's fixed geometry from its default
@@ -1310,10 +1311,14 @@ static void EnsureNoShadowRule(GtkWidget* widget) {
   }
   installed = true;
   GtkCssProvider* provider = gtk_css_provider_new();
+  // The margin too: the theme's decoration node reserves one for its shadow (10 px in
+  // Adwaita), GTK counts it as shadow width, and drops it the moment the compositor
+  // reports the window tiled or maximized - on Hyprland that is every window, right
+  // after it maps, so a popup would lay itself out twice on every show.
   gtk_css_provider_load_from_data(provider,
                                   "window.nativeapi-no-shadow decoration,"
                                   "window.nativeapi-no-shadow decoration:backdrop {"
-                                  "  box-shadow: none; border: none; }",
+                                  "  box-shadow: none; border: none; margin: 0; }",
                                   -1, nullptr);
   gtk_style_context_add_provider_for_screen(gtk_widget_get_screen(widget),
                                             GTK_STYLE_PROVIDER(provider),

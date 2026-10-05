@@ -165,6 +165,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(window_restore_linux_test PRIVATE nativeapi)
 endif()
 
+# Explicit desktop integration test; requires a running compositor (meant for one that
+# sends tiled states to floating windows, such as Hyprland).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_shadow_remap_linux_test window_shadow_remap_linux_test.cpp)
+  target_link_libraries(window_shadow_remap_linux_test PRIVATE nativeapi)
+endif()
+
 # Explicit desktop integration test; creates windows but sends no input.
 if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
   if(APPLE)
