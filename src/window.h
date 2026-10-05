@@ -30,7 +30,9 @@ typedef IdAllocator::IdType WindowId;
  * title text and window control buttons (minimize, maximize, close).
  *
  * @note Platform behavior may vary:
- * - Windows: Hidden style removes the title bar; the resize border stays on the sides and bottom
+ * - Windows: Hidden style removes the title bar; the desktop compositor's frame (border,
+ *   shadow, rounded corners) stays. Without a shadow, or with a custom shadow or a shape,
+ *   the window has no frame at all and its edges resize from inside the content
  * - macOS: Hidden style creates a borderless window with transparent title bar
  * - Linux: Hidden style removes window decorations entirely
  */
@@ -923,9 +925,10 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - Drops the shadow of any window
-   * - Windows: ⚠️ Hidden-title-bar windows use a core-managed click-through shadow
-   *   for either the rectangle or the applied shape. System-decorated windows
-   *   retain the desktop compositor's restrictions.
+   * - Windows: ⚠️ Hidden-title-bar windows keep the desktop compositor's shadow, or use a
+   *   core-managed click-through shadow once a custom shadow or a shape is applied.
+   *   Without a shadow a hidden-title-bar window has no frame; its content stays in
+   *   place. System-decorated windows retain the desktop compositor's restrictions.
    * - Linux: ⚠️ Hidden-title-bar GtkWindows use a core-rendered shadow with an
    *   internal non-interactive margin; content coordinates and sizes exclude it.
    *   SetInputShape() supplies its contour, or nullptr restores a rectangle.
@@ -1056,7 +1059,8 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    *
    * @note Platform availability:
    * - macOS: ⚠️ Content-layer mask; requires a transparent background and hidden title bar
-   * - Windows: ✅ Native window region clips rendering and mouse input
+   * - Windows: ✅ Native window region clips rendering and mouse input; the window drops
+   *   its frame, keeping its content in place
    * - Linux: ⚠️ GDK visual and input regions, only on backends supporting both (X11)
    * - Android: ❌ Unsupported, returns false
    * - iOS: ❌ Unsupported, returns false

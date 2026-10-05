@@ -34,6 +34,14 @@ static const wchar_t* kTitleBarHiddenProperty = L"NativeAPITitleBarHidden";
 // The other two window flags the system cannot be asked about afterwards, kept on the
 // HWND for the same reason.
 static const wchar_t* kNoShadowProperty = L"NativeAPINoShadow";
+// Set while a window with a hidden title bar has no compositor-drawn frame: its client
+// area then covers the whole window (WM_NCCALCSIZE), because the sizing frame left
+// without the compositor is painted in the classic theme.
+static const wchar_t* kFramelessClientProperty = L"NativeAPIFramelessClient";
+// Set while a shape applied with SetShape is in force. The window region alone does not
+// tell: without the compositor's frame the visual style puts a region of its own on a
+// window (the rounded corners of the classic frame).
+static const wchar_t* kShapedProperty = L"NativeAPIShaped";
 static const wchar_t* kHiddenFromTaskbarProperty = L"NativeAPIHiddenFromTaskbar";
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
@@ -241,41 +249,61 @@ static void ApplyTaskbarVisibility(HWND hwnd, bool is_visible) {
 
 #ifndef NATIVEAPI_ENABLE_WINUI3
 // Keep the native sizing/caption styles, but give the top non-client band to the
-// content (WM_NCCALCSIZE) when the title bar is hidden. The sizing frame remains,
-// the top edge stays resizable through hit testing: the window answers HTTOP there,
-// and child windows covering the content let the hit test through to it.
+// content (WM_NCCALCSIZE) when the title bar is hidden. While the compositor draws the
+// frame the rest of the sizing frame remains, and the top edge stays resizable through
+// hit testing: the window answers HTTOP there, and child windows covering the content
+// let the hit test through to it. Without the compositor's frame (no shadow, a custom
+// shadow, a shape) the content takes the whole window and every edge is hit-tested so.
 
-// The resize hit code for a screen point in the top band of `root`, or 0.
-static LRESULT TopResizeHit(HWND root, LPARAM point) {
+// The resize hit code for a screen point on a resize edge of `root` that the system no
+// longer hit-tests itself, or 0.
+static LRESULT HiddenFrameResizeHit(HWND root, LPARAM point) {
   if (!GetPropW(root, kTitleBarHiddenProperty) || IsZoomed(root) ||
       !(GetWindowLongPtrW(root, GWL_STYLE) & WS_THICKFRAME))
     return 0;
   RECT window;
   GetWindowRect(root, &window);
-  // The sizing frame is as thick at the top as on the left, where it is still in place.
-  POINT client_origin = {0, 0};
-  ClientToScreen(root, &client_origin);
-  const int frame = client_origin.x - window.left;
+  const bool frameless = GetPropW(root, kFramelessClientProperty) != nullptr;
+  int frame;
+  if (frameless) {
+    // The system's resize border (SM_CXSIZEFRAME plus SM_CXPADDEDBORDER) at 96 DPI.
+    frame = static_cast<int>(std::lround(8 * GetScaleFactorForWindow(root)));
+  } else {
+    // The sizing frame is as thick at the top as on the left, where it is still in place.
+    POINT client_origin = {0, 0};
+    ClientToScreen(root, &client_origin);
+    frame = client_origin.x - window.left;
+  }
   // GET_X_LPARAM / GET_Y_LPARAM, without <windowsx.h>: its IsMaximized() and
   // IsMinimized() macros would rename Window's methods of the same name.
   const int x = static_cast<short>(LOWORD(point));
   const int y = static_cast<short>(HIWORD(point));
-  if (y < window.top || y >= window.top + frame || x < window.left || x >= window.right)
-    return 0;
-  if (x < window.left + frame) return HTTOPLEFT;
-  if (x >= window.right - frame) return HTTOPRIGHT;
-  return HTTOP;
+  if (y < window.top || y >= window.bottom || x < window.left || x >= window.right) return 0;
+  const bool top = y < window.top + frame;
+  const bool left = x < window.left + frame;
+  const bool right = x >= window.right - frame;
+  // With a frame in place only the top band is the client's; the system answers the rest.
+  if (!frameless) {
+    if (!top) return 0;
+    return left ? HTTOPLEFT : right ? HTTOPRIGHT : HTTOP;
+  }
+  const bool bottom = y >= window.bottom - frame;
+  if (top) return left ? HTTOPLEFT : right ? HTTOPRIGHT : HTTOP;
+  if (bottom) return left ? HTBOTTOMLEFT : right ? HTBOTTOMRIGHT : HTBOTTOM;
+  if (left) return HTLEFT;
+  if (right) return HTRIGHT;
+  return 0;
 }
 
 // Subclass of the child windows of a window with a hidden title bar. A child that
 // covers the content (a Flutter view, for one) is hit-tested before its parent;
-// in the top resize band it steps aside so the parent can answer HTTOP.
+// on a resize edge it steps aside so the parent can answer it.
 static LRESULT CALLBACK TopEdgeChildProc(HWND child, UINT message, WPARAM wp, LPARAM lp,
                                          UINT_PTR subclass_id, DWORD_PTR) {
   if (message == WM_NCHITTEST) {
     // HTTRANSPARENT passes the hit test on to windows of the same thread only.
     HWND root = GetAncestor(child, GA_ROOT);
-    if (root && TopResizeHit(root, lp) != 0 &&
+    if (root && HiddenFrameResizeHit(root, lp) != 0 &&
         GetWindowThreadProcessId(root, nullptr) == GetCurrentThreadId())
       return HTTRANSPARENT;
   } else if (message == WM_NCDESTROY) {
@@ -297,14 +325,28 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
     return std::nullopt;
   }
   if (!GetPropW(hwnd, kTitleBarHiddenProperty)) return std::nullopt;
+  const bool frameless = GetPropW(hwnd, kFramelessClientProperty) != nullptr;
+  if (message == WM_NCCALCSIZE && !wp) {
+    auto* proposed = reinterpret_cast<RECT*>(lp);
+    const RECT window = *proposed;
+    const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
+    if (frameless)
+      *proposed = window;
+    else
+      proposed->top = window.top;
+    return result;
+  }
   if (message == WM_NCCALCSIZE && wp) {
     auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
-    const LONG top = params->rgrc[0].top;
+    const RECT proposed = params->rgrc[0];
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
     // A full screen window keeps WS_MAXIMIZE when it was maximized, but it has no
     // frame to hang past the monitor and must cover the taskbar too.
     if (!IsZoomed(hwnd) || g_full_screen_windows.count(hwnd)) {
-      params->rgrc[0].top = top;
+      if (frameless)
+        params->rgrc[0] = proposed;
+      else
+        params->rgrc[0].top = proposed.top;
       return result;
     }
     // The maximized frame extends beyond the work area by its resize borders.
@@ -317,21 +359,109 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
   if (message == WM_NCHITTEST) {
     const LRESULT hit = DefSubclassProc(hwnd, message, wp, lp);
     if (hit != HTCLIENT) return hit;
-    const LRESULT top = TopResizeHit(hwnd, lp);
-    return top != 0 ? top : hit;
+    const LRESULT edge = HiddenFrameResizeHit(hwnd, lp);
+    return edge != 0 ? edge : hit;
   }
-  if (message == WM_NCACTIVATE) {
-    // A window with a region has no DWM frame, so an activation change repaints the
-    // classic caption, over the content that took its place. lParam -1 keeps the
-    // activation handling but skips that repaint.
-    HRGN region = CreateRectRgn(0, 0, 0, 0);
-    const bool shaped = region && GetWindowRgn(hwnd, region) != ERROR;
-    if (region) DeleteObject(region);
-    if (shaped) return DefSubclassProc(hwnd, message, wp, -1);
+  // Without the compositor's frame, DefWindowProc paints the classic frame and caption
+  // that the window style still asks for, straight over the content at the window's
+  // edges: on every step of a resize (WM_NCPAINT), on activation (WM_NCACTIVATE, and the
+  // undocumented WM_NCUAHDRAWCAPTION / WM_NCUAHDRAWFRAME the theme sends) and when the
+  // title or icon changes. The content repaints over it a moment later, so it flickers.
+  // There is no frame to paint, so none of that is let through.
+  if (!frameless) return std::nullopt;
+  constexpr UINT kNcUahDrawCaption = 0x00AE;
+  constexpr UINT kNcUahDrawFrame = 0x00AF;
+  if (message == WM_NCPAINT || message == kNcUahDrawCaption || message == kNcUahDrawFrame)
+    return 0;
+  // lParam -1 keeps the activation handling but skips the repaint.
+  if (message == WM_NCACTIVATE) return DefSubclassProc(hwnd, message, wp, -1);
+  if (message == WM_SETTEXT || message == WM_SETICON) {
+    // These paint the caption right away. Taking WS_VISIBLE off for the call keeps the
+    // paint off the screen without hiding the window (what Chromium does as well).
+    const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if (style & WS_VISIBLE) SetWindowLongPtrW(hwnd, GWL_STYLE, style & ~WS_VISIBLE);
+    const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
+    if (style & WS_VISIBLE) SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+    return result;
   }
   return std::nullopt;
 }
 #endif
+
+static bool HasWindowRegion(HWND hwnd) {
+  HRGN region = CreateRectRgn(0, 0, 0, 0);
+  if (!region) return false;
+  const bool has_region = GetWindowRgn(hwnd, region) != ERROR;
+  DeleteObject(region);
+  return has_region;
+}
+
+// Removes a region the visual style put on a window with a hidden title bar. Without the
+// compositor's frame the style clips the window to the rounded corners of the classic
+// frame it would draw, which this window does not have. Shapes are left alone.
+static void DropThemeRegion(HWND hwnd) {
+  if (!GetPropW(hwnd, kTitleBarHiddenProperty) || GetPropW(hwnd, kShapedProperty) ||
+      !HasWindowRegion(hwnd))
+    return;
+  // No redraw from SetWindowRgn, and no erase: see SetShape.
+  SetWindowRgn(hwnd, nullptr, FALSE);
+  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+}
+
+// Who draws a window's frame, decided from its flags in this one place. The compositor
+// draws it, with its shadow (and on Windows 11 the rounded corners and the thin border),
+// unless the window has no shadow, or has a hidden title bar and core draws the shadow:
+// a custom shadow, or a shape, which the compositor's frame would not follow. A window
+// with a hidden title bar and no frame from the compositor has no frame at all
+// (kFramelessClientProperty): the sizing frame would otherwise be painted in the classic
+// theme. `keep_content` keeps the client area where it is on screen when the frame comes or
+// goes, so neither the content nor the shape coordinates move.
+static void UpdateFrameRendering(HWND hwnd, bool keep_content) {
+  const bool hidden = GetPropW(hwnd, kTitleBarHiddenProperty) != nullptr;
+  const bool shadow = GetPropW(hwnd, kNoShadowProperty) == nullptr;
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  // WinUI 3 owns the frame of a window whose title bar it hides.
+  const bool compositor = shadow && !hidden;
+#else
+  const bool compositor = shadow && !(hidden && (GetPropW(hwnd, kShapedProperty) ||
+                                                 GetPropW(hwnd, shape_shadow::kConfig)));
+#endif
+  DWMNCRENDERINGPOLICY policy = compositor ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
+  DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+  // Before the shadow below reads the region for its contour.
+  DropThemeRegion(hwnd);
+  if (hidden && shadow && !compositor)
+    shape_shadow::Refresh(hwnd);
+  else
+    shape_shadow::Clear(hwnd);
+#ifndef NATIVEAPI_ENABLE_WINUI3
+  const bool frameless = hidden && !compositor;
+  if (frameless == (GetPropW(hwnd, kFramelessClientProperty) != nullptr)) return;
+  if (frameless)
+    SetPropW(hwnd, kFramelessClientProperty, reinterpret_cast<HANDLE>(1));
+  else
+    RemovePropW(hwnd, kFramelessClientProperty);
+  if (!keep_content) return;
+  RECT before{};
+  GetClientRect(hwnd, &before);
+  MapWindowPoints(hwnd, nullptr, reinterpret_cast<POINT*>(&before), 2);
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+               SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                   SWP_FRAMECHANGED);
+  // A maximized or full screen window fills its monitor whatever the frame.
+  if (IsZoomed(hwnd) || IsIconic(hwnd) || g_full_screen_windows.count(hwnd)) return;
+  RECT after{}, window{};
+  GetClientRect(hwnd, &after);
+  MapWindowPoints(hwnd, nullptr, reinterpret_cast<POINT*>(&after), 2);
+  GetWindowRect(hwnd, &window);
+  window.left += before.left - after.left;
+  window.top += before.top - after.top;
+  window.right += before.right - after.right;
+  window.bottom += before.bottom - after.bottom;
+  SetWindowPos(hwnd, nullptr, window.left, window.top, window.right - window.left,
+               window.bottom - window.top, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+#endif
+}
 
 // Registry entries follow the HWND lifetime, not any one C++ wrapper.
 static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
@@ -341,6 +471,8 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kWindowIdProperty);
     RemovePropW(hwnd, kTitleBarHiddenProperty);
     RemovePropW(hwnd, kNoShadowProperty);
+    RemovePropW(hwnd, kFramelessClientProperty);
+    RemovePropW(hwnd, kShapedProperty);
     delete static_cast<WindowShadow*>(RemovePropW(hwnd, shape_shadow::kConfig));
     RemovePropW(hwnd, kHiddenFromTaskbarProperty);
     RemovePropW(hwnd, kVisualEffectProperty);
@@ -358,11 +490,14 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     // window that is meant to stay out of the taskbar has to leave it again.
     if (pos && (pos->flags & SWP_SHOWWINDOW) && GetPropW(hwnd, kHiddenFromTaskbarProperty))
       ApplyTaskbarVisibility(hwnd, false);
+    // The visual style sets its region while handling this very message.
+    DropThemeRegion(hwnd);
     return result;
   }
 #ifndef NATIVEAPI_ENABLE_WINUI3
   if (message == WM_NCCALCSIZE || message == WM_NCHITTEST || message == WM_PARENTNOTIFY ||
-      message == WM_NCACTIVATE) {
+      message == WM_NCACTIVATE || message == WM_NCPAINT || message == 0x00AE ||
+      message == 0x00AF || message == WM_SETTEXT || message == WM_SETICON) {
     if (auto handled = HandleHiddenTitleBarFrame(hwnd, message, wp, lp)) return *handled;
   }
 #endif
@@ -1415,11 +1550,12 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
 
   // Apply DWM frame extension based on style
   UpdateFrameExtent(pimpl_->hwnd_);
+  // Before the frame change below: WM_NCCALCSIZE reads whether the frame is left.
+  UpdateFrameRendering(pimpl_->hwnd_, false);
 
   // Trigger frame change to apply the new style
   SetWindowPos(pimpl_->hwnd_, nullptr, rect.left, rect.top, 0, 0,
                SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
-  SetHasShadow(HasShadow());
 }
 
 TitleBarStyle Window::GetTitleBarStyle() const {
@@ -1449,24 +1585,12 @@ void Window::SetHasShadow(bool has_shadow) {
     return;
 
   // The shadow is part of the frame the desktop compositor draws around the window, so
-  // it goes away with the rest of that frame. On a window that still has a title bar
-  // the caption is drawn there too and the compositor keeps both.
-  DWMNCRENDERINGPOLICY policy = has_shadow && GetTitleBarStyle() != TitleBarStyle::Hidden
-                                     ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
-  if (FAILED(DwmSetWindowAttribute(pimpl_->hwnd_, DWMWA_NCRENDERING_POLICY, &policy,
-                                   sizeof(policy))))
-    return;
-
+  // it goes away with the rest of that frame. UpdateFrameRendering decides who draws it.
   if (has_shadow)
     RemovePropW(pimpl_->hwnd_, kNoShadowProperty);
   else
     SetPropW(pimpl_->hwnd_, kNoShadowProperty, reinterpret_cast<HANDLE>(1));
-  if (!has_shadow) {
-    shape_shadow::Clear(pimpl_->hwnd_);
-  } else {
-    if (GetTitleBarStyle() == TitleBarStyle::Hidden) shape_shadow::Refresh(pimpl_->hwnd_);
-    else shape_shadow::Clear(pimpl_->hwnd_);
-  }
+  UpdateFrameRendering(pimpl_->hwnd_, true);
 }
 
 bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) {
@@ -1793,9 +1917,9 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
   HWND hwnd = pimpl_->hwnd_;
   if (!IsWindow(hwnd)) return false;
   if (!shape) {
+    RemovePropW(hwnd, kShapedProperty);
     if (!SetWindowRgn(hwnd, nullptr, FALSE)) return false;
-    if (HasShadow() && GetTitleBarStyle() == TitleBarStyle::Hidden) shape_shadow::Refresh(hwnd);
-    else shape_shadow::Clear(hwnd);
+    UpdateFrameRendering(hwnd, true);
     // A changed top-level region can invalidate child composition surfaces
     // without requesting their paint (e.g. Flutter's view). Repaint the whole
     // hierarchy so retained content is visible without another user interaction.
@@ -1805,10 +1929,24 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
     return true;
   }
   if (shape->GetPointCount() < 3 || GetTitleBarStyle() != TitleBarStyle::Hidden) return false;
+  // A shaped window has no frame; drop it first, so that the client origin below is final.
+  // Only once: SetShape may run on every frame of an animated contour. The property goes
+  // on before the region, so that DropThemeRegion leaves the region alone.
+  if (!GetPropW(hwnd, kShapedProperty)) {
+    SetPropW(hwnd, kShapedProperty, reinterpret_cast<HANDLE>(1));
+    UpdateFrameRendering(hwnd, true);
+  }
   const double scale = GetScaleFactorForWindow(hwnd);
   RECT frame;
   POINT origin = {0, 0};
-  if (!GetWindowRect(hwnd, &frame) || !ClientToScreen(hwnd, &origin)) return false;
+  // Undoes the property set above when no region gets applied.
+  auto unshape = [&] {
+    if (HasWindowRegion(hwnd)) return false;
+    RemovePropW(hwnd, kShapedProperty);
+    UpdateFrameRendering(hwnd, true);
+    return false;
+  };
+  if (!GetWindowRect(hwnd, &frame) || !ClientToScreen(hwnd, &origin)) return unshape();
   std::vector<POINT> points;
   for (size_t i = 0; i < shape->GetPointCount(); ++i) {
     const auto p = shape->GetPointAt(i);
@@ -1816,7 +1954,7 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
                       static_cast<LONG>(std::lround(p.y * scale)) + origin.y - frame.top});
   }
   HRGN region = CreatePolygonRgn(points.data(), static_cast<int>(points.size()), ALTERNATE);
-  if (!region) return false;
+  if (!region) return unshape();
   // No redraw from SetWindowRgn itself: it erases what the new region exposes, and a
   // window whose content comes from a child swap chain (Flutter's view) shows that
   // erased area white until the child presents again, which during an animated
@@ -1824,26 +1962,16 @@ bool Window::SetShape(std::shared_ptr<WindowShape> shape) {
   // invalidated below without an erase instead.
   if (!SetWindowRgn(hwnd, region, FALSE)) {
     DeleteObject(region);
-    return false;
+    return unshape();
   }
-  // The system owns region after a successful SetWindowRgn. Read back a copy
-  // rather than using that transferred handle to generate the soft shadow.
-  if (HasShadow()) {
-    HRGN copy = CreateRectRgn(0, 0, 0, 0);
-    if (copy && GetWindowRgn(hwnd, copy) != ERROR) shape_shadow::Update(hwnd, copy, scale);
-    if (copy) DeleteObject(copy);
-  }
+  // Redraws the soft shadow from the region now in place.
+  UpdateFrameRendering(hwnd, true);
   RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
   return true;
 }
 
 bool Window::IsShaped() const {
-  if (!IsWindow(pimpl_->hwnd_)) return false;
-  HRGN region = CreateRectRgn(0, 0, 0, 0);
-  if (!region) return false;
-  const int result = GetWindowRgn(pimpl_->hwnd_, region);
-  DeleteObject(region);
-  return result != ERROR;
+  return IsWindow(pimpl_->hwnd_) && GetPropW(pimpl_->hwnd_, kShapedProperty) != nullptr;
 }
 
 bool Window::IsShapeSupported() { return true; }
