@@ -35,6 +35,9 @@ add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   enable_language(OBJCXX)
+  add_executable(window_system_menu_unsupported_test window_system_menu_unsupported_test.cpp)
+  target_link_libraries(window_system_menu_unsupported_test PRIVATE nativeapi)
+  add_test(NAME window_system_menu_unsupported_test COMMAND window_system_menu_unsupported_test)
   add_executable(window_shape_macos_test window_shape_macos_test.mm)
   target_link_libraries(window_shape_macos_test PRIVATE nativeapi)
   add_test(NAME window_shape_macos_test COMMAND window_shape_macos_test)
@@ -120,6 +123,8 @@ if(WIN32 AND NATIVEAPI_ENABLE_WINUI3)
 endif()
 
 if(WIN32)
+  add_executable(window_system_menu_windows_test window_system_menu_windows_test.cpp)
+  target_link_libraries(window_system_menu_windows_test PRIVATE nativeapi)
   # Explicit desktop regression; captures only a pixel inside its own windows.
   add_executable(window_content_protection_windows_test window_content_protection_windows_test.cpp)
   target_link_libraries(window_content_protection_windows_test PRIVATE nativeapi)
@@ -151,6 +156,9 @@ endif()
 
 # Explicit desktop integration test; requires a running window manager.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Explicit integration in a private Xvfb session or Wayland negative path.
+  add_executable(window_system_menu_linux_test window_system_menu_linux_test.cpp)
+  target_link_libraries(window_system_menu_linux_test PRIVATE nativeapi)
   add_executable(window_size_constraints_linux_test window_size_constraints_linux_test.cpp)
   target_link_libraries(window_size_constraints_linux_test PRIVATE nativeapi)
 endif()

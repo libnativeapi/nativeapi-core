@@ -489,6 +489,14 @@ bool Window::IsFocusable() const {
   return true;
 }
 
+bool Window::ShowSystemMenu(Point /*position*/) {
+  return false;
+}
+
+bool Window::IsSystemMenuSupported() {
+  return false;
+}
+
 void Window::StartDragging() {
   // Not applicable to iOS
 }

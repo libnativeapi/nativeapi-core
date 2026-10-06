@@ -415,6 +415,12 @@ FFI_PLUGIN_EXPORT
 bool native_window_is_focusable(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_show_system_menu(native_window_t window, native_point_t position);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_system_menu_supported(void);
+
+FFI_PLUGIN_EXPORT
 void native_window_start_dragging(native_window_t window);
 
 FFI_PLUGIN_EXPORT

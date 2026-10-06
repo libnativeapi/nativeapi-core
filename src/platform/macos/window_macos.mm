@@ -1051,6 +1051,14 @@ static void NativeApiSendMouseUp(NSWindow* window, NSEvent* mouse_up) {
   [window sendEvent:mouse_up];
 }
 
+bool Window::ShowSystemMenu(Point /*position*/) {
+  return false;
+}
+
+bool Window::IsSystemMenuSupported() {
+  return false;
+}
+
 void Window::StartDragging() {
   NSWindow* window = pimpl_->ns_window_;
   NSEvent* event = window.currentEvent;

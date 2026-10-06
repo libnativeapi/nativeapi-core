@@ -110,6 +110,7 @@ struct Decorations {
 struct Layout {
   GdkRectangle frame = {};    // what the user sees as the window: title bar and content
   GdkRectangle content = {};  // the client area the application draws into
+  Point content_origin_in_surface = {};  // independent of global Wayland coordinates
 };
 
 // A window the window manager decorates is simple: its GdkWindow is the content and
@@ -168,6 +169,8 @@ static Layout GetLayout(GtkWidget* widget, GdkWindow* gdk_window) {
     }
     layout.frame = {origin_x + side, origin_y + shadow_top, width, height + title_height};
     layout.content = {origin_x + side, origin_y + shadow_top + title_height, width, height};
+    layout.content_origin_in_surface = {static_cast<double>(side),
+                                        static_cast<double>(shadow_top + title_height)};
 #ifdef GDK_WINDOWING_WAYLAND
     if (GDK_IS_WAYLAND_DISPLAY(gdk_window_get_display(gdk_window))) {
       layout.content.x -= layout.frame.x;
@@ -192,6 +195,7 @@ static Layout GetLayout(GtkWidget* widget, GdkWindow* gdk_window) {
 
   layout.content = {origin_x + child_x, origin_y + child_y, child_allocation.width,
                     child_allocation.height};
+  layout.content_origin_in_surface = {static_cast<double>(child_x), static_cast<double>(child_y)};
   // The frame is the content plus the title bar above it; the shadow is not part of it.
   gint frame_top = child_y;
   GtkWidget* titlebar = gtk_window_get_titlebar(GTK_WINDOW(widget));
@@ -466,7 +470,12 @@ class Window::Impl {
       : widget_(widget),
         gdk_window_(gdk_window),
         title_bar_style_(TitleBarStyle::Normal),
-        background_color_(Color::White) {}
+        background_color_(Color::White) {
+    if (widget_)
+      g_object_add_weak_pointer(G_OBJECT(widget_), reinterpret_cast<gpointer*>(&widget_));
+    if (gdk_window_)
+      g_object_add_weak_pointer(G_OBJECT(gdk_window_), reinterpret_cast<gpointer*>(&gdk_window_));
+  }
 
   ~Impl() {
     if (hints_refresh_source_) {
@@ -477,6 +486,10 @@ class Window::Impl {
       g_object_remove_weak_pointer(G_OBJECT(hints_widget_),
                                    reinterpret_cast<gpointer*>(&hints_widget_));
     }
+    if (gdk_window_)
+      g_object_remove_weak_pointer(G_OBJECT(gdk_window_), reinterpret_cast<gpointer*>(&gdk_window_));
+    if (widget_)
+      g_object_remove_weak_pointer(G_OBJECT(widget_), reinterpret_cast<gpointer*>(&widget_));
   }
 
   void ApplyGeometryHints() {
@@ -1664,6 +1677,64 @@ void Window::SetFocusable(bool is_focusable) {
 
 bool Window::IsFocusable() const {
   return AcceptsFocus(pimpl_->widget_, pimpl_->gdk_window_);
+}
+
+bool Window::ShowSystemMenu(Point position) {
+  // GTK can replace its surface when decorations are installed. Read the live
+  // widget's surface instead of keeping a menu request on the previous one.
+  GdkWindow* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  if (!surface || gdk_window_is_destroyed(surface) || !gdk_window_is_viewable(surface) ||
+      gdk_window_get_window_type(surface) != GDK_WINDOW_TOPLEVEL ||
+      !std::isfinite(position.x) || !std::isfinite(position.y) || !IsSystemMenuSupported()) return false;
+  GdkDisplay* display = gdk_window_get_display(surface);
+  GdkSeat* seat = gdk_display_get_default_seat(display);
+  GdkDevice* pointer = seat ? gdk_seat_get_pointer(seat) : nullptr;
+  if (!pointer) return false;
+#ifdef GDK_WINDOWING_WAYLAND
+  if (GDK_IS_WAYLAND_DISPLAY(display)) {
+    GdkModifierType state = static_cast<GdkModifierType>(0);
+    gdk_window_get_device_position(surface, pointer, nullptr, nullptr, &state);
+    GdkWindow* under_pointer = gdk_device_get_window_at_position(pointer, nullptr, nullptr);
+    if (!under_pointer || gdk_window_get_effective_toplevel(under_pointer) != surface ||
+        !(state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK | GDK_BUTTON3_MASK))) return false;
+  }
+#endif
+  const Layout layout = GetLayout(pimpl_->widget_, surface);
+  const double x = position.x + layout.content_origin_in_surface.x;
+  const double y = position.y + layout.content_origin_in_surface.y;
+  gint origin_x = 0, origin_y = 0;
+  gdk_window_get_origin(surface, &origin_x, &origin_y);
+  const int scale = gdk_window_get_scale_factor(surface);
+  if (std::abs((x + origin_x) * scale) > G_MAXINT ||
+      std::abs((y + origin_y) * scale) > G_MAXINT) return false;
+  GdkEvent* event = gdk_event_new(GDK_BUTTON_PRESS);
+  event->button.window = GDK_WINDOW(g_object_ref(surface));
+  event->button.time = gtk_get_current_event_time();
+  event->button.button = GDK_BUTTON_SECONDARY;
+  event->button.x = x;
+  event->button.y = y;
+  event->button.x_root = x + origin_x;
+  event->button.y_root = y + origin_y;
+  gdk_event_set_device(event, pointer);
+  gdk_event_set_source_device(event, pointer);
+  const bool accepted = gdk_window_show_window_menu(surface, event);
+  gdk_event_free(event);
+  return accepted;
+}
+
+bool Window::IsSystemMenuSupported() {
+  GdkDisplay* display = gdk_display_get_default();
+  if (!display) return false;
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY(display)) {
+    return gdk_x11_screen_supports_net_wm_hint(gdk_display_get_default_screen(display),
+                                              gdk_atom_intern_static_string("_GTK_SHOW_WINDOW_MENU"));
+  }
+#endif
+#ifdef GDK_WINDOWING_WAYLAND
+  if (GDK_IS_WAYLAND_DISPLAY(display)) return true;
+#endif
+  return false;
 }
 
 void Window::StartDragging() {

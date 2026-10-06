@@ -1334,6 +1334,39 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   // === User Interaction ===
 
   /**
+   * @brief Shows the native window menu at a content-relative position.
+   * @param position Logical pixels from the top-left of the content area.
+   *        The operating system may reposition the menu to fit the display.
+   * @return true if the menu was displayed or the window manager accepted the
+   *         request, including cancellation; false if unsupported or rejected.
+   *
+   * Use this from a secondary-button press in a custom title bar. Windows runs
+   * a nested native menu loop until selection or cancellation; selected items
+   * are delivered as system window commands. Linux asks the window manager to
+   * show its own menu. Its contents and actions remain the manager's choice.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ No equivalent - Always returns false
+   * - Windows: ✅ Native system menu with current restore/move/size/minimize/
+   *   maximize states. Requires a visible top-level window with a system menu.
+   * - Linux: ⚠️ X11 requires the _GTK_SHOW_WINDOW_MENU window-manager hint;
+   *   Wayland requires an active pointer button press in this window, and the
+   *   compositor may ignore the request. No GTK fallback menu is substituted.
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   */
+  bool ShowSystemMenu(Point position);
+
+  /**
+   * @brief Checks if the active platform can request a native window menu.
+   * @return true on Windows, supported X11 managers, or Wayland; false elsewhere.
+   *         A particular window or input gesture may still be rejected.
+   * @see ShowSystemMenu() for platform availability.
+   */
+  static bool IsSystemMenuSupported();
+
+  /**
    * @brief Initiates a user drag operation for moving the window.
    *
    * Allows the user to drag the window by clicking and dragging anywhere

@@ -1346,6 +1346,29 @@ bool native_window_is_focusable(native_window_t window) {
   }
 }
 
+bool native_window_show_system_menu(native_window_t window, native_point_t position) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto position_cpp = to_cpp_point(position);
+    return self->ShowSystemMenu(position_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_show_system_menu");
+    return false;
+  }
+}
+
+bool native_window_is_system_menu_supported(void) {
+  try {
+    return nativeapi::Window::IsSystemMenuSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_system_menu_supported");
+    return false;
+  }
+}
+
 void native_window_start_dragging(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {

@@ -2021,6 +2021,65 @@ static void StartSystemFrameDrag(HWND hwnd, WPARAM hit_test) {
   PostMessage(hwnd, WM_NCLBUTTONDOWN, hit_test, MAKELPARAM(cursor.x, cursor.y));
 }
 
+namespace {
+struct SystemMenuSession {
+  HMENU menu;
+  bool initialized = false;
+};
+
+LRESULT CALLBACK ObserveSystemMenu(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
+                                  UINT_PTR, DWORD_PTR data) {
+  auto* session = reinterpret_cast<SystemMenuSession*>(data);
+  if (message == WM_INITMENUPOPUP && reinterpret_cast<HMENU>(wp) == session->menu)
+    session->initialized = true;
+  return DefSubclassProc(hwnd, message, wp, lp);
+}
+}  // namespace
+
+bool Window::ShowSystemMenu(Point position) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) ||
+      (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) ||
+      !std::isfinite(position.x) || !std::isfinite(position.y)) return false;
+  HMENU menu = GetSystemMenu(hwnd, FALSE);
+  if (!menu || !(GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_SYSMENU)) return false;
+  POINT origin = {};
+  if (!ClientToScreen(hwnd, &origin)) return false;
+  const double scale = GetScaleFactorForWindow(hwnd);
+  const double x = origin.x + position.x * scale, y = origin.y + position.y * scale;
+  if (x < LONG_MIN || x > LONG_MAX || y < LONG_MIN || y > LONG_MAX) return false;
+  const bool minimized = IsIconic(hwnd), maximized = IsZoomed(hwnd), full_screen = IsFullScreen();
+  auto enable = [menu](UINT command, bool enabled) {
+    EnableMenuItem(menu, command, MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED));
+  };
+  enable(SC_RESTORE, minimized || maximized || full_screen);
+  enable(SC_MOVE, !maximized && !full_screen && IsMovable());
+  enable(SC_SIZE, !minimized && !maximized && !full_screen && IsResizable());
+  enable(SC_MINIMIZE, !minimized && !full_screen && IsMinimizable());
+  enable(SC_MAXIMIZE, !maximized && !full_screen && IsMaximizable());
+  // Keep the host's SC_CLOSE state and any custom items. GetSystemMenu(hwnd,
+  // TRUE) would discard them, so never reset or destroy the native menu.
+  SystemMenuSession session{menu};
+  const UINT_PTR observer_id = reinterpret_cast<UINT_PTR>(&session);
+  if (!SetWindowSubclass(hwnd, ObserveSystemMenu, observer_id,
+                          reinterpret_cast<DWORD_PTR>(&session))) return false;
+  const UINT command = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                       static_cast<int>(std::lround(x)),
+                                       static_cast<int>(std::lround(y)), hwnd, nullptr);
+  if (IsWindow(hwnd)) RemoveWindowSubclass(hwnd, ObserveSystemMenu, observer_id);
+  if (command && IsWindow(hwnd)) {
+    if (command == SC_RESTORE && full_screen) SetFullScreen(false);
+    else PostMessageW(hwnd, WM_SYSCOMMAND, command, 0);
+  }
+  // With TPM_RETURNCMD, zero means both cancellation and failure. LastError
+  // is not reliable across the host callbacks in the nested menu loop.
+  return command != 0 || session.initialized;
+}
+
+bool Window::IsSystemMenuSupported() {
+  return true;
+}
+
 void Window::StartDragging() {
   if (pimpl_->hwnd_) {
     StartSystemFrameDrag(pimpl_->hwnd_, HTCAPTION);
