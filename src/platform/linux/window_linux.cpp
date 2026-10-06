@@ -33,6 +33,156 @@ namespace nativeapi {
 // Key to store/retrieve WindowId on GObjects
 static const char* kWindowIdKey = "NativeAPIWindowId";
 static const char* kInputShapeKey = "NativeAPIInputShape";
+static const char* kMouseInputPolicyKey = "NativeAPIMouseInputPolicy";
+struct MouseInputPolicy {
+  bool ignored = false;
+  bool forward = false;
+  guint source = 0;
+  GtkWidget* widget = nullptr;  // The owner, or nullptr for a bare GdkWindow.
+  GdkWindow* surface = nullptr;
+  GdkWindow* target = nullptr;  // Retained while tracking; may be destroyed by the host.
+  double last_x = 0, last_y = 0;
+  cairo_region_t* region = nullptr;
+  ~MouseInputPolicy() {
+    if (source) g_source_remove(source);
+    if (target) g_object_unref(target);
+    if (region) cairo_region_destroy(region);
+  }
+  void StopForwarding() {
+    if (source) g_source_remove(source);
+    source = 0;
+    forward = false;
+    if (target) g_object_unref(target);
+    target = nullptr;
+  }
+};
+
+static MouseInputPolicy* GetMouseInputPolicy(GtkWidget* widget, GdkWindow* surface,
+                                            bool create) {
+  GObject* object = widget ? G_OBJECT(widget) : surface ? G_OBJECT(surface) : nullptr;
+  if (!object) return nullptr;
+  auto* policy = static_cast<MouseInputPolicy*>(
+      g_object_get_data(object, kMouseInputPolicyKey));
+  if (!policy && create) {
+    policy = new MouseInputPolicy;
+    policy->widget = widget;
+    policy->surface = surface;
+    g_object_set_data_full(object, kMouseInputPolicyKey, policy,
+                          +[](gpointer data) { delete static_cast<MouseInputPolicy*>(data); });
+    if (widget) {
+      g_signal_connect(widget, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer data) {
+        static_cast<MouseInputPolicy*>(data)->StopForwarding();
+      }), policy);
+    }
+  }
+  return policy;
+}
+
+// Follow native content surfaces without consulting the pointer's actual hit
+// target: the empty input region deliberately makes that target another app.
+static GdkWindow* MouseContentAt(GdkWindow* window, double* x, double* y) {
+  GList* children = gdk_window_get_children(window);
+  GdkWindow* result = window;
+  for (GList* item = children; item; item = item->next) {
+    auto* child = GDK_WINDOW(item->data);
+    gint left = 0, top = 0;
+    gdk_window_get_position(child, &left, &top);
+    if (!gdk_window_is_visible(child) || gdk_window_get_pass_through(child) || *x < left || *y < top ||
+        *x >= left + gdk_window_get_width(child) || *y >= top + gdk_window_get_height(child))
+      continue;
+    *x -= left; *y -= top;
+    result = MouseContentAt(child, x, y);
+    break;
+  }
+  g_list_free(children);
+  return result;
+}
+
+static void QueueForwardedMovement(GdkWindow* target, GdkDevice* pointer, GdkEventType type,
+                                   double x, double y, double root_x, double root_y,
+                                   GdkModifierType state) {
+  if (!target || gdk_window_is_destroyed(target)) return;
+  auto* event = gdk_event_new(type);
+  const guint32 time = static_cast<guint32>(g_get_monotonic_time() / 1000);
+  if (type == GDK_MOTION_NOTIFY) {
+    event->motion.window = GDK_WINDOW(g_object_ref(target));
+    event->motion.send_event = TRUE;
+    event->motion.time = time;
+    event->motion.x = x; event->motion.y = y;
+    event->motion.x_root = root_x; event->motion.y_root = root_y;
+    event->motion.state = state;
+  } else {
+    event->crossing.window = GDK_WINDOW(g_object_ref(target));
+    event->crossing.send_event = TRUE;
+    event->crossing.time = time;
+    event->crossing.x = x; event->crossing.y = y;
+    event->crossing.x_root = root_x; event->crossing.y_root = root_y;
+    event->crossing.mode = GDK_CROSSING_NORMAL;
+    event->crossing.detail = GDK_NOTIFY_NONLINEAR;
+    event->crossing.state = state;
+  }
+  gdk_event_set_device(event, pointer);
+  gdk_event_set_source_device(event, pointer);
+  gdk_event_put(event);
+  // put_event() does not run GDK's native motion-compression path, which normally
+  // requests this flush. Without it the last movement waits for another event,
+  // so an overlay cannot restore input when the pointer stops over a button.
+  if (type == GDK_MOTION_NOTIFY) {
+    auto* clock = gdk_window_get_frame_clock(target);
+    if (clock) gdk_frame_clock_request_phase(clock, GDK_FRAME_CLOCK_PHASE_FLUSH_EVENTS);
+  }
+  gdk_event_free(event);
+}
+
+static gboolean ForwardMouseMovement(gpointer data) {
+  auto* policy = static_cast<MouseInputPolicy*>(data);
+  auto* surface = policy->widget ? gtk_widget_get_window(policy->widget) : policy->surface;
+  if (!surface || gdk_window_is_destroyed(surface)) {
+    policy->source = 0;
+    policy->forward = false;
+    if (policy->target) g_object_unref(policy->target);
+    policy->target = nullptr;
+    return G_SOURCE_REMOVE;
+  }
+  auto* seat = gdk_display_get_default_seat(gdk_window_get_display(surface));
+  auto* pointer = seat ? gdk_seat_get_pointer(seat) : nullptr;
+  if (!pointer) return G_SOURCE_CONTINUE;
+  gint root_x = 0, root_y = 0, origin_x = 0, origin_y = 0;
+  gdk_device_get_position(pointer, nullptr, &root_x, &root_y);
+  gdk_window_get_origin(surface, &origin_x, &origin_y);
+  double x = root_x - origin_x, y = root_y - origin_y;
+  GdkModifierType state = static_cast<GdkModifierType>(0);
+  gdk_window_get_device_position(surface, pointer, nullptr, nullptr, &state);
+  // Hover forwarding never creates a button/drag sequence in the content.
+  state = static_cast<GdkModifierType>(state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK |
+                                               GDK_SUPER_MASK | GDK_META_MASK));
+  GdkWindow* target = nullptr;
+  if (gdk_window_is_viewable(surface) && x >= 0 && y >= 0 &&
+      x < gdk_window_get_width(surface) && y < gdk_window_get_height(surface))
+    target = MouseContentAt(surface, &x, &y);
+  if (target != policy->target) {
+    QueueForwardedMovement(policy->target, pointer, GDK_LEAVE_NOTIFY,
+                           policy->last_x, policy->last_y, root_x, root_y, state);
+    if (policy->target) g_object_unref(policy->target);
+    policy->target = target ? GDK_WINDOW(g_object_ref(target)) : nullptr;
+    QueueForwardedMovement(target, pointer, GDK_ENTER_NOTIFY, x, y, root_x, root_y, state);
+    if (target) QueueForwardedMovement(target, pointer, GDK_MOTION_NOTIFY, x, y, root_x, root_y, state);
+  } else if (target && (x != policy->last_x || y != policy->last_y)) {
+    QueueForwardedMovement(target, pointer, GDK_MOTION_NOTIFY, x, y, root_x, root_y, state);
+  }
+  policy->last_x = x; policy->last_y = y;
+  return G_SOURCE_CONTINUE;
+}
+
+static void ApplyMouseInputPolicy(GtkWidget* widget, GdkWindow* surface,
+                                 const MouseInputPolicy& policy) {
+  auto* empty = policy.ignored ? cairo_region_create() : nullptr;
+  auto* region = policy.ignored ? empty : policy.region;
+  // GTK retains the override across allocation, unmap/remap and surface replacement.
+  if (widget) gtk_widget_input_shape_combine_region(widget, region);
+  else gdk_window_input_shape_combine_region(surface, region, 0, 0);
+  if (empty) cairo_region_destroy(empty);
+}
 static const char* kTitleBarStyleKey = "NativeAPITitleBarStyle";
 static const char* kFocusableKey = "NativeAPIFocusable";
 static const char* kNonActivatingKey = "NativeAPINonActivating";
@@ -1659,13 +1809,45 @@ bool Window::IsVisibleInTaskbar() const {
   return !gtk_window_get_skip_taskbar_hint(GTK_WINDOW(pimpl_->widget_));
 }
 
-void Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events) {
-  // This would involve setting input shapes or event masks
-  // Provide stub implementation
+bool Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events, bool forward) {
+  auto* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  if (!surface || gdk_window_is_destroyed(surface) ||
+      !gdk_display_supports_input_shapes(gdk_window_get_display(surface)) ||
+      (is_ignore_mouse_events && forward && !IsMouseMoveForwardingSupported())) return false;
+  auto* policy = GetMouseInputPolicy(pimpl_->widget_, surface, true);
+  if (is_ignore_mouse_events && forward && !policy->source) {
+    policy->source = g_timeout_add(16, ForwardMouseMovement, policy);
+    if (!policy->source) return false;
+  } else if ((!is_ignore_mouse_events || !forward) && policy->source) {
+    policy->StopForwarding();
+  }
+  policy->ignored = is_ignore_mouse_events;
+  policy->forward = is_ignore_mouse_events && forward;
+  ApplyMouseInputPolicy(pimpl_->widget_, surface, *policy);
+  return true;
 }
 
 bool Window::IsIgnoreMouseEvents() const {
-  return false;  // Default assumption
+  auto* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  if (!surface || gdk_window_is_destroyed(surface)) return false;
+  const auto* policy = GetMouseInputPolicy(pimpl_->widget_, surface, false);
+  return policy && policy->ignored;
+}
+
+bool Window::IsMouseMoveForwardingEnabled() const {
+  auto* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  if (!surface || gdk_window_is_destroyed(surface)) return false;
+  const auto* policy = GetMouseInputPolicy(pimpl_->widget_, surface, false);
+  return policy && policy->ignored && policy->forward;
+}
+
+bool Window::IsMouseMoveForwardingSupported() {
+#ifdef GDK_WINDOWING_X11
+  auto* display = gdk_display_get_default();
+  return display && GDK_IS_X11_DISPLAY(display) && gdk_display_supports_input_shapes(display);
+#else
+  return false;
+#endif
 }
 
 void Window::SetFocusable(bool is_focusable) {
@@ -1876,11 +2058,10 @@ static cairo_region_t* RasterizeShape(GtkWidget* widget, GdkWindow* window,
 static void ApplyInputRegion(GtkWidget* widget, GdkWindow* window, cairo_region_t* region) {
   // GTK intersects its CSD input region with the explicit widget region. Register
   // ours with GTK as well as GDK so a later allocation cannot overwrite it.
-  if (widget) {
-    gtk_widget_input_shape_combine_region(widget, region);
-  } else {
-    gdk_window_input_shape_combine_region(window, region, 0, 0);
-  }
+  auto* policy = GetMouseInputPolicy(widget, window, true);
+  if (policy->region) cairo_region_destroy(policy->region);
+  policy->region = region ? cairo_region_copy(region) : nullptr;
+  ApplyMouseInputPolicy(widget, window, *policy);
   g_object_set_data(G_OBJECT(window), kInputShapeKey, region ? GINT_TO_POINTER(1) : nullptr);
   gdk_window_invalidate_rect(window, nullptr, TRUE);
 }

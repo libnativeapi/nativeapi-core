@@ -1287,11 +1287,28 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @brief Sets whether the window ignores mouse input events.
    *
    * @param is_ignore_mouse_events true to ignore mouse events, false to receive them
+   * @param forward true to keep delivering mouse movement to this window's content
+   *        while clicks and scrolling pass through. Ignored when disabling pass-through.
+   * @return true if the policy was applied; false for an invalid window, an
+   *         unsupported forward request, or native failure. Failure preserves the policy.
    *
    * When enabled, mouse events (clicks, hovers, etc.) pass through the window
    * to whatever is behind it. Useful for overlay or heads-up display windows.
+   * Movement forwarding lets content detect hover over interactive regions and
+   * turn pass-through off. Forwarded movement is sampled on the UI event loop;
+   * it does not forward button or wheel events or activate the window.
+   * Disabling pass-through also disables forwarding. The policy belongs to the
+   * native window and is shared by wrappers, including after a wrapper is freed.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Pass-through and movement forwarding
+   * - Windows: ✅ Pass-through and movement forwarding to child content HWNDs
+   * - Linux: ✅ Input-region pass-through; movement forwarding on X11 only.
+   *   Wayland cannot report global pointer movement outside the input region.
+   *   Disabling pass-through restores the latest explicit input shape.
+   * - Android, iOS, OpenHarmony: ❌ Always returns false
    */
-  void SetIgnoreMouseEvents(bool is_ignore_mouse_events);
+  bool SetIgnoreMouseEvents(bool is_ignore_mouse_events, bool forward = false);
 
   /**
    * @brief Checks if the window ignores mouse events.
@@ -1299,6 +1316,14 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @return true if mouse events are ignored, false if they are received
    */
   bool IsIgnoreMouseEvents() const;
+
+  /** @brief Checks whether mouse movement is currently forwarded while ignoring input. */
+  bool IsMouseMoveForwardingEnabled() const;
+
+  /** @brief Checks whether the active platform can forward movement during pass-through.
+   *  @return true on macOS, Windows and X11; false on Wayland and mobile platforms.
+   */
+  static bool IsMouseMoveForwardingSupported();
 
   /**
    * @brief Sets whether the window can receive keyboard focus.

@@ -46,6 +46,75 @@ static const wchar_t* kHiddenFromTaskbarProperty = L"NativeAPIHiddenFromTaskbar"
 // Policies belong to the HWND so wrapped host windows and later wrappers agree.
 static const wchar_t* kNonFocusableProperty = L"NativeAPINonFocusable";
 static const wchar_t* kNonActivatingProperty = L"NativeAPINonActivating";
+static const wchar_t* kMouseInputPolicyProperty = L"NativeAPIMouseInputPolicy";
+
+struct MouseInputPolicy {
+  bool forward = false;
+  bool added_layered = false;
+  UINT_PTR timer = 0;
+  HWND target = nullptr;
+  POINT last = {};
+};
+
+static HWND MouseContentAt(HWND window, POINT screen) {
+  HWND result = window;
+  for (int depth = 0; depth < 64; ++depth) {
+    // Native hit testing deliberately ignores this layered transparent window.
+    // Walk the content's geometry in Z order instead of asking the OS for its
+    // actual input target (which belongs to the application underneath).
+    HWND target = nullptr;
+    for (HWND child = GetWindow(result, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+      RECT bounds = {};
+      if (IsWindowVisible(child) && IsWindowEnabled(child) &&
+          !(GetWindowLongPtrW(child, GWL_EXSTYLE) & WS_EX_TRANSPARENT) &&
+          GetWindowRect(child, &bounds) && PtInRect(&bounds, screen)) {
+        target = child;
+        break;
+      }
+    }
+    if (!target) break;
+    result = target;
+  }
+  return result;
+}
+
+static void CALLBACK ForwardMouseMovement(HWND window, UINT, UINT_PTR timer, DWORD) {
+  auto* policy = static_cast<MouseInputPolicy*>(GetPropW(window, kMouseInputPolicyProperty));
+  if (!policy || !policy->forward || policy->timer != timer) return;
+  POINT screen = {};
+  if (!GetCursorPos(&screen)) return;
+  POINT local = screen;
+  ScreenToClient(window, &local);
+  RECT client = {};
+  GetClientRect(window, &client);
+  HWND target = IsWindowVisible(window) && !IsIconic(window) && PtInRect(&client, local)
+                    ? MouseContentAt(window, screen) : nullptr;
+  if (target != policy->target && IsWindow(policy->target))
+    PostMessageW(policy->target, WM_MOUSELEAVE, 0, 0);
+  if (target) {
+    local = screen;
+    ScreenToClient(target, &local);
+    if (target != policy->target || local.x != policy->last.x || local.y != policy->last.y) {
+      const WPARAM keys = ((GetKeyState(VK_SHIFT) & 0x8000) ? MK_SHIFT : 0) |
+                          ((GetKeyState(VK_CONTROL) & 0x8000) ? MK_CONTROL : 0);
+      PostMessageW(target, WM_MOUSEMOVE, keys, MAKELPARAM(local.x, local.y));
+    }
+  }
+  policy->target = target;
+  policy->last = local;
+}
+
+static LRESULT CALLBACK MouseInputPolicySubclass(HWND window, UINT message, WPARAM wparam,
+                                                 LPARAM lparam, UINT_PTR id, DWORD_PTR data) {
+  if (message == WM_NCDESTROY) {
+    auto* policy = reinterpret_cast<MouseInputPolicy*>(data);
+    if (policy->timer) KillTimer(window, policy->timer);
+    RemovePropW(window, kMouseInputPolicyProperty);
+    RemoveWindowSubclass(window, MouseInputPolicySubclass, id);
+    delete policy;
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
+}
 static const wchar_t* kFocusReturnWindowProperty = L"NativeAPIFocusReturnWindow";
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
@@ -1967,24 +2036,69 @@ bool Window::IsVisibleInTaskbar() const {
   return pimpl_->hwnd_ && !GetPropW(pimpl_->hwnd_, kHiddenFromTaskbarProperty);
 }
 
-void Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events) {
-  if (pimpl_->hwnd_) {
-    LONG exStyle = GetWindowLong(pimpl_->hwnd_, GWL_EXSTYLE);
-    if (is_ignore_mouse_events) {
-      exStyle |= WS_EX_TRANSPARENT;
-    } else {
-      exStyle &= ~WS_EX_TRANSPARENT;
+bool Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events, bool forward) {
+  HWND window = pimpl_->hwnd_;
+  if (!IsWindow(window) || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId())
+    return false;
+  auto* policy = static_cast<MouseInputPolicy*>(GetPropW(window, kMouseInputPolicyProperty));
+  if (!policy) {
+    policy = new MouseInputPolicy;
+    const UINT_PTR id = reinterpret_cast<UINT_PTR>(policy);
+    if (!SetWindowSubclass(window, MouseInputPolicySubclass, id, reinterpret_cast<DWORD_PTR>(policy))) {
+      delete policy;
+      return false;
     }
-    SetWindowLong(pimpl_->hwnd_, GWL_EXSTYLE, exStyle);
+    if (!SetPropW(window, kMouseInputPolicyProperty, policy)) {
+      RemoveWindowSubclass(window, MouseInputPolicySubclass, id);
+      delete policy;
+      return false;
+    }
   }
+  const LONG_PTR previous = GetWindowLongPtrW(window, GWL_EXSTYLE);
+  LONG_PTR style = previous;
+  const bool add_layered = is_ignore_mouse_events && !(previous & WS_EX_LAYERED);
+  if (is_ignore_mouse_events) style |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+  else {
+    style &= ~WS_EX_TRANSPARENT;
+    if (policy->added_layered) style &= ~WS_EX_LAYERED;
+  }
+  UINT_PTR timer = policy->timer;
+  if (is_ignore_mouse_events && forward && !timer) {
+    timer = SetTimer(window, reinterpret_cast<UINT_PTR>(policy), 16, ForwardMouseMovement);
+    if (!timer) return false;
+  }
+  SetLastError(0);
+  const LONG_PTR result = SetWindowLongPtrW(window, GWL_EXSTYLE, style);
+  if ((!result && GetLastError()) ||
+      (add_layered && !SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA))) {
+    SetWindowLongPtrW(window, GWL_EXSTYLE, previous);
+    if (timer && timer != policy->timer) KillTimer(window, timer);
+    return false;
+  }
+  policy->added_layered = is_ignore_mouse_events && (add_layered || policy->added_layered);
+  policy->forward = is_ignore_mouse_events && forward;
+  if (!policy->forward && timer) {
+    KillTimer(window, timer);
+    timer = 0;
+    policy->target = nullptr;
+  }
+  policy->timer = timer;
+  return true;
 }
 
 bool Window::IsIgnoreMouseEvents() const {
-  if (!pimpl_->hwnd_)
+  if (!IsWindow(pimpl_->hwnd_))
     return false;
   LONG exStyle = GetWindowLong(pimpl_->hwnd_, GWL_EXSTYLE);
   return (exStyle & WS_EX_TRANSPARENT) != 0;
 }
+
+bool Window::IsMouseMoveForwardingEnabled() const {
+  const auto* policy = static_cast<MouseInputPolicy*>(GetPropW(pimpl_->hwnd_, kMouseInputPolicyProperty));
+  return IsIgnoreMouseEvents() && policy && policy->forward;
+}
+
+bool Window::IsMouseMoveForwardingSupported() { return true; }
 
 void Window::SetFocusable(bool is_focusable) {
   if (!pimpl_->hwnd_) return;

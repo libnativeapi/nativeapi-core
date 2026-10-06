@@ -1292,17 +1292,16 @@ bool native_window_is_visible_in_taskbar(native_window_t window) {
   }
 }
 
-void native_window_set_ignore_mouse_events(native_window_t window, bool is_ignore_mouse_events) {
+bool native_window_set_ignore_mouse_events(native_window_t window, bool is_ignore_mouse_events, bool forward) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
-    return;
+    return false;
   }
   try {
-    self->SetIgnoreMouseEvents(is_ignore_mouse_events);
-    return;
+    return self->SetIgnoreMouseEvents(is_ignore_mouse_events, forward);
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_ignore_mouse_events");
-    return;
+    return false;
   }
 }
 
@@ -1315,6 +1314,28 @@ bool native_window_is_ignore_mouse_events(native_window_t window) {
     return self->IsIgnoreMouseEvents();
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_ignore_mouse_events");
+    return false;
+  }
+}
+
+bool native_window_is_mouse_move_forwarding_enabled(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsMouseMoveForwardingEnabled();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_mouse_move_forwarding_enabled");
+    return false;
+  }
+}
+
+bool native_window_is_mouse_move_forwarding_supported(void) {
+  try {
+    return nativeapi::Window::IsMouseMoveForwardingSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_mouse_move_forwarding_supported");
     return false;
   }
 }

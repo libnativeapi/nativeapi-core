@@ -430,13 +430,13 @@ bool Window::IsVisibleInTaskbar() const {
   return false;
 }
 
-void Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events) {
-  ALOGW("SetIgnoreMouseEvents not supported on Android");
-}
-
-bool Window::IsIgnoreMouseEvents() const {
+bool Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events, bool forward) {
   return false;
 }
+
+bool Window::IsIgnoreMouseEvents() const { return false; }
+bool Window::IsMouseMoveForwardingEnabled() const { return false; }
+bool Window::IsMouseMoveForwardingSupported() { return false; }
 
 void Window::SetFocusable(bool is_focusable) {
   ALOGW("SetFocusable not supported on Android");

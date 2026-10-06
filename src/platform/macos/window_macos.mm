@@ -11,6 +11,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#include "window_mouse_forwarding_macos.h"
 
 // Key for associated objects (used by both window_macos.mm and window_manager_macos.mm)
 const void* kWindowIdKey = &kWindowIdKey;
@@ -1013,13 +1014,25 @@ bool Window::IsVisibleInTaskbar() const {
   return ![pimpl_->ns_window_ isExcludedFromWindowsMenu];
 }
 
-void Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events) {
+bool Window::SetIgnoreMouseEvents(bool is_ignore_mouse_events, bool forward) {
+  if (!pimpl_->ns_window_) return false;
+  auto* forwarder = NativeApiMouseForwarder(pimpl_->ns_window_, is_ignore_mouse_events && forward);
   [pimpl_->ns_window_ setIgnoresMouseEvents:is_ignore_mouse_events];
+  if (is_ignore_mouse_events && forward) [forwarder start];
+  else [forwarder stop];
+  return true;
 }
 
 bool Window::IsIgnoreMouseEvents() const {
   return [pimpl_->ns_window_ ignoresMouseEvents];
 }
+
+bool Window::IsMouseMoveForwardingEnabled() const {
+  auto* forwarder = NativeApiMouseForwarder(pimpl_->ns_window_, false);
+  return IsIgnoreMouseEvents() && forwarder && forwarder->timer != nil;
+}
+
+bool Window::IsMouseMoveForwardingSupported() { return true; }
 
 void Window::SetFocusable(bool is_focusable) {
   NSWindow* window = pimpl_->ns_window_;
