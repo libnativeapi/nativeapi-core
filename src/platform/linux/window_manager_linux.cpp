@@ -33,7 +33,9 @@ static std::mutex g_hook_mutex;
 // Flag to indicate if global swizzling has been installed
 static bool g_swizzle_installed = false;
 
-// Emission hook ids for the toplevel focus signals, so they can be removed again
+// Emission hook ids, so every global hook can be removed again
+static gulong g_show_hook_id = 0;
+static gulong g_hide_hook_id = 0;
 static gulong g_focus_in_hook_id = 0;
 static gulong g_focus_out_hook_id = 0;
 
@@ -240,6 +242,12 @@ static gboolean OnGtkUnmapEvent(GtkWidget* widget, GdkEvent* event, gpointer use
   return FALSE;
 }
 
+// Remove dead widgets immediately: GTK may reuse their addresses for a new window.
+static void OnHookedWidgetDestroyed(gpointer, GObject* object) {
+  std::lock_guard<std::mutex> lock(g_hook_mutex);
+  g_hooked_widgets.erase(reinterpret_cast<GtkWidget*>(object));
+}
+
 // Install hooks for a specific widget
 static void InstallShowHideHooks(GtkWidget* widget) {
   if (!widget || !GTK_IS_WINDOW(widget)) {
@@ -258,6 +266,7 @@ static void InstallShowHideHooks(GtkWidget* widget) {
   g_signal_connect(G_OBJECT(widget), "unmap-event", G_CALLBACK(OnGtkUnmapEvent), nullptr);
 
   g_hooked_widgets.insert(widget);
+  g_object_weak_ref(G_OBJECT(widget), OnHookedWidgetDestroyed, nullptr);
 }
 
 // Install global swizzling using signal emission hooks
@@ -272,15 +281,39 @@ static void InstallGlobalSwizzling() {
 
   if (show_signal_id != 0) {
     // Add emission hook for show signal
-    g_signal_add_emission_hook(show_signal_id, 0, on_show_emission_hook, nullptr, nullptr);
+    g_show_hook_id =
+        g_signal_add_emission_hook(show_signal_id, 0, on_show_emission_hook, nullptr, nullptr);
   }
 
   if (hide_signal_id != 0) {
     // Add emission hook for hide signal
-    g_signal_add_emission_hook(hide_signal_id, 0, on_hide_emission_hook, nullptr, nullptr);
+    g_hide_hook_id =
+        g_signal_add_emission_hook(hide_signal_id, 0, on_hide_emission_hook, nullptr, nullptr);
   }
 
   g_swizzle_installed = true;
+}
+
+static void RemoveShowHideHooks() {
+  const guint show_signal_id = g_signal_lookup("show", GTK_TYPE_WIDGET);
+  const guint hide_signal_id = g_signal_lookup("hide", GTK_TYPE_WIDGET);
+  if (g_show_hook_id && show_signal_id)
+    g_signal_remove_emission_hook(show_signal_id, g_show_hook_id);
+  if (g_hide_hook_id && hide_signal_id)
+    g_signal_remove_emission_hook(hide_signal_id, g_hide_hook_id);
+  g_show_hook_id = 0;
+  g_hide_hook_id = 0;
+  g_swizzle_installed = false;
+
+  std::lock_guard<std::mutex> lock(g_hook_mutex);
+  for (auto* widget : g_hooked_widgets) {
+    g_signal_handlers_disconnect_by_func(G_OBJECT(widget),
+                                         reinterpret_cast<gpointer>(OnGtkMapEvent), nullptr);
+    g_signal_handlers_disconnect_by_func(G_OBJECT(widget),
+                                         reinterpret_cast<gpointer>(OnGtkUnmapEvent), nullptr);
+    g_object_weak_unref(G_OBJECT(widget), OnHookedWidgetDestroyed, nullptr);
+  }
+  g_hooked_widgets.clear();
 }
 
 // Show-state and geometry tracking for WindowMinimizedEvent, WindowMaximizedEvent,
@@ -546,6 +579,9 @@ class WindowManager::Impl {
   }
 
   void StopEventListening() {
+    // Pre-show/hide hooks are independent of event listeners.
+    if (!will_show_hook_ && !will_hide_hook_)
+      RemoveShowHideHooks();
     RemoveFocusHooks();
     g_focus_changed_fn = nullptr;
     g_focus_changed_context = nullptr;
@@ -561,10 +597,6 @@ class WindowManager::Impl {
       g_object_weak_unref(G_OBJECT(entry.first), OnShownWidgetDestroyed, nullptr);
     }
     g_shown_windows.clear();
-
-    // Clear hooked widgets set
-    std::lock_guard<std::mutex> lock(g_hook_mutex);
-    g_hooked_widgets.clear();
   }
 
   // Windows that exist already have a geometry to compare the first
@@ -692,7 +724,9 @@ WindowManager::WindowManager() : pimpl_(std::make_unique<Impl>(this)) {
 }
 
 WindowManager::~WindowManager() {
+  ShutdownEmitter();
   StopEventListening();
+  RemoveShowHideHooks();
 }
 
 std::shared_ptr<Window> WindowManager::Get(WindowId id) {

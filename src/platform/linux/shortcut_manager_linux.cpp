@@ -195,18 +195,26 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     if (display_) {
       root_ = DefaultRootWindow(display_);
       exit_atom_ = XInternAtom(display_, "NATIVEAPI_SHORTCUT_EXIT", False);
+      // event_mask=0 sends a ClientMessage to the window's owning client. The
+      // root belongs to the server, not us; own an unmapped input-only window
+      // so shutdown wakes only our connection, never another app's listener.
+      wake_window_ = XCreateWindow(display_, root_, 0, 0, 1, 1, 0, 0, InputOnly,
+                                   CopyFromParent, 0, nullptr);
     }
   }
 
   ~ShortcutManagerImpl() override {
     StopThread();
     if (display_) {
+      if (wake_window_) XDestroyWindow(display_, wake_window_);
       XCloseDisplay(display_);
       display_ = nullptr;
     }
   }
 
   bool IsSupported() override { return display_ != nullptr; }
+
+  void Shutdown() { StopThread(); }
 
   bool RegisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
     if (!display_) {
@@ -314,9 +322,9 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     XClientMessageEvent client_message = {};
     client_message.type = ClientMessage;
     client_message.message_type = exit_atom_;
-    client_message.window = root_;
+    client_message.window = wake_window_;
     client_message.format = 32;
-    XSendEvent(display_, root_, False, 0, reinterpret_cast<XEvent*>(&client_message));
+    XSendEvent(display_, wake_window_, False, 0, reinterpret_cast<XEvent*>(&client_message));
     XFlush(display_);
   }
 
@@ -336,7 +344,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       }
 
       if (event.type == ClientMessage) {
-        if (event.xclient.message_type == exit_atom_) {
+        if (event.xclient.message_type == exit_atom_ && event.xclient.window == wake_window_) {
           break;
         }
       }
@@ -377,6 +385,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   // X11 typedefs inside this namespace.
   ::Display* display_ = nullptr;
   ::Window root_ = 0;
+  ::Window wake_window_ = 0;
   Atom exit_atom_ = None;
 
   std::mutex mutex_;
@@ -391,6 +400,9 @@ ShortcutManager::ShortcutManager()
     : pimpl_(std::make_unique<ShortcutManagerImpl>(this)), next_shortcut_id_(1), enabled_(true) {}
 
 ShortcutManager::~ShortcutManager() {
+  // Join while the registry/mutex/enable flag the worker reads still exist.
+  // Waiting for pimpl_'s destructor would be too late: it is destroyed last.
+  static_cast<ShortcutManagerImpl*>(pimpl_.get())->Shutdown();
   UnregisterAll();
 }
 
