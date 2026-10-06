@@ -34,6 +34,64 @@ namespace nativeapi {
 static const char* kWindowIdKey = "NativeAPIWindowId";
 static const char* kInputShapeKey = "NativeAPIInputShape";
 static const char* kTitleBarStyleKey = "NativeAPITitleBarStyle";
+static const char* kFocusableKey = "NativeAPIFocusable";
+static const char* kNonActivatingKey = "NativeAPINonActivating";
+
+static GObject* FocusPolicyObject(GtkWidget* widget, GdkWindow* surface) {
+  return widget ? G_OBJECT(widget) : surface ? G_OBJECT(surface) : nullptr;
+}
+
+static bool AcceptsFocus(GtkWidget* widget, GdkWindow* surface) {
+  if (widget && GTK_IS_WINDOW(widget))
+    return gtk_window_get_accept_focus(GTK_WINDOW(widget));
+  return surface && gdk_window_get_accept_focus(surface);
+}
+
+// Focus hints govern the next activation; changing them does not necessarily
+// revoke a focus already held. On X11 release only this surface's keyboard focus.
+static void ReleaseKeyboardFocus(GdkWindow* surface) {
+#ifdef GDK_WINDOWING_X11
+  if (!surface || !GDK_IS_X11_WINDOW(surface)) return;
+  auto* display = GDK_WINDOW_XDISPLAY(surface);
+  auto* gdk_display = gdk_window_get_display(surface);
+  const ::Window own = GDK_WINDOW_XID(surface);
+  ::Window focused = 0;
+  int revert = 0;
+  XGetInputFocus(display, &focused, &revert);
+  gdk_x11_display_error_trap_push(gdk_display);
+  // Hosts can focus a child native surface, so walk up to our toplevel.
+  for (int depth = 0; focused > 1 && depth < 64; ++depth) {
+    if (focused == own) {
+      XSetInputFocus(display, 0 /* None */, RevertToPointerRoot, CurrentTime);
+      XFlush(display);
+      break;
+    }
+    ::Window root = 0, parent = 0;
+    ::Window* children = nullptr;
+    unsigned int count = 0;
+    const auto found = XQueryTree(display, focused, &root, &parent, &children, &count);
+    if (children) XFree(children);
+    if (!found || parent == focused) break;
+    focused = parent;
+  }
+  gdk_x11_display_error_trap_pop_ignored(gdk_display);
+#endif
+}
+
+static void ApplyFocusPolicy(GtkWidget* widget, GdkWindow* surface) {
+  auto* object = FocusPolicyObject(widget, surface);
+  if (!object) return;
+  const bool focusable = GPOINTER_TO_INT(g_object_get_data(object, kFocusableKey)) != 2 &&
+                         !g_object_get_data(object, kNonActivatingKey);
+  if (widget && GTK_IS_WINDOW(widget)) {
+    gtk_window_set_accept_focus(GTK_WINDOW(widget), focusable);
+    gtk_window_set_focus_on_map(GTK_WINDOW(widget), focusable);
+  } else if (surface) {
+    gdk_window_set_accept_focus(surface, focusable);
+    gdk_window_set_focus_on_map(surface, focusable);
+  }
+  if (!focusable) ReleaseKeyboardFocus(surface);
+}
 
 // The window manager draws a title bar and border around the client area, and the
 // public geometry is the frame (window.h): positions are the frame's top-left corner
@@ -544,8 +602,6 @@ class Window::Impl {
   // learns the new size when the window manager confirms it, which is after anything
   // the caller does next — centring the window, say.
   Size requested_content_size_ = {0, 0};
-  // Recorded only: keyboard focus is per window on Linux, see Window::SetNonActivating().
-  bool non_activating_ = false;
 };
 
 Window::Window() {
@@ -664,9 +720,12 @@ WindowId Window::GetId() const {
   return IdAllocator::kInvalidId;
 }
 
+static void PresentWindow(GtkWidget* widget);
+
 void Window::Focus() {
-  if (pimpl_->widget_) {
-    gtk_window_present(GTK_WINDOW(pimpl_->widget_));
+  if (!IsFocusable()) return;
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    PresentWindow(pimpl_->widget_);
   } else if (pimpl_->gdk_window_) {
     gdk_window_focus(pimpl_->gdk_window_, GDK_CURRENT_TIME);
   }
@@ -711,7 +770,11 @@ static void PresentWindow(GtkWidget* widget) {
 }
 
 void Window::Show() {
-  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+  if (!IsFocusable()) {
+    if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_))
+      gtk_window_deiconify(GTK_WINDOW(pimpl_->widget_));
+    ShowInactive();
+  } else if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     PresentWindow(pimpl_->widget_);
   } else if (pimpl_->widget_) {
     gtk_widget_show(pimpl_->widget_);
@@ -775,10 +838,15 @@ void Window::Minimize() {
 
 void Window::Restore() {
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
-    PresentWindow(pimpl_->widget_);
+    if (IsFocusable())
+      PresentWindow(pimpl_->widget_);
+    else {
+      gtk_window_deiconify(GTK_WINDOW(pimpl_->widget_));
+      ShowInactive();
+    }
   } else if (pimpl_->gdk_window_) {
     gdk_window_deiconify(pimpl_->gdk_window_);
-    gdk_window_focus(pimpl_->gdk_window_, GDK_CURRENT_TIME);
+    if (IsFocusable()) gdk_window_focus(pimpl_->gdk_window_, GDK_CURRENT_TIME);
   }
 }
 
@@ -1127,13 +1195,19 @@ std::shared_ptr<Window> Window::GetParentWindow() const {
 }
 
 void Window::SetNonActivating(bool is_non_activating) {
-  // Keyboard focus is per window on Linux, so a non-activating window has no
-  // observable difference here. Record the flag so IsNonActivating() round-trips.
-  pimpl_->non_activating_ = is_non_activating;
+  auto* object = FocusPolicyObject(pimpl_->widget_, pimpl_->gdk_window_);
+  if (!object) return;
+  // Remember the independently requested focusability before suppressing it.
+  if (!g_object_get_data(object, kFocusableKey))
+    g_object_set_data(object, kFocusableKey,
+                     GINT_TO_POINTER(AcceptsFocus(pimpl_->widget_, pimpl_->gdk_window_) ? 1 : 2));
+  g_object_set_data(object, kNonActivatingKey, GINT_TO_POINTER(is_non_activating));
+  ApplyFocusPolicy(pimpl_->widget_, pimpl_->gdk_window_);
 }
 
 bool Window::IsNonActivating() const {
-  return pimpl_->non_activating_;
+  auto* object = FocusPolicyObject(pimpl_->widget_, pimpl_->gdk_window_);
+  return object && g_object_get_data(object, kNonActivatingKey);
 }
 
 void Window::SetPosition(Point point) {
@@ -1558,12 +1632,14 @@ bool Window::IsIgnoreMouseEvents() const {
 }
 
 void Window::SetFocusable(bool is_focusable) {
-  // This would typically be set via window hints
-  // Provide stub implementation
+  auto* object = FocusPolicyObject(pimpl_->widget_, pimpl_->gdk_window_);
+  if (!object) return;
+  g_object_set_data(object, kFocusableKey, GINT_TO_POINTER(is_focusable ? 1 : 2));
+  ApplyFocusPolicy(pimpl_->widget_, pimpl_->gdk_window_);
 }
 
 bool Window::IsFocusable() const {
-  return true;  // Default assumption
+  return AcceptsFocus(pimpl_->widget_, pimpl_->gdk_window_);
 }
 
 void Window::StartDragging() {

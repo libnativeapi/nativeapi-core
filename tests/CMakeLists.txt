@@ -206,3 +206,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME shortcut_shutdown_linux_test COMMAND shortcut_shutdown_linux_test)
   set_tests_properties(shortcut_shutdown_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 8)
 endif()
+
+# Explicit desktop regression; --clicks is driven by the guarded GUI harness.
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(window_focus_policy_test window_focus_policy_test.cpp)
+  target_link_libraries(window_focus_policy_test PRIVATE nativeapi)
+endif()

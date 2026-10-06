@@ -746,8 +746,8 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @param is_non_activating true to make the window non-activating, false for
    *        normal behavior
    *
-   * A non-activating window can be shown, ordered to the front and receive
-   * keyboard input without making its application the active one. The
+   * A non-activating window can be shown and clicked without activating its
+   * application. On macOS it can also receive keyboard input. The
    * previously active application keeps its activation state, and hiding the
    * window does not bring the application's other windows forward. Use this
    * for floating helper windows (quick-input palettes, pop-up translators,
@@ -759,12 +759,12 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - The window becomes a non-activating NSPanel
-   *   that can become key but never main. This is the only platform where
-   *   keyboard focus is tied to application activation, so it is the only one
-   *   with observable behavior.
-   * - Windows: ⚠️ Recorded only - Keyboard focus is per window, so the flag
-   *   is stored and reported back by IsNonActivating() but changes nothing.
-   * - Linux: ⚠️ Recorded only - Same as Windows.
+   *   that can become key but never main.
+   * - Windows: ✅ Supported - Uses WS_EX_NOACTIVATE and declines mouse activation;
+   *   Show() and Focus() do not take keyboard focus while this flag is set.
+   * - Linux: ⚠️ Window-manager dependent - Sets GTK/GDK accept-focus and
+   *   focus-on-map hints; Show() and Focus() do not request activation. X11
+   *   window managers normally honor these hints; Wayland compositors may ignore them.
    * - Android: ❌ Not applicable - Always ignored
    * - iOS: ❌ Not applicable - Always ignored
    * - OpenHarmony: ❌ Not applicable - Always ignored
@@ -774,8 +774,8 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   /**
    * @brief Checks if the window is non-activating.
    *
-   * @return true if showing or focusing the window does not activate the
-   *         application, false otherwise
+   * @return true if the non-activating policy is enabled, false otherwise.
+   *         See SetNonActivating() for window-manager restrictions.
    *
    * @see SetNonActivating() for platform availability.
    */
@@ -1216,16 +1216,24 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - Overrides the window's ability to become key
-   * - Windows: ❌ Not implemented
-   * - Linux: ❌ Not implemented
-   * - Android / iOS / OpenHarmony: ❌ Not applicable - Focus is managed by the system
+   * - Windows: ✅ Supported - Declines mouse activation without disabling clicks
+   * - Linux: ⚠️ Window-manager dependent - Sets GTK/GDK focus hints; Wayland
+   *   compositors may ignore them
+   * - Android: ❌ Not applicable - Focus is managed by the system
+   * - iOS: ❌ Not applicable - Focus is managed by the system
+   * - OpenHarmony: ❌ Not applicable - Focus is managed by the system
+   *
+   * On Windows and Linux, SetNonActivating(true) also suppresses keyboard focus.
+   * Turning it off restores the last SetFocusable() policy. Focus() does nothing
+   * while focus is suppressed, and Show() shows the window without activating it.
    */
   void SetFocusable(bool is_focusable);
 
   /**
    * @brief Checks if the window can receive keyboard focus.
    *
-   * @return true if the window can be focused, false otherwise
+   * @return true if the effective native focus policy permits focus, false otherwise.
+   *         On Linux this reports the GTK/GDK hint; the window manager may ignore it.
    */
   bool IsFocusable() const;
 

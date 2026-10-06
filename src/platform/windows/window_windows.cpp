@@ -43,6 +43,10 @@ static const wchar_t* kFramelessClientProperty = L"NativeAPIFramelessClient";
 // window (the rounded corners of the classic frame).
 static const wchar_t* kShapedProperty = L"NativeAPIShaped";
 static const wchar_t* kHiddenFromTaskbarProperty = L"NativeAPIHiddenFromTaskbar";
+// Policies belong to the HWND so wrapped host windows and later wrappers agree.
+static const wchar_t* kNonFocusableProperty = L"NativeAPINonFocusable";
+static const wchar_t* kNonActivatingProperty = L"NativeAPINonActivating";
+static const wchar_t* kFocusReturnWindowProperty = L"NativeAPIFocusReturnWindow";
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
 static const wchar_t* kTranslucentBackgroundProperty = L"NativeAPITranslucentBackground";
@@ -463,6 +467,43 @@ static void UpdateFrameRendering(HWND hwnd, bool keep_content) {
 #endif
 }
 
+// Native controls and host renderers may call SetFocus() from their mouse-down
+// handler even after MA_NOACTIVATE. Reject that focus at the child as well as
+// the toplevel, without swallowing the mouse message that triggered it.
+static bool RejectBlockedFocus(HWND target, HWND previous) {
+  HWND root = GetAncestor(target, GA_ROOT);
+  if (!(GetWindowLongPtrW(root, GWL_EXSTYLE) & WS_EX_NOACTIVATE)) return false;
+  static thread_local bool restoring = false;
+  if (!restoring) {
+    restoring = true;
+    const bool can_restore = previous && IsWindow(previous) &&
+                             GetAncestor(previous, GA_ROOT) != root &&
+                             GetWindowThreadProcessId(previous, nullptr) == GetCurrentThreadId();
+    SetFocus(can_restore ? previous : nullptr);
+    const auto foreground = static_cast<HWND>(GetPropW(root, kFocusReturnWindowProperty));
+    if (foreground && IsWindow(foreground) && foreground != root &&
+        GetForegroundWindow() == root)
+      SetForegroundWindow(foreground);
+    restoring = false;
+  }
+  return true;
+}
+
+static LRESULT CALLBACK FocusPolicyChildProc(HWND child, UINT message, WPARAM wp, LPARAM lp,
+                                             UINT_PTR subclass_id, DWORD_PTR) {
+  if (message == WM_SETFOCUS && RejectBlockedFocus(child, reinterpret_cast<HWND>(wp)))
+    return 0;
+  if (message == WM_NCDESTROY)
+    RemoveWindowSubclass(child, FocusPolicyChildProc, subclass_id);
+  return DefSubclassProc(child, message, wp, lp);
+}
+
+static BOOL CALLBACK InstallFocusPolicyChild(HWND child, LPARAM) {
+  SetWindowSubclass(child, FocusPolicyChildProc,
+                    reinterpret_cast<UINT_PTR>(&FocusPolicyChildProc), 0);
+  return TRUE;
+}
+
 // Registry entries follow the HWND lifetime, not any one C++ wrapper.
 static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
                                            UINT_PTR subclass_id, DWORD_PTR reference) {
@@ -475,6 +516,9 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kShapedProperty);
     delete static_cast<WindowShadow*>(RemovePropW(hwnd, shape_shadow::kConfig));
     RemovePropW(hwnd, kHiddenFromTaskbarProperty);
+    RemovePropW(hwnd, kNonFocusableProperty);
+    RemovePropW(hwnd, kNonActivatingProperty);
+    RemovePropW(hwnd, kFocusReturnWindowProperty);
     RemovePropW(hwnd, kVisualEffectProperty);
     RemovePropW(hwnd, kBackgroundColorProperty);
     RemovePropW(hwnd, kTranslucentBackgroundProperty);
@@ -483,6 +527,19 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     WindowRegistry::GetInstance().Remove(static_cast<WindowId>(reference));
     return result;
   }
+  if (message == WM_MOUSEACTIVATE &&
+      (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE)) {
+    // Keep delivering the click (MA_NOACTIVATEANDEAT would swallow it).
+    HWND foreground = GetForegroundWindow();
+    if (foreground && foreground != hwnd)
+      SetPropW(hwnd, kFocusReturnWindowProperty, foreground);
+    return MA_NOACTIVATE;
+  }
+  if (message == WM_SETFOCUS && RejectBlockedFocus(hwnd, reinterpret_cast<HWND>(wp)))
+    return 0;
+  if (message == WM_PARENTNOTIFY && LOWORD(wp) == WM_CREATE &&
+      (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE))
+    EnumChildWindows(hwnd, InstallFocusPolicyChild, 0);
   if (message == WM_WINDOWPOSCHANGED) {
     const auto* pos = reinterpret_cast<const WINDOWPOS*>(lp);
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
@@ -524,8 +581,6 @@ class Window::Impl {
   int aspect_ratio_handler_id_ = 0;
   bool always_on_bottom_ = false;
   int always_on_bottom_handler_id_ = 0;
-  // Recorded only: keyboard focus is per window on Windows, see Window::SetNonActivating().
-  bool non_activating_ = false;
 };
 
 // Custom window procedure to handle window messages
@@ -734,7 +789,7 @@ Window::~Window() {
 }
 
 void Window::Focus() {
-  if (pimpl_->hwnd_) {
+  if (IsFocusable()) {
     SetForegroundWindow(pimpl_->hwnd_);
     SetFocus(pimpl_->hwnd_);
   }
@@ -747,13 +802,23 @@ void Window::Blur() {
 }
 
 bool Window::IsFocused() const {
-  return pimpl_->hwnd_ && GetForegroundWindow() == pimpl_->hwnd_;
+  if (!pimpl_->hwnd_ || GetForegroundWindow() != pimpl_->hwnd_) return false;
+  // A foreground window may deliberately have no keyboard focus. Flutter and
+  // other hosts put focus on a child HWND, so inspect the whole toplevel.
+  GUITHREADINFO info = {};
+  info.cbSize = sizeof(info);
+  return GetGUIThreadInfo(GetWindowThreadProcessId(pimpl_->hwnd_, nullptr), &info) &&
+         info.hwndFocus && GetAncestor(info.hwndFocus, GA_ROOT) == pimpl_->hwnd_;
 }
 
 void Window::Show() {
   if (pimpl_->hwnd_) {
-    ShowWindow(pimpl_->hwnd_, SW_SHOW);
-    SetForegroundWindow(pimpl_->hwnd_);
+    if (IsFocusable()) {
+      ShowWindow(pimpl_->hwnd_, SW_SHOW);
+      SetForegroundWindow(pimpl_->hwnd_);
+    } else {
+      ShowWindow(pimpl_->hwnd_, SW_SHOWNOACTIVATE);
+    }
   }
 }
 
@@ -1359,7 +1424,7 @@ void Window::SetAlwaysOnTop(bool is_always_on_top) {
   }
   if (pimpl_->hwnd_) {
     SetWindowPos(pimpl_->hwnd_, is_always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE);
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
 }
 
@@ -1435,14 +1500,34 @@ std::shared_ptr<Window> Window::GetParentWindow() const {
   return registered ? registered : wrapper;
 }
 
+static void ApplyFocusPolicy(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  const bool no_activate = GetPropW(hwnd, kNonFocusableProperty) ||
+                           GetPropW(hwnd, kNonActivatingProperty);
+  style = no_activate ? style | WS_EX_NOACTIVATE : style & ~WS_EX_NOACTIVATE;
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+  if (no_activate) {
+    EnumChildWindows(hwnd, InstallFocusPolicyChild, 0);
+    HWND focused = GetFocus();
+    if (focused && GetAncestor(focused, GA_ROOT) == hwnd)
+      RejectBlockedFocus(focused, nullptr);
+  } else {
+    RemovePropW(hwnd, kFocusReturnWindowProperty);
+  }
+}
+
 void Window::SetNonActivating(bool is_non_activating) {
-  // Windows keeps keyboard focus per window, so a non-activating window has no
-  // observable difference here. Record the flag so IsNonActivating() round-trips.
-  pimpl_->non_activating_ = is_non_activating;
+  if (!pimpl_->hwnd_) return;
+  if (is_non_activating)
+    SetPropW(pimpl_->hwnd_, kNonActivatingProperty, reinterpret_cast<HANDLE>(1));
+  else
+    RemovePropW(pimpl_->hwnd_, kNonActivatingProperty);
+  ApplyFocusPolicy(pimpl_->hwnd_);
 }
 
 bool Window::IsNonActivating() const {
-  return pimpl_->non_activating_;
+  return pimpl_->hwnd_ && GetPropW(pimpl_->hwnd_, kNonActivatingProperty);
 }
 
 void Window::SetPosition(Point point) {
@@ -1832,15 +1917,20 @@ bool Window::IsIgnoreMouseEvents() const {
 }
 
 void Window::SetFocusable(bool is_focusable) {
-  // Windows focusability is typically controlled by window style
-  // This is a simplified implementation
+  if (!pimpl_->hwnd_) return;
+  if (is_focusable)
+    RemovePropW(pimpl_->hwnd_, kNonFocusableProperty);
+  else
+    SetPropW(pimpl_->hwnd_, kNonFocusableProperty, reinterpret_cast<HANDLE>(1));
+  ApplyFocusPolicy(pimpl_->hwnd_);
 }
 
 bool Window::IsFocusable() const {
   if (!pimpl_->hwnd_)
     return false;
   LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-  return (style & WS_DISABLED) == 0;
+  return (style & WS_DISABLED) == 0 &&
+         (GetWindowLongPtrW(pimpl_->hwnd_, GWL_EXSTYLE) & WS_EX_NOACTIVATE) == 0;
 }
 
 // Hands the mouse gesture in progress to the system frame, as if the press had landed on the
