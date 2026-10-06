@@ -34,6 +34,7 @@ namespace nativeapi {
  */
 class WindowManager : public EventEmitter<WindowEvent> {
   friend struct detail::WindowEventSubscription;
+  friend struct detail::WindowPropertyDispatch;
  public:
   /**
    * @brief Get the singleton instance of WindowManager

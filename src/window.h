@@ -11,7 +11,7 @@
 namespace nativeapi {
 
 class EventRequest;
-namespace detail { struct WindowEventSubscription; }
+namespace detail { struct WindowEventSubscription; struct WindowPropertyDispatch; }
 
 class View;
 class WindowShape;
@@ -131,6 +131,36 @@ enum class WindowCornerPreference {
   Round,
   /** Ask the system to use a smaller corner radius. */
   RoundSmall
+};
+
+/**
+ * @brief A window property reported by WindowPropertyChangedEvent.
+ *
+ * Each value names a getter on Window; read it there for the new value.
+ */
+enum class WindowProperty {
+  /** Window::GetTitle() */
+  Title,
+  /** Window::IsResizable() */
+  Resizable,
+  /** Window::IsMovable() */
+  Movable,
+  /** Window::IsMinimizable() */
+  Minimizable,
+  /** Window::IsMaximizable() */
+  Maximizable,
+  /** Window::IsFullScreenable() */
+  FullScreenable,
+  /** Window::IsClosable() */
+  Closable,
+  /** Window::IsWindowControlButtonsVisible() */
+  WindowControlButtonsVisible,
+  /** Window::IsAlwaysOnTop() */
+  AlwaysOnTop,
+  /** Window::IsAlwaysOnBottom() */
+  AlwaysOnBottom,
+  /** Window::GetTitleBarStyle() */
+  TitleBarStyle
 };
 
 /**
@@ -1936,6 +1966,45 @@ class WindowCloseRequestedEvent : public WindowEvent {
   std::string GetTypeName() const override { return "WindowCloseRequestedEvent"; }
  private:
   std::shared_ptr<EventRequest> request_;
+};
+
+/**
+ * Event class for a change of one of the window's properties
+ *
+ * Emitted once per property whose value changed, whoever changed it: a Window
+ * setter on any wrapper of the native window, or another component or the
+ * system changing the native window directly where the platform reports that.
+ * Setting a property to the value it already has emits nothing. Read the new
+ * value through the getter WindowProperty names; it already returns it.
+ *
+ * Listen on the Window to follow one window, or on WindowManager for all.
+ *
+ * @note Platform availability:
+ * - macOS: ✅ Supported - Setters, and direct changes to the NSWindow's title,
+ *   style mask (resizable, minimizable, closable, title bar) and level.
+ * - Windows: ✅ Supported - Setters, and direct changes to the window text,
+ *   styles and topmost state.
+ * - Linux: ✅ Supported - Setters, and direct changes to the GtkWindow's title,
+ *   resizable and deletable properties and the window manager's above/below
+ *   state.
+ * - Android: ❌ Not applicable - Never emitted
+ * - iOS: ❌ Not applicable - Never emitted
+ * - OpenHarmony: ❌ Not applicable - Never emitted
+ */
+class WindowPropertyChangedEvent : public WindowEvent {
+ public:
+  WindowPropertyChangedEvent(WindowId window_id, WindowProperty property)
+      : WindowEvent(window_id), property_(property) {}
+
+  /**
+   * @return The property whose value changed
+   */
+  WindowProperty GetProperty() const { return property_; }
+
+  std::string GetTypeName() const override { return "WindowPropertyChangedEvent"; }
+
+ private:
+  WindowProperty property_;
 };
 
 }  // namespace nativeapi

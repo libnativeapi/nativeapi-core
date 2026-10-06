@@ -19,6 +19,7 @@
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 #include "window_message_dispatcher.h"
+#include "../../window_property_dispatch.h"
 #include "window_shape_shadow_windows.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -584,8 +585,26 @@ static BOOL CALLBACK InstallFocusPolicyChild(HWND child, LPARAM) {
 }
 
 // Registry entries follow the HWND lifetime, not any one C++ wrapper.
+static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
+                                     UINT_PTR subclass_id, DWORD_PTR reference);
 static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
                                            UINT_PTR subclass_id, DWORD_PTR reference) {
+  // Changes WindowPropertyChangedEvent reports, whoever makes them: the text,
+  // the styles, and a Z-order change that may move the window in or out of the
+  // topmost band.
+  const auto* pos = message == WM_WINDOWPOSCHANGED ? reinterpret_cast<const WINDOWPOS*>(lp)
+                                                   : nullptr;
+  const bool property_change = message == WM_SETTEXT || message == WM_STYLECHANGED ||
+                               (pos && !(pos->flags & SWP_NOZORDER));
+  const LRESULT result = WindowLifetimeMessage(hwnd, message, wp, lp, subclass_id, reference);
+  if (property_change && IsWindow(hwnd)) {
+    Window window(hwnd);
+    detail::WindowPropertyDispatch::Refresh(window);
+  }
+  return result;
+}
+static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
+                                     UINT_PTR subclass_id, DWORD_PTR reference) {
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(hwnd, WindowLifetimeProc, subclass_id);
     RemovePropW(hwnd, kWindowIdProperty);
@@ -641,8 +660,13 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
 #endif
   return DefSubclassProc(hwnd, message, wp, lp);
 }
-static void TrackWindowLifetime(HWND hwnd, WindowId id) {
+// Returns true the first time, when the HWND was not tracked yet.
+static bool TrackWindowLifetime(HWND hwnd, WindowId id) {
+  DWORD_PTR existing = 0;
+  const bool tracked = GetWindowSubclass(hwnd, WindowLifetimeProc,
+                                         reinterpret_cast<UINT_PTR>(&WindowLifetimeProc), &existing);
   SetWindowSubclass(hwnd, WindowLifetimeProc, reinterpret_cast<UINT_PTR>(&WindowLifetimeProc), id);
+  return !tracked;
 }
 
 // Forward declaration
@@ -806,7 +830,8 @@ Window::Window() {
 
   // Create the instance with allocated ID
   pimpl_ = std::make_unique<Impl>(hwnd, id);
-  TrackWindowLifetime(hwnd, id);
+  if (TrackWindowLifetime(hwnd, id))
+    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
 
   // Note: Window registration in WindowRegistry is now handled by WindowManager::GetAll()
   // which uses EnumWindows to discover and register all windows dynamically
@@ -843,7 +868,8 @@ Window::Window(void* native_window) {
   }
 
   pimpl_ = std::make_unique<Impl>(hwnd, id);
-  TrackWindowLifetime(hwnd, id);
+  if (TrackWindowLifetime(hwnd, id))
+    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
 
   // Note: Window registration in WindowRegistry is now handled by WindowManager::GetAll()
   // which uses EnumWindows to discover and register all windows dynamically
@@ -1449,6 +1475,7 @@ Size Window::GetMaximumSize() const {
 }
 
 void Window::SetResizable(bool is_resizable) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->hwnd_) {
     LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
     if (is_resizable) {
@@ -1470,6 +1497,7 @@ bool Window::IsResizable() const {
 }
 
 void Window::SetMovable(bool is_movable) {
+  detail::WindowPropertyScope property_scope(*this);
   // Windows doesn't have a direct way to disable window movement
   // This would require custom window procedure handling
 }
@@ -1480,6 +1508,7 @@ bool Window::IsMovable() const {
 }
 
 void Window::SetMinimizable(bool is_minimizable) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->hwnd_) {
     LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
     if (is_minimizable) {
@@ -1501,6 +1530,7 @@ bool Window::IsMinimizable() const {
 }
 
 void Window::SetMaximizable(bool is_maximizable) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->hwnd_) {
     LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
     if (is_maximizable) {
@@ -1522,6 +1552,7 @@ bool Window::IsMaximizable() const {
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
+  detail::WindowPropertyScope property_scope(*this);
   // This is a concept more relevant to macOS
   // On Windows, any window can potentially go fullscreen
 }
@@ -1531,6 +1562,7 @@ bool Window::IsFullScreenable() const {
 }
 
 void Window::SetClosable(bool is_closable) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->hwnd_) {
     LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
     if (is_closable) {
@@ -1552,6 +1584,7 @@ bool Window::IsClosable() const {
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
+  detail::WindowPropertyScope property_scope(*this);
   // TODO: Implement for Windows
   // This would involve custom window chrome or DWM frame manipulation
 }
@@ -1562,6 +1595,7 @@ bool Window::IsWindowControlButtonsVisible() const {
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
+  detail::WindowPropertyScope property_scope(*this);
   if (is_always_on_top) {
     pimpl_->always_on_bottom_ = false;
   }
@@ -1579,6 +1613,7 @@ bool Window::IsAlwaysOnTop() const {
 }
 
 void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
+  detail::WindowPropertyScope property_scope(*this);
   pimpl_->always_on_bottom_ = is_always_on_bottom;
   if (!pimpl_->hwnd_) {
     return;
@@ -1720,6 +1755,7 @@ void Window::Center() {
 }
 
 void Window::SetTitle(std::string title) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->hwnd_) {
     std::wstring wtitle = StringToWString(title);
     SetWindowTextW(pimpl_->hwnd_, wtitle.c_str());
@@ -1741,6 +1777,7 @@ std::string Window::GetTitle() const {
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
+  detail::WindowPropertyScope property_scope(*this);
   if (!pimpl_->hwnd_)
     return;
 

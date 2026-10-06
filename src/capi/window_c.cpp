@@ -1625,6 +1625,11 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
     out->data.close_requested.request = nativeapi::HandleTable::GetInstance().Insert(typed->GetRequest());
     return true;
   }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowPropertyChangedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_PROPERTY_CHANGED;
+    out->data.property_changed.property = to_c_window_property(typed->GetProperty());
+    return true;
+  }
   return false;
 }
 

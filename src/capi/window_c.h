@@ -44,6 +44,20 @@ typedef enum {
 } native_window_corner_preference_t;
 
 typedef enum {
+  NATIVE_WINDOW_PROPERTY_TITLE = 0,
+  NATIVE_WINDOW_PROPERTY_RESIZABLE = 1,
+  NATIVE_WINDOW_PROPERTY_MOVABLE = 2,
+  NATIVE_WINDOW_PROPERTY_MINIMIZABLE = 3,
+  NATIVE_WINDOW_PROPERTY_MAXIMIZABLE = 4,
+  NATIVE_WINDOW_PROPERTY_FULL_SCREENABLE = 5,
+  NATIVE_WINDOW_PROPERTY_CLOSABLE = 6,
+  NATIVE_WINDOW_PROPERTY_WINDOW_CONTROL_BUTTONS_VISIBLE = 7,
+  NATIVE_WINDOW_PROPERTY_ALWAYS_ON_TOP = 8,
+  NATIVE_WINDOW_PROPERTY_ALWAYS_ON_BOTTOM = 9,
+  NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE = 10,
+} native_window_property_t;
+
+typedef enum {
   NATIVE_VISUAL_EFFECT_NONE = 0,
   NATIVE_VISUAL_EFFECT_BLUR = 1,
   NATIVE_VISUAL_EFFECT_ACRYLIC = 2,
@@ -96,6 +110,7 @@ typedef enum {
   NATIVE_WINDOW_EVENT_TYPE_ENTERED_FULL_SCREEN = 9,
   NATIVE_WINDOW_EVENT_TYPE_EXITED_FULL_SCREEN = 10,
   NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED = 11,
+  NATIVE_WINDOW_EVENT_TYPE_PROPERTY_CHANGED = 12,
 } native_window_event_type_t;
 
 /// One WindowEvent, tagged by its concrete type.
@@ -115,6 +130,9 @@ typedef struct {
     struct {
       native_event_request_t request;
     } close_requested;
+    struct {
+      native_window_property_t property;
+    } property_changed;
   } data;
 } native_window_event_t;
 
@@ -508,6 +526,8 @@ inline native_title_bar_style_t to_c_title_bar_style(nativeapi::TitleBarStyle va
 inline nativeapi::TitleBarStyle to_cpp_title_bar_style(native_title_bar_style_t value);
 inline native_window_corner_preference_t to_c_window_corner_preference(nativeapi::WindowCornerPreference value);
 inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_window_corner_preference_t value);
+inline native_window_property_t to_c_window_property(nativeapi::WindowProperty value);
+inline nativeapi::WindowProperty to_cpp_window_property(native_window_property_t value);
 inline native_visual_effect_t to_c_visual_effect(nativeapi::VisualEffect value);
 inline nativeapi::VisualEffect to_cpp_visual_effect(native_visual_effect_t value);
 inline native_resize_edge_t to_c_resize_edge(nativeapi::ResizeEdge value);
@@ -562,6 +582,64 @@ inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_
       return nativeapi::WindowCornerPreference::RoundSmall;
     default:
       return static_cast<nativeapi::WindowCornerPreference>(value);
+  }
+}
+
+inline native_window_property_t to_c_window_property(nativeapi::WindowProperty value) {
+  switch (value) {
+    case nativeapi::WindowProperty::Title:
+      return NATIVE_WINDOW_PROPERTY_TITLE;
+    case nativeapi::WindowProperty::Resizable:
+      return NATIVE_WINDOW_PROPERTY_RESIZABLE;
+    case nativeapi::WindowProperty::Movable:
+      return NATIVE_WINDOW_PROPERTY_MOVABLE;
+    case nativeapi::WindowProperty::Minimizable:
+      return NATIVE_WINDOW_PROPERTY_MINIMIZABLE;
+    case nativeapi::WindowProperty::Maximizable:
+      return NATIVE_WINDOW_PROPERTY_MAXIMIZABLE;
+    case nativeapi::WindowProperty::FullScreenable:
+      return NATIVE_WINDOW_PROPERTY_FULL_SCREENABLE;
+    case nativeapi::WindowProperty::Closable:
+      return NATIVE_WINDOW_PROPERTY_CLOSABLE;
+    case nativeapi::WindowProperty::WindowControlButtonsVisible:
+      return NATIVE_WINDOW_PROPERTY_WINDOW_CONTROL_BUTTONS_VISIBLE;
+    case nativeapi::WindowProperty::AlwaysOnTop:
+      return NATIVE_WINDOW_PROPERTY_ALWAYS_ON_TOP;
+    case nativeapi::WindowProperty::AlwaysOnBottom:
+      return NATIVE_WINDOW_PROPERTY_ALWAYS_ON_BOTTOM;
+    case nativeapi::WindowProperty::TitleBarStyle:
+      return NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE;
+    default:
+      return NATIVE_WINDOW_PROPERTY_TITLE;
+  }
+}
+
+inline nativeapi::WindowProperty to_cpp_window_property(native_window_property_t value) {
+  switch (value) {
+    case NATIVE_WINDOW_PROPERTY_TITLE:
+      return nativeapi::WindowProperty::Title;
+    case NATIVE_WINDOW_PROPERTY_RESIZABLE:
+      return nativeapi::WindowProperty::Resizable;
+    case NATIVE_WINDOW_PROPERTY_MOVABLE:
+      return nativeapi::WindowProperty::Movable;
+    case NATIVE_WINDOW_PROPERTY_MINIMIZABLE:
+      return nativeapi::WindowProperty::Minimizable;
+    case NATIVE_WINDOW_PROPERTY_MAXIMIZABLE:
+      return nativeapi::WindowProperty::Maximizable;
+    case NATIVE_WINDOW_PROPERTY_FULL_SCREENABLE:
+      return nativeapi::WindowProperty::FullScreenable;
+    case NATIVE_WINDOW_PROPERTY_CLOSABLE:
+      return nativeapi::WindowProperty::Closable;
+    case NATIVE_WINDOW_PROPERTY_WINDOW_CONTROL_BUTTONS_VISIBLE:
+      return nativeapi::WindowProperty::WindowControlButtonsVisible;
+    case NATIVE_WINDOW_PROPERTY_ALWAYS_ON_TOP:
+      return nativeapi::WindowProperty::AlwaysOnTop;
+    case NATIVE_WINDOW_PROPERTY_ALWAYS_ON_BOTTOM:
+      return nativeapi::WindowProperty::AlwaysOnBottom;
+    case NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE:
+      return nativeapi::WindowProperty::TitleBarStyle;
+    default:
+      return static_cast<nativeapi::WindowProperty>(value);
   }
 }
 

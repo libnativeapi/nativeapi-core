@@ -1,4 +1,5 @@
 #include "window_registry.h"
+#include "window_property_dispatch.h"
 #include "foundation/object_registry.h"
 #include "window.h"
 
@@ -34,6 +35,7 @@ bool WindowRegistry::Contains(WindowId id) const {
 }
 
 bool WindowRegistry::Remove(WindowId id) {
+  detail::WindowPropertyDispatch::Forget(id);
   return pimpl_->registry_.Remove(id);
 }
 

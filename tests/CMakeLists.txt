@@ -15,6 +15,17 @@ add_executable(screen_layout_test screen_layout_test.cpp)
 target_link_libraries(screen_layout_test PRIVATE nativeapi)
 add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
+# WindowPropertyChangedEvent from setters and direct native changes; unshown windows.
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(window_property_changed_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(window_property_changed_test window_property_changed_test.cpp)
+  target_link_libraries(window_property_changed_test PRIVATE nativeapi)
+  add_test(NAME window_property_changed_test COMMAND window_property_changed_test)
+  set_tests_properties(window_property_changed_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
   if(APPLE)
     set_source_files_properties(window_content_protection_test.cpp PROPERTIES LANGUAGE OBJCXX)

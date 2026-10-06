@@ -361,6 +361,40 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
 }
 
 #include "window_shadow_macos.h"
+#include "../../window_property_dispatch.h"
+
+// Reports direct changes to the properties WindowPropertyChangedEvent covers:
+// KVO on the NSWindow's title, style mask and level, whoever changes them.
+// Installed once per NSWindow; never removed, which KVO allows since macOS
+// 10.13 when the observed window is deallocated.
+@interface NativeApiWindowPropertyObserver : NSObject
+@end
+
+@implementation NativeApiWindowPropertyObserver
+- (void)observeValueForKeyPath:(NSString*)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary*)change
+                       context:(void*)context {
+  if (![object isKindOfClass:[NSWindow class]]) return;
+  nativeapi::Window window((__bridge void*)object);
+  nativeapi::detail::WindowPropertyDispatch::Refresh(window);
+}
+@end
+
+static const void* kWindowPropertyObserverKey = &kWindowPropertyObserverKey;
+
+static void NativeApiObserveWindowProperties(NSWindow* window) {
+  if (!window || objc_getAssociatedObject(window, kWindowPropertyObserverKey)) return;
+  NativeApiWindowPropertyObserver* observer = [[NativeApiWindowPropertyObserver alloc] init];
+  objc_setAssociatedObject(window, kWindowPropertyObserverKey, observer,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  for (NSString* key in @[ @"title", @"styleMask", @"level" ]) {
+    [window addObserver:observer forKeyPath:key options:0 context:nullptr];
+  }
+#if !__has_feature(objc_arc)
+  [observer release];
+#endif
+}
 #include "window_focus_macos.h"
 
 namespace nativeapi {
@@ -419,6 +453,10 @@ Window::Window(void* native_window) {
 
   // All initialization logic in one place
   pimpl_ = std::make_unique<Impl>(id, ns_window);
+  if (ns_window && !objc_getAssociatedObject(ns_window, kWindowPropertyObserverKey)) {
+    NativeApiObserveWindowProperties(ns_window);
+    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+  }
 }
 
 Window::~Window() {
@@ -612,6 +650,7 @@ Size Window::GetMaximumSize() const {
 }
 
 void Window::SetResizable(bool is_resizable) {
+  detail::WindowPropertyScope property_scope(*this);
   NSUInteger style_mask = [pimpl_->ns_window_ styleMask];
   if (is_resizable) {
     style_mask |= NSWindowStyleMaskResizable;
@@ -626,6 +665,7 @@ bool Window::IsResizable() const {
 }
 
 void Window::SetMovable(bool is_movable) {
+  detail::WindowPropertyScope property_scope(*this);
   NSWindow* window = pimpl_->ns_window_;
   if (!window) {
     return;
@@ -641,6 +681,7 @@ bool Window::IsMovable() const {
 }
 
 void Window::SetMinimizable(bool is_minimizable) {
+  detail::WindowPropertyScope property_scope(*this);
   NSUInteger style_mask = [pimpl_->ns_window_ styleMask];
   if (is_minimizable) {
     style_mask |= NSWindowStyleMaskMiniaturizable;
@@ -655,6 +696,7 @@ bool Window::IsMinimizable() const {
 }
 
 void Window::SetMaximizable(bool is_maximizable) {
+  detail::WindowPropertyScope property_scope(*this);
   NSUInteger style_mask = [pimpl_->ns_window_ styleMask];
   if (is_maximizable) {
     style_mask |= NSWindowStyleMaskResizable;
@@ -669,6 +711,7 @@ bool Window::IsMaximizable() const {
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
+  detail::WindowPropertyScope property_scope(*this);
   // TODO: Implement this
 }
 
@@ -677,6 +720,7 @@ bool Window::IsFullScreenable() const {
 }
 
 void Window::SetClosable(bool is_closable) {
+  detail::WindowPropertyScope property_scope(*this);
   NSUInteger style_mask = [pimpl_->ns_window_ styleMask];
   if (is_closable) {
     style_mask |= NSWindowStyleMaskClosable;
@@ -691,6 +735,7 @@ bool Window::IsClosable() const {
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
+  detail::WindowPropertyScope property_scope(*this);
   objc_setAssociatedObject(pimpl_->ns_window_, kWindowButtonsVisibleKey, @(is_visible),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   NativeApiApplyWindowControlButtons(pimpl_->ns_window_);
@@ -705,6 +750,7 @@ bool Window::IsWindowControlButtonsVisible() const {
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
+  detail::WindowPropertyScope property_scope(*this);
   [pimpl_->ns_window_ setLevel:is_always_on_top ? NSFloatingWindowLevel : NSNormalWindowLevel];
 }
 
@@ -716,6 +762,7 @@ bool Window::IsAlwaysOnTop() const {
 static const NSInteger kAlwaysOnBottomWindowLevel = NSNormalWindowLevel - 1;
 
 void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
+  detail::WindowPropertyScope property_scope(*this);
   [pimpl_->ns_window_
       setLevel:is_always_on_bottom ? kAlwaysOnBottomWindowLevel : NSNormalWindowLevel];
 }
@@ -797,6 +844,7 @@ void Window::Center() {
 }
 
 void Window::SetTitle(std::string title) {
+  detail::WindowPropertyScope property_scope(*this);
   [pimpl_->ns_window_ setTitle:[NSString stringWithUTF8String:title.c_str()]];
 }
 
@@ -806,6 +854,7 @@ std::string Window::GetTitle() const {
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
+  detail::WindowPropertyScope property_scope(*this);
   if (!pimpl_->ns_window_) {
     return;
   }

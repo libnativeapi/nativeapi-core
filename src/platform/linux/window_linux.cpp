@@ -10,6 +10,7 @@
 #include "../../window_shape.h"
 #include "../../window_manager.h"
 #include "../../window_registry.h"
+#include "../../window_property_dispatch.h"
 
 // Import GTK headers
 #include <gdk/gdk.h>
@@ -769,6 +770,37 @@ class Window::Impl {
   Size requested_content_size_ = {0, 0};
 };
 
+// Reports direct changes to the properties WindowPropertyChangedEvent covers:
+// the GtkWindow's title, resizable and deletable properties, and the window
+// manager's above/below state. The handlers sit on the widget itself, so GTK
+// disconnects them when it is destroyed.
+static const char* kPropertyObserverKey = "NativeAPIPropertyObserver";
+
+static void RefreshPropertiesOf(GtkWidget* widget) {
+  if (!widget || gtk_widget_in_destruction(widget)) return;
+  Window window(widget);
+  detail::WindowPropertyDispatch::Refresh(window);
+}
+
+static bool ObserveWindowProperties(GtkWidget* widget) {
+  if (!widget || !GTK_IS_WINDOW(widget) || g_object_get_data(G_OBJECT(widget), kPropertyObserverKey))
+    return false;
+  g_object_set_data(G_OBJECT(widget), kPropertyObserverKey, GINT_TO_POINTER(1));
+  auto on_notify = +[](GObject* object, GParamSpec*, gpointer) {
+    RefreshPropertiesOf(GTK_WIDGET(object));
+  };
+  for (const char* signal : {"notify::title", "notify::resizable", "notify::deletable"})
+    g_signal_connect(widget, signal, G_CALLBACK(on_notify), nullptr);
+  g_signal_connect(widget, "window-state-event",
+                         G_CALLBACK(+[](GtkWidget* self, GdkEventWindowState* event, gpointer) {
+                           if (event->changed_mask & (GDK_WINDOW_STATE_ABOVE | GDK_WINDOW_STATE_BELOW))
+                             RefreshPropertiesOf(self);
+                           return FALSE;
+                         }),
+                         nullptr);
+  return true;
+}
+
 Window::Window() {
   // Check if GTK is available
   GdkDisplay* display = gdk_display_get_default();
@@ -811,6 +843,8 @@ Window::Window() {
 
   // Only create the instance, don't show the window
   pimpl_ = std::make_unique<Impl>(widget, gdk_window);
+  if (ObserveWindowProperties(widget))
+    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
 }
 
 Window::Window(void* native_window) {
@@ -864,6 +898,8 @@ Window::Window(void* native_window) {
   }
 
   pimpl_ = std::make_unique<Impl>(widget, gdk_window);
+  if (ObserveWindowProperties(widget))
+    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
 }
 
 Window::~Window() {
@@ -1354,6 +1390,7 @@ Size Window::GetMaximumSize() const {
 }
 
 void Window::SetResizable(bool is_resizable) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     auto* window = GTK_WINDOW(pimpl_->widget_);
     if (!is_resizable && gtk_window_get_resizable(window)) {
@@ -1376,6 +1413,7 @@ bool Window::IsResizable() const {
 }
 
 void Window::SetMovable(bool is_movable) {
+  detail::WindowPropertyScope property_scope(*this);
   auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
   if (controls) {
     controls->movable = is_movable;
@@ -1389,6 +1427,7 @@ bool Window::IsMovable() const {
 }
 
 void Window::SetMinimizable(bool is_minimizable) {
+  detail::WindowPropertyScope property_scope(*this);
   auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
   if (controls) {
     controls->minimizable = is_minimizable;
@@ -1402,6 +1441,7 @@ bool Window::IsMinimizable() const {
 }
 
 void Window::SetMaximizable(bool is_maximizable) {
+  detail::WindowPropertyScope property_scope(*this);
   auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
   if (controls) {
     controls->maximizable = is_maximizable;
@@ -1415,6 +1455,7 @@ bool Window::IsMaximizable() const {
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
+  detail::WindowPropertyScope property_scope(*this);
   // Provide stub implementation
 }
 
@@ -1423,6 +1464,7 @@ bool Window::IsFullScreenable() const {
 }
 
 void Window::SetClosable(bool is_closable) {
+  detail::WindowPropertyScope property_scope(*this);
   auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
   if (controls) {
     controls->closable = is_closable;
@@ -1442,6 +1484,7 @@ bool Window::IsClosable() const {
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
+  detail::WindowPropertyScope property_scope(*this);
   // TODO: Implement for Linux
   // This would involve manipulating GTK window decorations
 }
@@ -1452,6 +1495,7 @@ bool Window::IsWindowControlButtonsVisible() const {
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
+  detail::WindowPropertyScope property_scope(*this);
   if (pimpl_->gdk_window_) {
     gdk_window_set_keep_above(pimpl_->gdk_window_, is_always_on_top);
   }
@@ -1465,6 +1509,7 @@ bool Window::IsAlwaysOnTop() const {
 }
 
 void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
+  detail::WindowPropertyScope property_scope(*this);
   // GDK clears _NET_WM_STATE_ABOVE when setting BELOW and vice versa, so the two
   // settings are naturally exclusive here.
   if (pimpl_->gdk_window_) {
@@ -1614,6 +1659,7 @@ void Window::Center() {
 }
 
 void Window::SetTitle(std::string title) {
+  detail::WindowPropertyScope property_scope(*this);
   // Prefer setting title via GtkWindow if available
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     gtk_window_set_title(GTK_WINDOW(pimpl_->widget_), title.c_str());
@@ -1656,6 +1702,7 @@ std::string Window::GetTitle() const {
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
+  detail::WindowPropertyScope property_scope(*this);
   const bool has_shadow = HasShadow();
   pimpl_->title_bar_style_ = style;
   // Wrapping a Flutter controller creates a new Window each time. Keep the
