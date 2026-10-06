@@ -116,6 +116,10 @@ static LRESULT CALLBACK MouseInputPolicySubclass(HWND window, UINT message, WPAR
   return DefSubclassProc(window, message, wparam, lparam);
 }
 static const wchar_t* kFocusReturnWindowProperty = L"NativeAPIFocusReturnWindow";
+// The window that was in the foreground before Focus() or Show() took it; Blur()
+// hands the foreground back to it. Distinct from the focus-policy property above,
+// which only a no-activate window uses and its policy change clears.
+static const wchar_t* kBlurReturnWindowProperty = L"NativeAPIBlurReturnWindow";
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
 static const wchar_t* kTranslucentBackgroundProperty = L"NativeAPITranslucentBackground";
@@ -594,6 +598,7 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kNonFocusableProperty);
     RemovePropW(hwnd, kNonActivatingProperty);
     RemovePropW(hwnd, kFocusReturnWindowProperty);
+    RemovePropW(hwnd, kBlurReturnWindowProperty);
     RemovePropW(hwnd, kVisualEffectProperty);
     RemovePropW(hwnd, kCornerPreferenceProperty);
     RemovePropW(hwnd, kBackgroundColorProperty);
@@ -865,17 +870,77 @@ Window::~Window() {
   }
 }
 
-void Window::Focus() {
-  if (IsFocusable()) {
-    SetForegroundWindow(pimpl_->hwnd_);
-    SetFocus(pimpl_->hwnd_);
+static void RememberBlurReturnWindow(HWND hwnd) {
+  HWND foreground = GetForegroundWindow();
+  if (foreground) foreground = GetAncestor(foreground, GA_ROOT);
+  // Already in front (a repeated Focus()/Show()): keep the earlier target.
+  if (foreground == hwnd) return;
+  if (foreground)
+    SetPropW(hwnd, kBlurReturnWindowProperty, foreground);
+  else
+    RemovePropW(hwnd, kBlurReturnWindowProperty);
+}
+
+// A window Blur() may hand the foreground to: a live, visible, enabled,
+// unminimized toplevel that is neither |hwnd| nor one of its owned windows.
+static bool CanTakeForeground(HWND candidate, HWND hwnd) {
+  if (!candidate || candidate == hwnd || !IsWindow(candidate) || !IsWindowVisible(candidate) ||
+      IsIconic(candidate) || !IsWindowEnabled(candidate))
+    return false;
+  for (HWND owner = GetWindow(candidate, GW_OWNER); owner; owner = GetWindow(owner, GW_OWNER)) {
+    if (owner == hwnd) return false;
   }
+  if (GetWindowLongPtrW(candidate, GWL_EXSTYLE) & WS_EX_NOACTIVATE) return false;
+  BOOL cloaked = FALSE;
+  // Windows on another virtual desktop and suspended UWP frames are cloaked.
+  return FAILED(DwmGetWindowAttribute(candidate, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) ||
+         !cloaked;
+}
+
+// The next window down the Z order that the shell would activate itself.
+static HWND NextForegroundCandidate(HWND hwnd) {
+  for (HWND next = GetWindow(hwnd, GW_HWNDNEXT); next; next = GetWindow(next, GW_HWNDNEXT)) {
+    if (GetWindowLongPtrW(next, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) continue;
+    if (CanTakeForeground(next, hwnd)) return next;
+  }
+  return nullptr;
+}
+
+void Window::Focus() {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !IsFocusable()) return;
+  RememberBlurReturnWindow(hwnd);
+  if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+  if (!SetForegroundWindow(hwnd) || GetForegroundWindow() != hwnd) {
+    // The foreground lock refuses a process that is not in front (the taskbar
+    // button only flashes). Sharing input state with the foreground thread
+    // makes the request count as coming from it.
+    HWND foreground = GetForegroundWindow();
+    const DWORD foreground_thread =
+        foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD self = GetCurrentThreadId();
+    const bool attached = foreground_thread && foreground_thread != self &&
+                          AttachThreadInput(self, foreground_thread, TRUE);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    if (attached) AttachThreadInput(self, foreground_thread, FALSE);
+  }
+  // Hosts such as Flutter keep the keyboard focus on a child HWND; only take it
+  // when nothing inside this window has it.
+  HWND focused = GetFocus();
+  if (GetForegroundWindow() == hwnd && (!focused || GetAncestor(focused, GA_ROOT) != hwnd))
+    SetFocus(hwnd);
 }
 
 void Window::Blur() {
-  if (pimpl_->hwnd_) {
-    SetFocus(nullptr);
-  }
+  HWND hwnd = pimpl_->hwnd_;
+  // Blurring a window without the keyboard focus must not move focus at all.
+  if (!hwnd || GetForegroundWindow() != hwnd) return;
+  HWND target = static_cast<HWND>(RemovePropW(hwnd, kBlurReturnWindowProperty));
+  if (!CanTakeForeground(target, hwnd)) target = NextForegroundCandidate(hwnd);
+  // Being in front, this process may hand the foreground to any window.
+  if (target && SetForegroundWindow(target)) return;
+  SetFocus(nullptr);
 }
 
 bool Window::IsFocused() const {
@@ -891,6 +956,7 @@ bool Window::IsFocused() const {
 void Window::Show() {
   if (pimpl_->hwnd_) {
     if (IsFocusable()) {
+      RememberBlurReturnWindow(pimpl_->hwnd_);
       ShowWindow(pimpl_->hwnd_, SW_SHOW);
       SetForegroundWindow(pimpl_->hwnd_);
     } else {

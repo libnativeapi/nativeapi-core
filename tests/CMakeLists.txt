@@ -80,6 +80,9 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_executable(window_system_menu_unsupported_test window_system_menu_unsupported_test.cpp)
   target_link_libraries(window_system_menu_unsupported_test PRIVATE nativeapi)
   add_test(NAME window_system_menu_unsupported_test COMMAND window_system_menu_unsupported_test)
+  # Changes the active application; run by hand on a desktop (exit 77 = skipped).
+  add_executable(window_focus_return_macos_test window_focus_return_macos_test.mm)
+  target_link_libraries(window_focus_return_macos_test PRIVATE nativeapi)
   add_executable(window_shape_macos_test window_shape_macos_test.mm)
   target_link_libraries(window_shape_macos_test PRIVATE nativeapi)
   add_test(NAME window_shape_macos_test COMMAND window_shape_macos_test)
@@ -319,6 +322,9 @@ endif()
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_focus_policy_test window_focus_policy_test.cpp)
   target_link_libraries(window_focus_policy_test PRIVATE nativeapi)
+  # Focus()/Blur() across processes; changes the foreground window, run by hand.
+  add_executable(window_focus_return_test window_focus_return_test.cpp)
+  target_link_libraries(window_focus_return_test PRIVATE nativeapi)
 endif()
 
 # Real SNI properties and initial watcher registration, on a private session bus.

@@ -335,16 +335,49 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
   /**
    * @brief Brings the window to the front and gives it keyboard focus.
    *
-   * Makes this window the active window and brings it to the foreground.
-   * The window will receive keyboard input after this call.
+   * Makes this window the active window and brings it to the foreground,
+   * restoring it first when minimized. Does nothing while IsFocusable() is
+   * false. The window that had the focus before is remembered for Blur(); so
+   * is it by Show(). The request is asynchronous on every platform: check
+   * IsFocused() after the platform reports the change (WindowFocusedEvent).
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - Activates the application unless IsNonActivating().
+   *   macOS 14+ activation is cooperative, so the system can still decline it.
+   * - Windows: ⚠️ Best effort - When the foreground lock refuses the request it
+   *   is retried with the foreground thread's input state attached; the
+   *   system may still only flash the taskbar button.
+   * - Linux: ⚠️ Best effort - Presents with the current event or X server time;
+   *   the window manager or compositor (Wayland: activation tokens) decides.
+   * - Android: ❌ Not applicable - Focus follows the Activity lifecycle
+   * - iOS: ⚠️ Partial - Makes the window the key window
+   * - OpenHarmony: ❌ Not applicable - Focus follows the Ability lifecycle
    */
   void Focus();
 
   /**
-   * @brief Removes keyboard focus from the window.
+   * @brief Removes keyboard focus from the window and returns it to where it
+   *        was before.
    *
-   * The window will no longer receive keyboard input, but remains visible.
-   * Focus may be transferred to another window or removed entirely.
+   * The window stays visible and in place. The focus goes to the window that
+   * had it before the last Focus() or Show() of this window, if that one can
+   * still take it: another window of this application, or another
+   * application (the launcher case: hide a search bar and type into the
+   * previous app again). Otherwise the platform picks the next window. Does
+   * nothing when the window does not have the focus.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - Another app is activated after yielding activation
+   *   to it; with no target, the app this one last took the focus from.
+   * - Windows: ✅ Supported - Without a usable target, the next window down the
+   *   Z order gets the foreground.
+   * - Linux: ⚠️ Partial - X11 asks the window manager to activate the previous
+   *   window, else the next one down its stacking order. Wayland can only
+   *   return focus to another window of this application; otherwise the
+   *   window is lowered and the compositor decides.
+   * - Android: ❌ Not applicable - Focus follows the Activity lifecycle
+   * - iOS: ⚠️ Partial - Resigns the key window
+   * - OpenHarmony: ❌ Not applicable - Focus follows the Ability lifecycle
    */
   void Blur();
 

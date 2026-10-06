@@ -1,6 +1,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <vector>
 #include <mutex>
 #include <unordered_map>
@@ -18,6 +19,7 @@
 
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
+#include <X11/Xatom.h>
 #undef None  // Xlib macro conflicts with VisualEffect::None.
 #endif
 
@@ -887,9 +889,176 @@ WindowId Window::GetId() const {
 
 static void PresentWindow(GtkWidget* widget);
 
+// Where Blur() hands the keyboard back to: another toplevel of this process
+// (weakly held, so a destroyed one is not found again) or, on X11, the window
+// another client had active. Focus() and Show() record it on the GtkWindow so
+// every wrapper of that window shares it.
+static const char* kBlurReturnKey = "NativeAPIBlurReturn";
+struct BlurReturnTarget {
+  GWeakRef own;
+  unsigned long xid = 0;
+};
+
+static void FreeBlurReturnTarget(gpointer data) {
+  auto* target = static_cast<BlurReturnTarget*>(data);
+  g_weak_ref_clear(&target->own);
+  delete target;
+}
+
+#ifdef GDK_WINDOWING_X11
+static unsigned long ActiveX11Window(GdkDisplay* display) {
+  auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
+  Atom type = 0;
+  int format = 0;
+  unsigned long count = 0, remaining = 0;
+  unsigned char* data = nullptr;
+  unsigned long active = 0;
+  gdk_x11_display_error_trap_push(display);
+  if (XGetWindowProperty(xdisplay, gdk_x11_get_default_root_xwindow(),
+                         gdk_x11_get_xatom_by_name_for_display(display, "_NET_ACTIVE_WINDOW"), 0, 1,
+                         False, XA_WINDOW, &type, &format, &count, &remaining, &data) == Success &&
+      data && type == XA_WINDOW && format == 32 && count == 1) {
+    active = *reinterpret_cast<unsigned long*>(data);
+  }
+  if (data) XFree(data);
+  gdk_x11_display_error_trap_pop_ignored(display);
+  return active;
+}
+#endif
+
+static void RememberBlurReturnTarget(GtkWidget* widget) {
+  if (!widget || !GTK_IS_WINDOW(widget)) return;
+  // Already focused (a repeated Focus()/Show()): keep the earlier target.
+  if (gtk_window_is_active(GTK_WINDOW(widget))) return;
+  auto* target = new BlurReturnTarget();
+  g_weak_ref_init(&target->own, nullptr);
+  bool found = false;
+  GList* toplevels = gtk_window_list_toplevels();
+  for (GList* item = toplevels; item && !found; item = item->next) {
+    if (item->data != widget && gtk_window_is_active(GTK_WINDOW(item->data))) {
+      g_weak_ref_set(&target->own, item->data);
+      found = true;
+    }
+  }
+  g_list_free(toplevels);
+#ifdef GDK_WINDOWING_X11
+  auto* display = gtk_widget_get_display(widget);
+  if (!found && GDK_IS_X11_DISPLAY(display)) {
+    auto* surface = gtk_widget_get_window(widget);
+    const unsigned long active = ActiveX11Window(display);
+    if (active && (!surface || active != GDK_WINDOW_XID(surface))) {
+      target->xid = active;
+      found = true;
+    }
+  }
+#endif
+  if (!found) {
+    FreeBlurReturnTarget(target);
+    target = nullptr;  // An unknown previous focus makes an older target stale.
+  }
+  g_object_set_data_full(G_OBJECT(widget), kBlurReturnKey, target,
+                         target ? FreeBlurReturnTarget : nullptr);
+}
+
+#ifdef GDK_WINDOWING_X11
+// Asks the window manager to activate |xid| as a pager (source 2) would, which
+// focus stealing prevention lets through.
+static bool ActivateX11Window(GdkWindow* surface, unsigned long xid) {
+  auto* display = gdk_window_get_display(surface);
+  auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
+  XWindowAttributes attributes;
+  gdk_x11_display_error_trap_push(display);
+  const bool viewable = XGetWindowAttributes(xdisplay, xid, &attributes) &&
+                        attributes.map_state == IsViewable;
+  if (viewable) {
+    XEvent event = {};
+    event.xclient.type = ClientMessage;
+    event.xclient.window = xid;
+    event.xclient.message_type =
+        gdk_x11_get_xatom_by_name_for_display(display, "_NET_ACTIVE_WINDOW");
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = 2;  // Source indication: pager.
+    event.xclient.data.l[1] = gdk_x11_get_server_time(surface);
+    event.xclient.data.l[2] = GDK_WINDOW_XID(surface);
+    XSendEvent(xdisplay, gdk_x11_get_default_root_xwindow(), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(xdisplay);
+  }
+  return gdk_x11_display_error_trap_pop(display) == 0 && viewable;
+}
+
+// The next window down the window manager's stacking order that a user could
+// switch to: viewable, not |own|, and not a dock, desktop or other helper.
+static unsigned long NextX11StackingWindow(GdkDisplay* display, unsigned long own) {
+  auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
+  const Atom normal = gdk_x11_get_xatom_by_name_for_display(display, "_NET_WM_WINDOW_TYPE_NORMAL");
+  const Atom dialog = gdk_x11_get_xatom_by_name_for_display(display, "_NET_WM_WINDOW_TYPE_DIALOG");
+  Atom type = 0;
+  int format = 0;
+  unsigned long count = 0, remaining = 0;
+  unsigned char* data = nullptr;
+  unsigned long next = 0;
+  gdk_x11_display_error_trap_push(display);
+  if (XGetWindowProperty(xdisplay, gdk_x11_get_default_root_xwindow(),
+                         gdk_x11_get_xatom_by_name_for_display(display, "_NET_CLIENT_LIST_STACKING"),
+                         0, 4096, False, XA_WINDOW, &type, &format, &count, &remaining,
+                         &data) == Success &&
+      data && type == XA_WINDOW && format == 32) {
+    const auto* windows = reinterpret_cast<unsigned long*>(data);
+    for (unsigned long i = count; i-- > 0 && !next;) {  // Bottom to top: walk down.
+      const unsigned long candidate = windows[i];
+      XWindowAttributes attributes;
+      if (candidate == own || !XGetWindowAttributes(xdisplay, candidate, &attributes) ||
+          attributes.map_state != IsViewable)
+        continue;
+      Atom kind = normal;  // EWMH: a window without a type is a normal one.
+      Atom kind_type = 0;
+      int kind_format = 0;
+      unsigned long kind_count = 0, kind_remaining = 0;
+      unsigned char* kind_data = nullptr;
+      if (XGetWindowProperty(xdisplay, candidate,
+                             gdk_x11_get_xatom_by_name_for_display(display, "_NET_WM_WINDOW_TYPE"),
+                             0, 1, False, XA_ATOM, &kind_type, &kind_format, &kind_count,
+                             &kind_remaining, &kind_data) == Success &&
+          kind_data && kind_count == 1)
+        kind = *reinterpret_cast<Atom*>(kind_data);
+      if (kind_data) XFree(kind_data);
+      if (kind == normal || kind == dialog) next = candidate;
+    }
+  }
+  if (data) XFree(data);
+  gdk_x11_display_error_trap_pop_ignored(display);
+  return next;
+}
+#endif
+
+// Gives the keyboard back to the recorded target. Wayland has no way to
+// activate another client's surface, so there only an own window qualifies.
+static bool ReturnFocusToTarget(GtkWidget* widget) {
+  auto* target = static_cast<BlurReturnTarget*>(
+      g_object_steal_data(G_OBJECT(widget), kBlurReturnKey));
+  if (!target) return false;
+  std::unique_ptr<BlurReturnTarget, void (*)(gpointer)> owned(target, FreeBlurReturnTarget);
+  if (auto* own = static_cast<GtkWidget*>(g_weak_ref_get(&target->own))) {
+    const bool usable = own != widget && gtk_widget_get_visible(own) &&
+                        gtk_widget_get_window(own) &&
+                        !(gdk_window_get_state(gtk_widget_get_window(own)) & GDK_WINDOW_STATE_ICONIFIED);
+    if (usable) PresentWindow(own);
+    g_object_unref(own);
+    if (usable) return true;
+  }
+#ifdef GDK_WINDOWING_X11
+  auto* surface = gtk_widget_get_window(widget);
+  if (target->xid && surface && GDK_IS_X11_WINDOW(surface))
+    return ActivateX11Window(surface, target->xid);
+#endif
+  return false;
+}
+
 void Window::Focus() {
   if (!IsFocusable()) return;
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    RememberBlurReturnTarget(pimpl_->widget_);
     PresentWindow(pimpl_->widget_);
   } else if (pimpl_->gdk_window_) {
     gdk_window_focus(pimpl_->gdk_window_, GDK_CURRENT_TIME);
@@ -897,6 +1066,20 @@ void Window::Focus() {
 }
 
 void Window::Blur() {
+  // Blurring a window without the keyboard focus must not move focus at all.
+  if (!IsFocused()) return;
+  if (pimpl_->widget_ && ReturnFocusToTarget(pimpl_->widget_)) return;
+#ifdef GDK_WINDOWING_X11
+  if (pimpl_->gdk_window_ && GDK_IS_X11_WINDOW(pimpl_->gdk_window_)) {
+    // No usable target: the window below, as the window manager would pick
+    // when this one closed. With none, drop the keyboard focus in place.
+    auto* surface = pimpl_->gdk_window_;
+    const unsigned long next =
+        NextX11StackingWindow(gdk_window_get_display(surface), GDK_WINDOW_XID(surface));
+    if (!next || !ActivateX11Window(surface, next)) ReleaseKeyboardFocus(surface);
+    return;
+  }
+#endif
   if (pimpl_->gdk_window_) {
     gdk_window_lower(pimpl_->gdk_window_);
   }
@@ -940,6 +1123,7 @@ void Window::Show() {
       gtk_window_deiconify(GTK_WINDOW(pimpl_->widget_));
     ShowInactive();
   } else if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    RememberBlurReturnTarget(pimpl_->widget_);
     PresentWindow(pimpl_->widget_);
   } else if (pimpl_->widget_) {
     gtk_widget_show(pimpl_->widget_);

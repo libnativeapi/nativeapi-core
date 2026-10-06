@@ -361,6 +361,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
 }
 
 #include "window_shadow_macos.h"
+#include "window_focus_macos.h"
 
 namespace nativeapi {
 
@@ -425,11 +426,12 @@ Window::~Window() {
 }
 
 void Window::Focus() {
-  [pimpl_->ns_window_ makeKeyAndOrderFront:nil];
+  if (!IsFocusable()) return;
+  NativeApiFocusWindow(pimpl_->ns_window_, IsNonActivating());
 }
 
 void Window::Blur() {
-  [pimpl_->ns_window_ orderBack:nil];
+  NativeApiBlurWindow(pimpl_->ns_window_);
 }
 
 bool Window::IsFocused() const {
@@ -437,6 +439,7 @@ bool Window::IsFocused() const {
 }
 
 void Window::Show() {
+  if (IsFocusable()) NativeApiRememberFocusReturnTarget(pimpl_->ns_window_);
   [pimpl_->ns_window_ setIsVisible:YES];
   // Panels receive key focus when shown but should not activate the app.
   if (![pimpl_->ns_window_ isKindOfClass:[NSPanel class]]) {
