@@ -108,7 +108,7 @@ inline nativeapi::PositioningStrategy::Type to_cpp_positioning_strategy_type(nat
     case NATIVE_POSITIONING_STRATEGY_TYPE_RELATIVE:
       return nativeapi::PositioningStrategy::Type::Relative;
     default:
-      return nativeapi::PositioningStrategy::Type::Absolute;
+      return static_cast<nativeapi::PositioningStrategy::Type>(value);
   }
 }
 

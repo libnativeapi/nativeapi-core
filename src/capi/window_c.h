@@ -35,6 +35,13 @@ typedef enum {
 } native_title_bar_style_t;
 
 typedef enum {
+  NATIVE_WINDOW_CORNER_PREFERENCE_DEFAULT = 0,
+  NATIVE_WINDOW_CORNER_PREFERENCE_DO_NOT_ROUND = 1,
+  NATIVE_WINDOW_CORNER_PREFERENCE_ROUND = 2,
+  NATIVE_WINDOW_CORNER_PREFERENCE_ROUND_SMALL = 3,
+} native_window_corner_preference_t;
+
+typedef enum {
   NATIVE_VISUAL_EFFECT_NONE = 0,
   NATIVE_VISUAL_EFFECT_BLUR = 1,
   NATIVE_VISUAL_EFFECT_ACRYLIC = 2,
@@ -305,6 +312,15 @@ FFI_PLUGIN_EXPORT
 native_title_bar_style_t native_window_get_title_bar_style(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_corner_preference(native_window_t window, native_window_corner_preference_t preference);
+
+FFI_PLUGIN_EXPORT
+native_window_corner_preference_t native_window_get_corner_preference(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_corner_preference_supported(void);
+
+FFI_PLUGIN_EXPORT
 bool native_window_set_content_under_title_bar(native_window_t window, bool is_content_under_title_bar);
 
 FFI_PLUGIN_EXPORT
@@ -438,6 +454,8 @@ void free_c_window_event(native_window_event_t* value);
 
 inline native_title_bar_style_t to_c_title_bar_style(nativeapi::TitleBarStyle value);
 inline nativeapi::TitleBarStyle to_cpp_title_bar_style(native_title_bar_style_t value);
+inline native_window_corner_preference_t to_c_window_corner_preference(nativeapi::WindowCornerPreference value);
+inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_window_corner_preference_t value);
 inline native_visual_effect_t to_c_visual_effect(nativeapi::VisualEffect value);
 inline nativeapi::VisualEffect to_cpp_visual_effect(native_visual_effect_t value);
 inline native_resize_edge_t to_c_resize_edge(nativeapi::ResizeEdge value);
@@ -461,7 +479,37 @@ inline nativeapi::TitleBarStyle to_cpp_title_bar_style(native_title_bar_style_t 
     case NATIVE_TITLE_BAR_STYLE_HIDDEN:
       return nativeapi::TitleBarStyle::Hidden;
     default:
-      return nativeapi::TitleBarStyle::Normal;
+      return static_cast<nativeapi::TitleBarStyle>(value);
+  }
+}
+
+inline native_window_corner_preference_t to_c_window_corner_preference(nativeapi::WindowCornerPreference value) {
+  switch (value) {
+    case nativeapi::WindowCornerPreference::Default:
+      return NATIVE_WINDOW_CORNER_PREFERENCE_DEFAULT;
+    case nativeapi::WindowCornerPreference::DoNotRound:
+      return NATIVE_WINDOW_CORNER_PREFERENCE_DO_NOT_ROUND;
+    case nativeapi::WindowCornerPreference::Round:
+      return NATIVE_WINDOW_CORNER_PREFERENCE_ROUND;
+    case nativeapi::WindowCornerPreference::RoundSmall:
+      return NATIVE_WINDOW_CORNER_PREFERENCE_ROUND_SMALL;
+    default:
+      return NATIVE_WINDOW_CORNER_PREFERENCE_DEFAULT;
+  }
+}
+
+inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_window_corner_preference_t value) {
+  switch (value) {
+    case NATIVE_WINDOW_CORNER_PREFERENCE_DEFAULT:
+      return nativeapi::WindowCornerPreference::Default;
+    case NATIVE_WINDOW_CORNER_PREFERENCE_DO_NOT_ROUND:
+      return nativeapi::WindowCornerPreference::DoNotRound;
+    case NATIVE_WINDOW_CORNER_PREFERENCE_ROUND:
+      return nativeapi::WindowCornerPreference::Round;
+    case NATIVE_WINDOW_CORNER_PREFERENCE_ROUND_SMALL:
+      return nativeapi::WindowCornerPreference::RoundSmall;
+    default:
+      return static_cast<nativeapi::WindowCornerPreference>(value);
   }
 }
 
@@ -507,7 +555,7 @@ inline nativeapi::VisualEffect to_cpp_visual_effect(native_visual_effect_t value
     case NATIVE_VISUAL_EFFECT_MENU:
       return nativeapi::VisualEffect::Menu;
     default:
-      return nativeapi::VisualEffect::None;
+      return static_cast<nativeapi::VisualEffect>(value);
   }
 }
 
@@ -553,7 +601,7 @@ inline nativeapi::ResizeEdge to_cpp_resize_edge(native_resize_edge_t value) {
     case NATIVE_RESIZE_EDGE_BOTTOM_RIGHT:
       return nativeapi::ResizeEdge::BottomRight;
     default:
-      return nativeapi::ResizeEdge::Top;
+      return static_cast<nativeapi::ResizeEdge>(value);
   }
 }
 

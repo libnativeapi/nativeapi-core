@@ -53,6 +53,9 @@ static const wchar_t* kTranslucentBackgroundProperty = L"NativeAPITranslucentBac
 // The visual effect in force, as the VisualEffect value (None is "no property"). On the
 // HWND like the flags above, and because WindowProc has to see it.
 static const wchar_t* kVisualEffectProperty = L"NativeAPIVisualEffect";
+// DWM's corner preference is a set-only attribute. Remember the accepted
+// policy on the native window so wrappers share it, independently of rendering.
+static const wchar_t* kCornerPreferenceProperty = L"NativeAPICornerPreference";
 // The opaque background color of a window of the library's own class, as 0x1RRGGBB.
 // WindowProc paints it: the class brush would be every such window's background at once.
 static const wchar_t* kBackgroundColorProperty = L"NativeAPIBackgroundColor";
@@ -124,6 +127,9 @@ enum SystemBackdrop : int {
 
 constexpr DWORD kBuildAcrylicAccent = 17134;   // Windows 10 1803
 constexpr DWORD kBuildSystemBackdrop = 22621;  // Windows 11 22H2
+constexpr DWORD kBuildCornerPreference = 22000;  // Windows 11
+// Older SDKs do not declare DWMWA_WINDOW_CORNER_PREFERENCE or its enum.
+constexpr DWORD kDwmwaWindowCornerPreference = 33;
 
 // GetVersionExW lies to manifest-less processes; RtlGetVersion reports the real build.
 DWORD WindowsBuildNumber() {
@@ -520,6 +526,7 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
     RemovePropW(hwnd, kNonActivatingProperty);
     RemovePropW(hwnd, kFocusReturnWindowProperty);
     RemovePropW(hwnd, kVisualEffectProperty);
+    RemovePropW(hwnd, kCornerPreferenceProperty);
     RemovePropW(hwnd, kBackgroundColorProperty);
     RemovePropW(hwnd, kTranslucentBackgroundProperty);
     g_full_screen_windows.erase(hwnd);
@@ -1647,6 +1654,48 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   if (pimpl_->hwnd_ && GetPropW(pimpl_->hwnd_, kTitleBarHiddenProperty))
     return TitleBarStyle::Hidden;
   return TitleBarStyle::Normal;
+}
+
+bool Window::SetCornerPreference(WindowCornerPreference preference) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!IsCornerPreferenceSupported() || !IsWindow(hwnd)) return false;
+  int native_preference;
+  switch (preference) {
+    case WindowCornerPreference::Default: native_preference = 0; break;
+    case WindowCornerPreference::DoNotRound: native_preference = 1; break;
+    case WindowCornerPreference::Round: native_preference = 2; break;
+    case WindowCornerPreference::RoundSmall: native_preference = 3; break;
+    default: return false;
+  }
+  // Reserve the record first: if SetProp fails, leave DWM untouched. If DWM
+  // rejects the attribute, roll the record back to its previous value.
+  HANDLE previous = GetPropW(hwnd, kCornerPreferenceProperty);
+  HANDLE record = reinterpret_cast<HANDLE>(static_cast<INT_PTR>(native_preference + 1));
+  if (!SetPropW(hwnd, kCornerPreferenceProperty, record)) return false;
+  if (FAILED(DwmSetWindowAttribute(hwnd, kDwmwaWindowCornerPreference,
+                                  &native_preference, sizeof(native_preference)))) {
+    if (previous) SetPropW(hwnd, kCornerPreferenceProperty, previous);
+    else RemovePropW(hwnd, kCornerPreferenceProperty);
+    return false;
+  }
+  if (preference == WindowCornerPreference::Default)
+    RemovePropW(hwnd, kCornerPreferenceProperty);
+  return true;
+}
+
+WindowCornerPreference Window::GetCornerPreference() const {
+  if (!IsWindow(pimpl_->hwnd_)) return WindowCornerPreference::Default;
+  const auto record = reinterpret_cast<INT_PTR>(GetPropW(pimpl_->hwnd_, kCornerPreferenceProperty));
+  switch (record) {
+    case 2: return WindowCornerPreference::DoNotRound;
+    case 3: return WindowCornerPreference::Round;
+    case 4: return WindowCornerPreference::RoundSmall;
+    default: return WindowCornerPreference::Default;
+  }
+}
+
+bool Window::IsCornerPreferenceSupported() {
+  return WindowsBuildNumber() >= kBuildCornerPreference;
 }
 
 // The client area can be given the caption band (WM_NCCALCSIZE), but the caption buttons

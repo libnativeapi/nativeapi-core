@@ -259,7 +259,7 @@ inline nativeapi::ContextMenuTrigger to_cpp_context_menu_trigger(native_context_
     case NATIVE_CONTEXT_MENU_TRIGGER_DOUBLE_CLICKED:
       return nativeapi::ContextMenuTrigger::DoubleClicked;
     default:
-      return nativeapi::ContextMenuTrigger::None;
+      return static_cast<nativeapi::ContextMenuTrigger>(value);
   }
 }
 
@@ -281,7 +281,7 @@ inline nativeapi::TrayIconPosition to_cpp_tray_icon_position(native_tray_icon_po
     case NATIVE_TRAY_ICON_POSITION_RIGHT:
       return nativeapi::TrayIconPosition::Right;
     default:
-      return nativeapi::TrayIconPosition::Left;
+      return static_cast<nativeapi::TrayIconPosition>(value);
   }
 }
 

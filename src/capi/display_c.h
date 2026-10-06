@@ -168,7 +168,7 @@ inline nativeapi::DisplayOrientation to_cpp_display_orientation(native_display_o
     case NATIVE_DISPLAY_ORIENTATION_LANDSCAPE_FLIPPED:
       return nativeapi::DisplayOrientation::kLandscapeFlipped;
     default:
-      return nativeapi::DisplayOrientation::kPortrait;
+      return static_cast<nativeapi::DisplayOrientation>(value);
   }
 }
 

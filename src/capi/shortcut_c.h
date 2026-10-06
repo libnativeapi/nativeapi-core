@@ -184,7 +184,7 @@ inline nativeapi::ShortcutScope to_cpp_shortcut_scope(native_shortcut_scope_t va
     case NATIVE_SHORTCUT_SCOPE_APPLICATION:
       return nativeapi::ShortcutScope::Application;
     default:
-      return nativeapi::ShortcutScope::Global;
+      return static_cast<nativeapi::ShortcutScope>(value);
   }
 }
 

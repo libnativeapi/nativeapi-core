@@ -15,6 +15,13 @@ add_executable(screen_layout_test screen_layout_test.cpp)
 target_link_libraries(screen_layout_test PRIVATE nativeapi)
 add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  add_executable(window_corner_preference_unsupported_test window_corner_preference_unsupported_test.cpp)
+  target_link_libraries(window_corner_preference_unsupported_test PRIVATE nativeapi)
+  add_test(NAME window_corner_preference_unsupported_test COMMAND window_corner_preference_unsupported_test)
+  set_tests_properties(window_corner_preference_unsupported_test PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 add_executable(window_shadow_blur_test window_shadow_blur_test.cpp)
 target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
 add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)
@@ -106,6 +113,9 @@ if(WIN32 AND NATIVEAPI_ENABLE_WINUI3)
 endif()
 
 if(WIN32)
+  # Explicit desktop regression; --preview shows all four DWM policies.
+  add_executable(window_corner_preference_windows_test window_corner_preference_windows_test.cpp)
+  target_link_libraries(window_corner_preference_windows_test PRIVATE nativeapi)
   add_executable(desktop_features_test desktop_features_test.cpp)
   target_link_libraries(desktop_features_test PRIVATE nativeapi)
   add_test(NAME desktop_features_test COMMAND desktop_features_test)

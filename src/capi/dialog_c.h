@@ -60,7 +60,7 @@ inline nativeapi::DialogModality to_cpp_dialog_modality(native_dialog_modality_t
     case NATIVE_DIALOG_MODALITY_WINDOW:
       return nativeapi::DialogModality::Window;
     default:
-      return nativeapi::DialogModality::None;
+      return static_cast<nativeapi::DialogModality>(value);
   }
 }
 

@@ -152,7 +152,7 @@ inline nativeapi::MessageDialogResult to_cpp_message_dialog_result(native_messag
     case NATIVE_MESSAGE_DIALOG_RESULT_CLOSE:
       return nativeapi::MessageDialogResult::Close;
     default:
-      return nativeapi::MessageDialogResult::None;
+      return static_cast<nativeapi::MessageDialogResult>(value);
   }
 }
 

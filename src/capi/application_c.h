@@ -163,7 +163,7 @@ inline nativeapi::Brightness to_cpp_brightness(native_brightness_t value) {
     case NATIVE_BRIGHTNESS_DARK:
       return nativeapi::Brightness::Dark;
     default:
-      return nativeapi::Brightness::System;
+      return static_cast<nativeapi::Brightness>(value);
   }
 }
 

@@ -493,7 +493,7 @@ inline nativeapi::ViewLayout to_cpp_view_layout(native_view_layout_t value) {
     case NATIVE_VIEW_LAYOUT_COLUMN:
       return nativeapi::ViewLayout::Column;
     default:
-      return nativeapi::ViewLayout::Absolute;
+      return static_cast<nativeapi::ViewLayout>(value);
   }
 }
 
@@ -523,7 +523,7 @@ inline nativeapi::ViewAlignment to_cpp_view_alignment(native_view_alignment_t va
     case NATIVE_VIEW_ALIGNMENT_END:
       return nativeapi::ViewAlignment::End;
     default:
-      return nativeapi::ViewAlignment::Stretch;
+      return static_cast<nativeapi::ViewAlignment>(value);
   }
 }
 
@@ -549,7 +549,7 @@ inline nativeapi::TextAlignment to_cpp_text_alignment(native_text_alignment_t va
     case NATIVE_TEXT_ALIGNMENT_END:
       return nativeapi::TextAlignment::End;
     default:
-      return nativeapi::TextAlignment::Start;
+      return static_cast<nativeapi::TextAlignment>(value);
   }
 }
 
@@ -571,7 +571,7 @@ inline nativeapi::ViewBackend to_cpp_view_backend(native_view_backend_t value) {
     case NATIVE_VIEW_BACKEND_WIN_UI3:
       return nativeapi::ViewBackend::WinUI3;
     default:
-      return nativeapi::ViewBackend::Native;
+      return static_cast<nativeapi::ViewBackend>(value);
   }
 }
 

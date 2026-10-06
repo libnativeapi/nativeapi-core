@@ -171,7 +171,7 @@ inline nativeapi::DragOperation to_cpp_drag_operation(native_drag_operation_t va
     case NATIVE_DRAG_OPERATION_LINK:
       return nativeapi::DragOperation::Link;
     default:
-      return nativeapi::DragOperation::None;
+      return static_cast<nativeapi::DragOperation>(value);
   }
 }
 

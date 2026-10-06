@@ -335,7 +335,7 @@ inline nativeapi::MenuBackend to_cpp_menu_backend(native_menu_backend_t value) {
     case NATIVE_MENU_BACKEND_WIN_UI3:
       return nativeapi::MenuBackend::WinUI3;
     default:
-      return nativeapi::MenuBackend::Native;
+      return static_cast<nativeapi::MenuBackend>(value);
   }
 }
 
@@ -369,7 +369,7 @@ inline nativeapi::MenuItemType to_cpp_menu_item_type(native_menu_item_type_t val
     case NATIVE_MENU_ITEM_TYPE_SUBMENU:
       return nativeapi::MenuItemType::Submenu;
     default:
-      return nativeapi::MenuItemType::Normal;
+      return static_cast<nativeapi::MenuItemType>(value);
   }
 }
 
@@ -395,7 +395,7 @@ inline nativeapi::MenuItemState to_cpp_menu_item_state(native_menu_item_state_t 
     case NATIVE_MENU_ITEM_STATE_MIXED:
       return nativeapi::MenuItemState::Mixed;
     default:
-      return nativeapi::MenuItemState::Unchecked;
+      return static_cast<nativeapi::MenuItemState>(value);
   }
 }
 

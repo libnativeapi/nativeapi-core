@@ -749,6 +749,18 @@ bool Window::IsContentUnderTitleBar() const {
   return NativeApiWindowHasContentUnderTitleBar(pimpl_->ns_window_);
 }
 
+bool Window::SetCornerPreference(WindowCornerPreference /*preference*/) {
+  return false;
+}
+
+WindowCornerPreference Window::GetCornerPreference() const {
+  return WindowCornerPreference::Default;
+}
+
+bool Window::IsCornerPreferenceSupported() {
+  return false;
+}
+
 bool Window::IsContentUnderTitleBarSupported() {
   return true;
 }

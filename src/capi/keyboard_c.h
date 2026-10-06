@@ -144,7 +144,7 @@ inline nativeapi::ModifierKey to_cpp_modifier_key(native_modifier_key_t value) {
     case NATIVE_MODIFIER_KEY_SCROLL_LOCK:
       return nativeapi::ModifierKey::ScrollLock;
     default:
-      return nativeapi::ModifierKey::None;
+      return static_cast<nativeapi::ModifierKey>(value);
   }
 }
 

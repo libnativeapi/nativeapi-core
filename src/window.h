@@ -73,6 +73,21 @@ enum class TitleBarStyle {
 };
 
 /**
+ * @brief Preferred rounding of the corners drawn by the window compositor.
+ * @see Window::SetCornerPreference() for platform availability.
+ */
+enum class WindowCornerPreference {
+  /** Let the system choose its normal corner style. */
+  Default,
+  /** Ask the system to leave the corners square. */
+  DoNotRound,
+  /** Ask the system to round the corners. */
+  Round,
+  /** Ask the system to use a smaller corner radius. */
+  RoundSmall
+};
+
+/**
  * @brief Translucent materials that can replace a window's background.
  *
  * A visual effect blurs or samples whatever is behind the window and draws the
@@ -858,6 +873,46 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @see SetTitleBarStyle() for platform availability.
    */
   TitleBarStyle GetTitleBarStyle() const;
+
+  /**
+   * @brief Sets the preferred style of the compositor's window corners.
+   * @param preference The desired corner style; Default restores system policy.
+   * @return true if the native compositor accepted the preference; false if
+   *         unsupported, invalid, or the native window no longer exists. A
+   *         failed call leaves the previous preference unchanged.
+   *
+   * This leaves the title bar, border, shadow and content geometry in place.
+   * It is a preference, not a guarantee of a particular radius: Windows does
+   * not round maximized or snapped windows, and may ignore rounding for a
+   * custom region, per-pixel transparency or a frame it does not draw.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Not supported - Always returns false
+   * - Windows: ✅ Supported on Windows 11 build 22000 and later - DWM corner preference
+   * - Linux: ❌ Not supported - Always returns false
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   */
+  bool SetCornerPreference(WindowCornerPreference preference);
+
+  /**
+   * @brief Gets the last corner preference successfully applied by this library.
+   * @return The shared native window's preference, or Default when unset,
+   *         unsupported or the native window no longer exists.
+   *
+   * DWM exposes this attribute for setting only. This reads the library's
+   * record on the native window, not the radius currently drawn by DWM.
+   * @see SetCornerPreference() for platform availability.
+   */
+  WindowCornerPreference GetCornerPreference() const;
+
+  /**
+   * @brief Checks if this platform supports window corner preferences.
+   * @return true on Windows 11 build 22000 and later; false elsewhere.
+   * @see SetCornerPreference() for platform availability.
+   */
+  static bool IsCornerPreferenceSupported();
 
   /**
    * @brief Lets the content area take in the title bar, which becomes a

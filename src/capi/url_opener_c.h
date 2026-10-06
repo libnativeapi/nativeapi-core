@@ -96,7 +96,7 @@ inline nativeapi::UrlOpenErrorCode to_cpp_url_open_error_code(native_url_open_er
     case NATIVE_URL_OPEN_ERROR_CODE_INVOCATION_FAILED:
       return nativeapi::UrlOpenErrorCode::kInvocationFailed;
     default:
-      return nativeapi::UrlOpenErrorCode::kNone;
+      return static_cast<nativeapi::UrlOpenErrorCode>(value);
   }
 }
 

@@ -133,7 +133,7 @@ inline nativeapi::FileDialogMode to_cpp_file_dialog_mode(native_file_dialog_mode
     case NATIVE_FILE_DIALOG_MODE_SELECT_FOLDER:
       return nativeapi::FileDialogMode::SelectFolder;
     default:
-      return nativeapi::FileDialogMode::OpenFile;
+      return static_cast<nativeapi::FileDialogMode>(value);
   }
 }
 
@@ -163,7 +163,7 @@ inline nativeapi::FileDialogResult to_cpp_file_dialog_result(native_file_dialog_
     case NATIVE_FILE_DIALOG_RESULT_FAILED:
       return nativeapi::FileDialogResult::Failed;
     default:
-      return nativeapi::FileDialogResult::None;
+      return static_cast<nativeapi::FileDialogResult>(value);
   }
 }
 

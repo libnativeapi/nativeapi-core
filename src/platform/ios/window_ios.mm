@@ -391,6 +391,18 @@ bool Window::IsContentUnderTitleBar() const {
   return false;
 }
 
+bool Window::SetCornerPreference(WindowCornerPreference /*preference*/) {
+  return false;
+}
+
+WindowCornerPreference Window::GetCornerPreference() const {
+  return WindowCornerPreference::Default;
+}
+
+bool Window::IsCornerPreferenceSupported() {
+  return false;
+}
+
 bool Window::IsContentUnderTitleBarSupported() {
   return false;
 }

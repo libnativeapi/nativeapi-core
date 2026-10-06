@@ -105,7 +105,7 @@ inline nativeapi::Placement to_cpp_placement(native_placement_t value) {
     case NATIVE_PLACEMENT_LEFT_END:
       return nativeapi::Placement::LeftEnd;
     default:
-      return nativeapi::Placement::Top;
+      return static_cast<nativeapi::Placement>(value);
   }
 }
 
