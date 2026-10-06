@@ -1,3 +1,4 @@
+#include "../../window_close_dispatch.h"
 #ifdef __OHOS__
 #include <hilog/log.h>
 #endif
@@ -72,6 +73,7 @@ WindowManager::WindowManager() : pimpl_(std::make_unique<Impl>(this)) {
 }
 
 WindowManager::~WindowManager() {
+  ShutdownEmitter();
   StopEventListening();
 }
 
@@ -163,6 +165,7 @@ void WindowManager::StopEventListening() {
 }
 
 void WindowManager::DispatchWindowEvent(const WindowEvent& event) {
+  detail::EmitObservedWindowEvent(event);
   Emit(event);
 }
 

@@ -469,6 +469,8 @@ Application::Application()
 }
 
 Application::~Application() {
+  ShutdownEmitter();
+  InvalidateQuitRequest();
   // Clean up platform-specific event monitoring
   pimpl_->CleanupEventMonitoring();
 }
@@ -511,26 +513,11 @@ int Application::Run(std::shared_ptr<Window> window) {
 }
 
 void Application::Quit(int exit_code) {
-  // The loop, and every listener, lives on the main thread; a quit requested
-  // from another thread is carried over there.
-  if (!IsMainThread() && RunOnMainThread([this, exit_code] { Quit(exit_code); })) {
-    return;
-  }
+  RequestQuit(exit_code);
+}
 
-  exit_code_ = exit_code;
-
-  // A QuitRequested listener may itself call Quit(): record its exit code and
-  // let the outer call finish, instead of recursing.
-  static bool announcing = false;
-  if (announcing) {
-    return;
-  }
-  announcing = true;
-  Emit<ApplicationQuitRequestedEvent>();
-  announcing = false;
-
-  // Request platform-specific quit, with the last exit code asked for
-  pimpl_->Quit(exit_code_);
+void Application::PerformQuit(int exit_code) {
+  pimpl_->Quit(exit_code);
 }
 
 bool Application::IsRunning() const {
@@ -590,5 +577,9 @@ std::vector<std::shared_ptr<Window>> Application::GetAllWindows() const {
   auto& window_manager = WindowManager::GetInstance();
   return window_manager.GetAll();
 }
+
+void Application::StartEventListening() {}
+
+void Application::StopEventListening() {}
 
 }  // namespace nativeapi

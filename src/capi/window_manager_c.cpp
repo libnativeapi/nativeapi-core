@@ -13,6 +13,7 @@
 
 #include "string_utils_c.h"
 #include "user_data.h"
+#include "event_delivery.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
@@ -172,6 +173,34 @@ native_listener_id_t native_window_manager_add_listener(native_window_event_call
           callback(&c_event, holder->get());
           free_c_window_event(&c_event);
         }));
+  } catch (...) {
+    return 0;
+  }
+}
+
+native_listener_id_t native_window_manager_add_listener_async(native_window_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
+  if (!callback) return 0;
+  try {
+    auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
+    return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::WindowEvent>(nativeapi::WindowManager::GetInstance(),
+        [callback, registration](const nativeapi::WindowEvent& event) {
+          std::shared_ptr<nativeapi::EventRequest> request;
+          if (const auto* typed = dynamic_cast<const nativeapi::WindowCloseRequestedEvent*>(&event)) request = typed->GetRequest();
+          auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
+          native_event_delivery_t delivery = 0;
+          try {
+            auto payload = std::shared_ptr<native_window_event_t>(new native_window_event_t{}, [](native_window_event_t* value) { free_c_window_event(value); delete value; });
+            if (!to_c_window_event(event, payload.get())) { if (request) request->Cancel(); return; }
+            auto* event_pointer = payload.get();
+            auto lease = std::make_shared<nativeapi::capi::EventDelivery>(registration->context, std::move(payload), std::move(vote));
+            delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+            callback(event_pointer, delivery, registration->context->holder->get());
+          } catch (...) {
+            if (request) request->Cancel();
+            if (delivery) native_event_delivery_complete(delivery, false);
+          }
+        }, registration->context->active));
   } catch (...) {
     return 0;
   }

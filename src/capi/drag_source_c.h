@@ -50,8 +50,8 @@ typedef enum {
 
 /// One DragSourceEvent, tagged by its concrete type.
 ///
-/// Valid only for the duration of the callback: anything it points at
-/// is released as soon as the callback returns. Copy what you need.
+/// Synchronous callbacks borrow this payload until they return. Async callbacks
+/// borrow it until event_delivery_complete. Copy anything needed after that.
 typedef struct {
   native_drag_source_event_type_t type;
   native_window_id_t window_id;
@@ -64,6 +64,7 @@ typedef struct {
 } native_drag_source_event_t;
 
 typedef void (*native_drag_source_event_callback_t)(const native_drag_source_event_t* event, void* user_data);
+typedef void (*native_drag_source_event_callback_t_async)(const native_drag_source_event_t* event, native_event_delivery_t delivery, void* user_data);
 
 /// Creates a DragSource instance; release it with native_drag_source_free().
 FFI_PLUGIN_EXPORT
@@ -113,6 +114,12 @@ void native_drag_source_free(native_drag_source_t drag_source);
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_source, native_drag_source_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
+
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_drag_source_add_listener_async(native_drag_source_t drag_source, native_drag_source_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

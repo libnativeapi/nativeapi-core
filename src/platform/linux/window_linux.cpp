@@ -864,7 +864,9 @@ Window::Window(void* native_window) {
   pimpl_ = std::make_unique<Impl>(widget, gdk_window);
 }
 
-Window::~Window() {}
+Window::~Window() {
+  ShutdownEmitter();
+}
 
 WindowId Window::GetId() const {
   // Prefer reading ID stored on the native objects

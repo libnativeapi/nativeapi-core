@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "foundation/event.h"
@@ -12,6 +13,12 @@
 #include "window.h"
 
 namespace nativeapi {
+
+class EventRequest;
+namespace detail {
+class ApplicationQuitDispatch;
+struct ApplicationQuitState;
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // Events
@@ -69,11 +76,24 @@ class ApplicationDeactivatedEvent : public ApplicationEvent {
 
 /**
  * @brief Event emitted when the application receives a quit request
+ *
+ * Programmatic Quit() and macOS native quit queries supply a shared,
+ * cancelable request. Native termination that must continue supplies a
+ * noncancelable request. An existing host retains its final termination decision.
  */
 class ApplicationQuitRequestedEvent : public ApplicationEvent {
  public:
-  ApplicationQuitRequestedEvent() = default;
+  explicit ApplicationQuitRequestedEvent(std::shared_ptr<EventRequest> request = nullptr)
+      : request_(std::move(request)) {}
+  /**
+   * @brief Gets the shared quit confirmation request.
+   * @return The shared request supplied by the producer.
+   */
+  std::shared_ptr<EventRequest> GetRequest() const { return request_; }
   std::string GetTypeName() const override { return "ApplicationQuitRequestedEvent"; }
+
+ private:
+  std::shared_ptr<EventRequest> request_;
 };
 
 /**
@@ -177,25 +197,45 @@ class Application : public EventEmitter<ApplicationEvent> {
   /**
    * @brief Request the application to quit
    *
-   * Emits ApplicationQuitRequestedEvent, then stops the event loop: Run()
+   * Emits ApplicationQuitRequestedEvent with a cancelable EventRequest. A
+   * listener can Cancel() or Defer() it for asynchronous confirmation. Only
+   * after every listener has finished and every deferred decision has accepted
+   * does the event loop stop: Run()
    * returns @p exit_code after emitting ApplicationExitingEvent, and the
    * process keeps going. Windows stay open until released. Callable from any
    * thread: the request is carried over to the main thread, where the events
    * are emitted.
+   * Repeated Quit() calls during confirmation share the pending request and
+   * update its exit code. A cancelled request leaves the application running;
+   * a later Quit() starts a fresh request. Exceptions during request dispatch
+   * cancel it. A failed main-thread dispatch does not quit from a worker.
    *
    * When the loop is not Run()'s own (a host such as a Flutter runner owns
    * it), there is nothing to return to and the process ends instead, after
    * ApplicationExitingEvent: on macOS through -[NSApplication terminate:],
-   * which exits with status 0 whatever @p exit_code is; on Linux with
+   * which exits with status 0 whatever @p exit_code is after the host delegate
+   * allows termination (the host may cancel or defer); on Linux with
    * @p exit_code; on Windows the main thread's windows are destroyed while
    * the host's loop still runs (a Flutter view shuts its engine down then),
    * and the loop gets WM_QUIT and ends it.
    *
-   * A quit the user or the system starts outside Quit() (Cmd+Q, logout) also
-   * emits ApplicationQuitRequestedEvent. On macOS it cannot be vetoed and
-   * ends the process without Run() returning.
+   * On macOS, a native AppKit quit query (Cmd+Q, Dock Quit, or an eligible
+   * system request) also emits a cancelable ApplicationQuitRequestedEvent.
+   * Native approval resumes the existing host's decision; the host may still
+   * refuse or defer. Duplicate attempts share the pending confirmation through
+   * the host's asynchronous reply. Mandatory termination only emits a
+   * noncancelable request, invalidates pending votes, and continues. Allowed
+   * native termination ends the process without Run() returning.
    *
    * @param exit_code The exit code to use when quitting (default: 0)
+   *
+   * @note Platform availability:
+   * - macOS: Supported - cancelable programmatic and native quit queries, then the host decision
+   * - Windows: Supported - cancelable Quit(), then the native loop stops
+   * - Linux: Supported - cancelable Quit(), then the native loop stops
+   * - Android: Not applicable - ignored; the Activity owns its lifecycle
+   * - iOS: Not applicable - ignored; UIApplication owns its lifecycle
+   * - OpenHarmony: Not applicable - ignored; the Ability owns its lifecycle
    *
    * @code
    * auto& app = Application::GetInstance();
@@ -404,6 +444,10 @@ class Application : public EventEmitter<ApplicationEvent> {
    */
   std::vector<std::shared_ptr<Window>> GetAllWindows() const;
 
+ protected:
+  void StartEventListening() override;
+  void StopEventListening() override;
+
  private:
   /**
    * @brief Private constructor to enforce singleton pattern
@@ -412,6 +456,15 @@ class Application : public EventEmitter<ApplicationEvent> {
    * event monitoring. This constructor is private to prevent direct instantiation.
    */
   Application();
+
+  friend class detail::ApplicationQuitDispatch;
+  void RequestQuit(int exit_code,
+                   std::function<void(int)> stop_loop = nullptr,
+                   std::shared_ptr<void> loop_owner = nullptr,
+                   std::function<void(bool)> native_confirmation = nullptr);
+  void PerformQuit(int exit_code);
+  void InvalidateQuitRequest();
+  std::shared_ptr<detail::ApplicationQuitState> quit_state_;
 
   // Prevent copy construction and assignment to maintain singleton property
   Application(const Application&) = delete;
@@ -439,8 +492,6 @@ class Application : public EventEmitter<ApplicationEvent> {
    * @brief Primary application window
    */
   std::shared_ptr<Window> primary_window_;
-
- private:
 };
 
 /**

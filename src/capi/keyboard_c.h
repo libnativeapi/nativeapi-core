@@ -44,8 +44,8 @@ typedef enum {
 
 /// One KeyboardEvent, tagged by its concrete type.
 ///
-/// Valid only for the duration of the callback: anything it points at
-/// is released as soon as the callback returns. Copy what you need.
+/// Synchronous callbacks borrow this payload until they return. Async callbacks
+/// borrow it until event_delivery_complete. Copy anything needed after that.
 typedef struct {
   native_keyboard_event_type_t type;
   int keycode;
@@ -57,6 +57,7 @@ typedef struct {
 } native_keyboard_event_t;
 
 typedef void (*native_keyboard_event_callback_t)(const native_keyboard_event_t* event, void* user_data);
+typedef void (*native_keyboard_event_callback_t_async)(const native_keyboard_event_t* event, native_event_delivery_t delivery, void* user_data);
 
 /// Caller owns the returned string; free it with free_c_str().
 FFI_PLUGIN_EXPORT

@@ -7,9 +7,11 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_event_request_t;
 typedef uint64_t native_menu_t;
 typedef uint64_t native_window_t;
 
+#include "event_request_c.h"
 #include "menu_c.h"
 #include "window_c.h"
 
@@ -40,18 +42,22 @@ typedef enum {
 
 /// One ApplicationEvent, tagged by its concrete type.
 ///
-/// Valid only for the duration of the callback: anything it points at
-/// is released as soon as the callback returns. Copy what you need.
+/// Synchronous callbacks borrow this payload until they return. Async callbacks
+/// borrow it until event_delivery_complete. Copy anything needed after that.
 typedef struct {
   native_application_event_type_t type;
   union {
     struct {
       int exit_code;
     } exiting;
+    struct {
+      native_event_request_t request;
+    } quit_requested;
   } data;
 } native_application_event_t;
 
 typedef void (*native_application_event_callback_t)(const native_application_event_t* event, void* user_data);
+typedef void (*native_application_event_callback_t_async)(const native_application_event_t* event, native_event_delivery_t delivery, void* user_data);
 
 FFI_PLUGIN_EXPORT
 int native_application_run(void);
@@ -109,6 +115,12 @@ native_window_list_t native_application_get_all_windows(void);
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_application_add_listener(native_application_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
+
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_application_add_listener_async(native_application_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

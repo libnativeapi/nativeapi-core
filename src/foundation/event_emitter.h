@@ -15,6 +15,8 @@
 #include "event.h"
 
 namespace nativeapi {
+namespace detail { struct EventListenerDispatch; }
+
 
 /**
  * Base class that provides event emission capabilities with type constraints.
@@ -109,8 +111,13 @@ class EventEmitter {
    * even from a snapshot that was taken before the removal.
    */
   struct ListenerEntry {
-    ListenerEntry(std::type_index type, size_t identifier)
-        : event_type(type), id(identifier), removed(false) {}
+    ListenerEntry(std::type_index type, size_t identifier,
+                  std::shared_ptr<std::atomic<bool>> active = nullptr)
+        : event_type(type), id(identifier), removed(false), active_(std::move(active)) {}
+    void MarkRemoved() {
+      removed.store(true);
+      if (active_) active_->store(false);
+    }
     virtual ~ListenerEntry() = default;
 
     /** Whether this listener accepts an event with the given dynamic type. */
@@ -122,6 +129,7 @@ class EventEmitter {
     std::type_index event_type;
     size_t id;
     std::atomic<bool> removed;
+    std::shared_ptr<std::atomic<bool>> active_;
   };
 
   using ListenerEntryPtr = std::shared_ptr<ListenerEntry>;
@@ -185,32 +193,7 @@ class EventEmitter {
    */
   template <typename EventType>
   size_t AddListener(std::function<void(const EventType&)> callback) {
-    static_assert(std::is_base_of<BaseEventType, EventType>::value,
-                  "EventType must be derived from the EventEmitter's BaseEventType");
-
-    struct CallbackListenerWrapper : public ListenerEntry {
-      std::function<void(const EventType&)> callback_;
-
-      CallbackListenerWrapper(std::function<void(const EventType&)> callback, size_t id)
-          : ListenerEntry(std::type_index(typeid(EventType)), id),
-            callback_(std::move(callback)) {}
-
-      bool Matches(const BaseEventType& event) const override {
-        return dynamic_cast<const EventType*>(&event) != nullptr;
-      }
-
-      void Invoke(const BaseEventType& event) override {
-        if (auto* typed_event = dynamic_cast<const EventType*>(&event)) {
-          if (callback_) {
-            callback_(*typed_event);
-          }
-        }
-      }
-    };
-
-    const size_t listener_id = next_listener_id_.fetch_add(1);
-    return AddListenerEntry(
-        std::make_shared<CallbackListenerWrapper>(std::move(callback), listener_id));
+    return AddCallbackListener<EventType>(std::move(callback), nullptr);
   }
 
   /**
@@ -236,7 +219,7 @@ class EventEmitter {
       if (it != listeners_.end()) {
         // Tombstone first: a dispatch snapshot taken before this point must not
         // deliver any further events to this listener.
-        (*it)->removed.store(true);
+        (*it)->MarkRemoved();
         listeners_.erase(it);
         dispatch_cache_.clear();
         removed = true;
@@ -273,7 +256,7 @@ class EventEmitter {
 
       had_listeners = !listeners_.empty();
       for (const auto& entry : listeners_) {
-        entry->removed.store(true);
+        entry->MarkRemoved();
       }
       listeners_.clear();
       dispatch_cache_.clear();
@@ -355,6 +338,20 @@ class EventEmitter {
    * safely call back into the emitter.
    */
   virtual void StopEventListening() {}
+
+  /**
+   * Guard a deferred producer continuation with this emitter's lifetime.
+   * Derived destructors must call ShutdownEmitter() before destroying their
+   * state. Capturing this in callback is safe only inside this guard.
+   */
+  template <typename... Args>
+  std::function<void(Args...)> CreateGuardedCallback(std::function<void(Args...)> callback) const {
+    auto guard = dispatch_guard_;
+    return [guard, callback = std::move(callback)](Args... args) {
+      std::lock_guard<std::recursive_mutex> lock(guard->mutex);
+      if (guard->alive) callback(std::forward<Args>(args)...);
+    };
+  }
 
   /**
    * Detach from pending async dispatch and drop all listeners.
@@ -449,6 +446,41 @@ class EventEmitter {
   }
 
  private:
+  friend struct detail::EventListenerDispatch;
+
+  // Private bridge entry point: attach the registration tombstone before the
+  // listener can emit or be removed, without exposing binding helpers publicly.
+  template <typename EventType>
+  size_t AddCallbackListener(std::function<void(const EventType&)> callback,
+                             std::shared_ptr<std::atomic<bool>> active) {
+    static_assert(std::is_base_of<BaseEventType, EventType>::value,
+                  "EventType must be derived from the EventEmitter's BaseEventType");
+
+    struct CallbackListenerWrapper : public ListenerEntry {
+      std::function<void(const EventType&)> callback_;
+
+      CallbackListenerWrapper(std::function<void(const EventType&)> callback, size_t id,
+                              std::shared_ptr<std::atomic<bool>> active)
+          : ListenerEntry(std::type_index(typeid(EventType)), id, std::move(active)),
+            callback_(std::move(callback)) {}
+
+      bool Matches(const BaseEventType& event) const override {
+        return dynamic_cast<const EventType*>(&event) != nullptr;
+      }
+
+      void Invoke(const BaseEventType& event) override {
+        if (auto* typed_event = dynamic_cast<const EventType*>(&event)) {
+          if (callback_) {
+            callback_(*typed_event);
+          }
+        }
+      }
+    };
+
+    const size_t listener_id = next_listener_id_.fetch_add(1);
+    return AddListenerEntry(
+        std::make_shared<CallbackListenerWrapper>(std::move(callback), listener_id, std::move(active)));
+  }
   size_t AddListenerEntry(ListenerEntryPtr entry) {
     const size_t listener_id = entry->id;
     bool was_empty = false;
@@ -478,7 +510,7 @@ class EventEmitter {
       auto new_end = std::remove_if(listeners_.begin(), listeners_.end(),
                                     [event_type](const ListenerEntryPtr& entry) {
                                       if (entry->event_type == event_type) {
-                                        entry->removed.store(true);
+                                        entry->MarkRemoved();
                                         return true;
                                       }
                                       return false;

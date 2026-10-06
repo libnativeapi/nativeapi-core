@@ -22,7 +22,9 @@ Window::Window() : pimpl_(std::make_unique<Impl>(nullptr)) {}
 
 Window::Window(void* window) : pimpl_(std::make_unique<Impl>(window)) {}
 
-Window::~Window() {}
+Window::~Window() {
+  ShutdownEmitter();
+}
 
 WindowId Window::GetId() const {
   if (!pimpl_->native_window_) {

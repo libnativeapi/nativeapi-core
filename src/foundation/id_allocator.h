@@ -83,6 +83,9 @@ class Label;
 class Button;
 class TextField;
 class ImageView;
+class EventRequest;
+class EventDecision;
+namespace capi { class EventDelivery; }
 
 // ---------------------------------------------------------------------------
 // Type tag registry — append only.
@@ -193,6 +196,18 @@ template <>
 struct IdTypeTag<ImageView> {
   static constexpr uint32_t value = 24;
   using Base = View;
+};
+template <>
+struct IdTypeTag<EventRequest> {
+  static constexpr uint32_t value = 25;
+};
+template <>
+struct IdTypeTag<EventDecision> {
+  static constexpr uint32_t value = 26;
+};
+template <>
+struct IdTypeTag<capi::EventDelivery> {
+  static constexpr uint32_t value = 27;
 };
 
 /**

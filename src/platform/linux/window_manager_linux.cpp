@@ -1,3 +1,4 @@
+#include "../../window_close_dispatch.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
@@ -996,6 +997,7 @@ void WindowManager::StopEventListening() {
 }
 
 void WindowManager::DispatchWindowEvent(const WindowEvent& event) {
+  detail::EmitObservedWindowEvent(event);
   Emit(event);
 }
 

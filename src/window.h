@@ -3,11 +3,15 @@
 #include <string>
 #include "foundation/color.h"
 #include "foundation/event.h"
+#include "foundation/event_emitter.h"
 #include "foundation/geometry.h"
 #include "foundation/id_allocator.h"
 #include "foundation/native_object_provider.h"
 
 namespace nativeapi {
+
+class EventRequest;
+namespace detail { struct WindowEventSubscription; }
 
 class View;
 class WindowShape;
@@ -21,6 +25,45 @@ class WindowShadow;
  * Each window gets assigned a unique ID when created.
  */
 typedef IdAllocator::IdType WindowId;
+
+/**
+ * Base class for all window-related events
+ *
+ * This class provides common functionality for window events,
+ * including access to the window ID that triggered the event.
+ *
+ * WindowManager reports observed changes for every process window. Window
+ * subscriptions receive those observations for their native identity, and
+ * Window itself produces cancellable close requests before its native action.
+ */
+class WindowEvent : public Event {
+ public:
+  /**
+   * Constructor for WindowEvent
+   * @param window_id The window ID associated with this event
+   */
+  explicit WindowEvent(WindowId window_id) : window_id_(window_id) {}
+
+  /**
+   * Virtual destructor
+   */
+  virtual ~WindowEvent() = default;
+
+  /**
+   * Get the window ID associated with this event
+   * @return The window ID
+   */
+  WindowId GetWindowId() const { return window_id_; }
+
+  /**
+   * Get a string representation of the event type (for debugging)
+   * Default implementation returns "WindowEvent"
+   */
+  std::string GetTypeName() const override { return "WindowEvent"; }
+
+ private:
+  WindowId window_id_;
+};
 
 /**
  * @brief Title bar style options for windows.
@@ -201,7 +244,8 @@ enum class ResizeEdge {
  * @note This class is not thread-safe. All window operations should be performed
  *       on the main UI thread.
  */
-class Window : public NativeObjectProvider, public std::enable_shared_from_this<Window> {
+class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
+               public std::enable_shared_from_this<Window> {
  public:
   /**
    * @brief Default constructor creates a new window with default settings.
@@ -227,6 +271,41 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * the native window object.
    */
   virtual ~Window();
+  Window(const Window&) = delete;
+  Window& operator=(const Window&) = delete;
+  Window(Window&&) = delete;
+  Window& operator=(Window&&) = delete;
+
+  /**
+   * @brief Whether cancellable close requests are supported on this platform.
+   * @return True on desktop platforms, false on mobile platforms.
+   */
+  static bool IsCloseSupported();
+
+  /**
+   * @brief Requests closing this native window, subject to confirmation.
+   *
+   * Emits WindowCloseRequestedEvent on this window's subscribed wrappers. A
+   * listener may cancel, or keep an owned EventDecision while awaiting work.
+   * All approvals continue the host's original close handling on the UI thread;
+   * a host can still refuse. Repeated calls share the pending request. Native
+   * destruction invalidates its decisions, even if a handle still exists.
+   * Close requests are object-level events, not WindowManager notifications.
+   *
+   * @return True if the request was submitted (not proof the window closed),
+   *         false for unsupported platforms, immediate invalidity or dispatch failure.
+   * @note May queue a lifetime-guarded request to the target UI loop. Successful
+   *       submission does not prove native validity; it is rechecked on UI.
+   *       Host close handling may also exit the app.
+   * @note Platform availability:
+   * - macOS: ✅ Supported - Continues performClose and the host delegate.
+   * - Windows: ✅ Supported - Continues the host WM_CLOSE handler.
+   * - Linux: ✅ Supported - Continues GTK delete-event handling, X11 or Wayland.
+   * - Android: ❌ Unsupported - Returns false.
+   * - iOS: ❌ Unsupported - Returns false.
+   * - OpenHarmony: ❌ Unsupported - Returns false.
+   */
+  bool Close();
 
   /**
    * @brief Gets the unique identifier for this window.
@@ -1465,6 +1544,11 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   void StartResizing(ResizeEdge edge);
 
  protected:
+  using EventEmitter<WindowEvent>::Emit;
+  using EventEmitter<WindowEvent>::EmitAsync;
+  void StartEventListening() override;
+  void StopEventListening() override;
+
   /**
    * @brief Internal method to get the platform-specific native window object.
    *
@@ -1491,50 +1575,13 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
   // once and hands the same View back afterwards (view.cpp).
   std::shared_ptr<View> ContentViewFor(void* native_content_view) const;
   mutable std::shared_ptr<View> content_view_;
+  std::shared_ptr<detail::WindowEventSubscription> event_subscription_;
+  bool DispatchWindowTask(std::function<void()> task);
 };
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
-
-/**
- * Base class for all window-related events
- *
- * This class provides common functionality for window events,
- * including access to the window ID that triggered the event.
- *
- * WindowManager emits them for every window of the process — also for windows
- * the library did not create, such as the ones of the embedding framework — and
- * no matter what caused the change: the user, the system or a call to Window.
- */
-class WindowEvent : public Event {
- public:
-  /**
-   * Constructor for WindowEvent
-   * @param window_id The window ID associated with this event
-   */
-  explicit WindowEvent(WindowId window_id) : window_id_(window_id) {}
-
-  /**
-   * Virtual destructor
-   */
-  virtual ~WindowEvent() = default;
-
-  /**
-   * Get the window ID associated with this event
-   * @return The window ID
-   */
-  WindowId GetWindowId() const { return window_id_; }
-
-  /**
-   * Get a string representation of the event type (for debugging)
-   * Default implementation returns "WindowEvent"
-   */
-  std::string GetTypeName() const override { return "WindowEvent"; }
-
- private:
-  WindowId window_id_;
-};
 
 /**
  * Event class for window focus gained
@@ -1839,6 +1886,23 @@ class WindowExitedFullScreenEvent : public WindowEvent {
   explicit WindowExitedFullScreenEvent(WindowId window_id) : WindowEvent(window_id) {}
 
   std::string GetTypeName() const override { return "WindowExitedFullScreenEvent"; }
+};
+
+/**
+ * A close-button / native close gesture or Window::Close request. Each native
+ * window has one shared request across all subscribed wrappers. Bare forced
+ * close and system shutdown requests have IsCancelable() == false and cannot
+ * be held by an observer. WindowManager continues reporting WindowClosedEvent
+ * after the native window actually closes; it does not produce this request.
+ */
+class WindowCloseRequestedEvent : public WindowEvent {
+ public:
+  WindowCloseRequestedEvent(WindowId window_id, std::shared_ptr<EventRequest> request)
+      : WindowEvent(window_id), request_(std::move(request)) {}
+  std::shared_ptr<EventRequest> GetRequest() const { return request_; }
+  std::string GetTypeName() const override { return "WindowCloseRequestedEvent"; }
+ private:
+  std::shared_ptr<EventRequest> request_;
 };
 
 }  // namespace nativeapi

@@ -1,22 +1,30 @@
 #import <Cocoa/Cocoa.h>
 #import <Foundation/Foundation.h>
 #include <fcntl.h>
+#import <objc/runtime.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string>
 #include <vector>
 
 #include "../../application.h"
+#include "../../application_quit_dispatch.h"
 #include "../../foundation/dispatcher.h"
 #include "../../menu.h"
 #include "../../window_manager.h"
+#include "application_quit_macos.h"
 
-@interface NativeApplicationDelegate : NSObject <NSApplicationDelegate>
+@interface NativeApplicationDelegate : NSObject <NSApplicationDelegate> {
+ @public
+  std::shared_ptr<nativeapi::detail::MacApplicationQuitPolicy> quitPolicy;
+}
 @property(nonatomic, assign) nativeapi::Application* app;
 // Set by Application::Quit() before it hands termination to AppKit, which
 // already emitted ApplicationQuitRequestedEvent and knows the exit code.
 @property(nonatomic, assign) BOOL quitRequested;
 @property(nonatomic, assign) int exitCode;
+@property(nonatomic, assign) BOOL usesNotifications;
+@property(nonatomic, copy) void (^delegateChanged)(void);
 @end
 
 @implementation NativeApplicationDelegate
@@ -24,49 +32,144 @@
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
   // Emit application started event
   nativeapi::ApplicationStartedEvent event;
-  self.app->Emit(event);
+  if (!self.usesNotifications)
+    self.app->Emit(event);
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
   // AppKit is about to exit() the process: Run() will not return to emit this.
-  nativeapi::ApplicationExitingEvent event(self.exitCode);
-  self.app->Emit(event);
+  try {
+    if (quitPolicy)
+      quitPolicy->Exiting();
+    nativeapi::ApplicationExitingEvent event(
+        nativeapi::detail::ApplicationQuitDispatch::ExitCode());
+    if (!self.usesNotifications)
+      self.app->Emit(event);
+  } catch (...) {
+    // A terminal observer cannot stop an already required native exit.
+  }
 }
 
 - (void)applicationDidBecomeActive:(NSNotification*)notification {
   // Emit application activated event
   nativeapi::ApplicationActivatedEvent event;
-  self.app->Emit(event);
+  if (!self.usesNotifications)
+    self.app->Emit(event);
 }
 
 - (void)applicationDidResignActive:(NSNotification*)notification {
   // Emit application deactivated event
   nativeapi::ApplicationDeactivatedEvent event;
-  self.app->Emit(event);
+  if (!self.usesNotifications)
+    self.app->Emit(event);
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
-  // Cmd+Q, the Dock's Quit, logout: the request did not come through
-  // Application::Quit(), which has already announced itself.
-  if (!self.quitRequested) {
-    nativeapi::ApplicationQuitRequestedEvent event;
-    self.app->Emit(event);
-  }
-
-  // Allow termination. Cancelling here would also cancel a logout or shutdown.
-  return NSTerminateNow;
+  BOOL approved = self.quitRequested;
+  self.quitRequested = NO;
+  return quitPolicy ? quitPolicy->Ask(
+                          self, sender, [] { return NSTerminateNow; }, approved)
+                    : NSTerminateNow;
 }
 
 @end
+
+// Observe the host's quit decision without replacing its delegate object or
+// runtime class. Flutter uses both its class identity and its original reply to
+// deliver AppLifecycleListener.onExitRequested asynchronously.
+static const void* kApplicationQuitObserverKey = &kApplicationQuitObserverKey;
+static thread_local Class quit_continuation_class = Nil;
+static bool NativeApiInheritedQuitHook(Class candidate) {
+  for (Class ancestor = class_getSuperclass(quit_continuation_class); ancestor;
+       ancestor = class_getSuperclass(ancestor))
+    if (ancestor == candidate)
+      return true;
+  return false;
+}
+static void NativeApiObserveHostQuit(id<NSApplicationDelegate> host,
+                                     NativeApplicationDelegate* observer) {
+  static const void* installed_key = &installed_key;
+  Class cls = object_getClass(host);
+  if (!objc_getAssociatedObject(cls, installed_key)) {
+    SEL selector = @selector(applicationShouldTerminate:);
+    Method method = class_getInstanceMethod(cls, selector);
+    auto original =
+        method ? reinterpret_cast<NSApplicationTerminateReply (*)(id, SEL, NSApplication*)>(
+                     method_getImplementation(method))
+               : nullptr;
+    IMP replacement =
+        imp_implementationWithBlock(^NSApplicationTerminateReply(id instance, NSApplication* app) {
+          NativeApplicationDelegate* active =
+              objc_getAssociatedObject(instance, kApplicationQuitObserverKey);
+          if (!active || !active.app || [NSApp delegate] != instance)
+            return original ? original(instance, selector, app) : NSTerminateNow;
+          // Forward a superclass hook in the same original host call, while
+          // keeping genuine reentrant terminate: calls in the shared policy.
+          if (NativeApiInheritedQuitHook(cls))
+            return original ? original(instance, selector, app) : NSTerminateNow;
+          BOOL approved = active.quitRequested;
+          active.quitRequested = NO;
+          auto continuation = [original, instance, selector, app, cls] {
+            Class previous = quit_continuation_class;
+            quit_continuation_class = cls;
+            @try {
+              return original ? original(instance, selector, app) : NSTerminateNow;
+            } @finally {
+              quit_continuation_class = previous;
+            }
+          };
+          return active->quitPolicy ? active->quitPolicy->Ask(instance, app, continuation, approved)
+                                    : continuation();
+        });
+    const std::string encoding = std::string(@encode(NSApplicationTerminateReply)) + "@:@";
+    const char* types = method ? method_getTypeEncoding(method) : encoding.c_str();
+    if (!class_addMethod(cls, selector, replacement, types))
+      class_replaceMethod(cls, selector, replacement, types);
+    objc_setAssociatedObject(cls, installed_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  objc_setAssociatedObject(host, kApplicationQuitObserverKey, observer,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static const void* kApplicationDelegateObserverKey = &kApplicationDelegateObserverKey;
+static void NativeApiObserveDelegateChanges(NSApplication* app,
+                                            NativeApplicationDelegate* observer) {
+  static const void* installed_key = &installed_key;
+  Class cls = object_getClass(app);
+  if (!objc_getAssociatedObject(cls, installed_key)) {
+    SEL selector = @selector(setDelegate:);
+    Method method = class_getInstanceMethod(cls, selector);
+    auto original = reinterpret_cast<void (*)(id, SEL, id)>(method_getImplementation(method));
+    IMP replacement = imp_implementationWithBlock(^(NSApplication* instance, id delegate) {
+      original(instance, selector, delegate);
+      NativeApplicationDelegate* active =
+          objc_getAssociatedObject(instance, kApplicationDelegateObserverKey);
+      if (active.delegateChanged)
+        active.delegateChanged();
+    });
+    if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)))
+      class_replaceMethod(cls, selector, replacement, method_getTypeEncoding(method));
+    objc_setAssociatedObject(cls, installed_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  objc_setAssociatedObject(app, kApplicationDelegateObserverKey, observer,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 namespace nativeapi {
 
 class Application::Impl {
  public:
   Impl(Application* app) : app_(app), delegate_(nullptr) {}
-  ~Impl() = default;
+  ~Impl() {
+#if !__has_feature(objc_arc)
+    [notification_observers_ release];
+    [delegate_hosts_ release];
+#endif
+  }
 
   bool Initialize() {
+    if (delegate_)
+      return true;
     // Ensure we're on the main thread
     if (![NSThread isMainThread]) {
       return false;
@@ -78,18 +181,24 @@ class Application::Impl {
       return false;
     }
 
-    // Set dock icon visible by default
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // A host (notably Flutter) owns its activation policy and delegate. Only a
+    // standalone application needs nativeapi's defaults.
+    if (!ns_app.delegate)
+      [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     // Create and set delegate
     delegate_ = [[NativeApplicationDelegate alloc] init];
     delegate_.app = app_;
-    [ns_app setDelegate:delegate_];
+    delegate_->quitPolicy = detail::MacApplicationQuitPolicy::Create(app_);
+    if (!ns_app.delegate)
+      [ns_app setDelegate:delegate_];
 
     return true;
   }
 
   int Run() {
+    if (!Initialize())
+      return -1;
     // Start the main event loop; Quit() stops it.
     [NSApp run];
 
@@ -97,6 +206,8 @@ class Application::Impl {
   }
 
   int Run(std::shared_ptr<Window> window) {
+    if (!Initialize())
+      return -1;
     if (!window) {
       return -1;
     }
@@ -115,6 +226,8 @@ class Application::Impl {
   }
 
   void Quit(int exit_code) {
+    if (!delegate_ && !Initialize())
+      return;
     if (app_->running_) {
       // Our Run() owns the loop: stop it so Run() returns the exit code.
       // -stop: only takes effect after the loop handles one more event, so
@@ -139,6 +252,8 @@ class Application::Impl {
     delegate_.quitRequested = YES;
     delegate_.exitCode = exit_code;
     [NSApp terminate:nil];
+    // A host may cancel or defer. A later user request is a fresh request.
+    delegate_.quitRequested = NO;
   }
 
   bool SetIcon(const std::string& icon_path) {
@@ -250,7 +365,86 @@ class Application::Impl {
     return true;
   }
 
+  void StartEventMonitoring() {
+    if (event_monitoring_ || (!delegate_ && !Initialize()))
+      return;
+    event_monitoring_ = true;
+    if (!delegate_hosts_)
+      delegate_hosts_ = [[NSHashTable alloc] initWithOptions:NSPointerFunctionsWeakMemory
+                                                    capacity:1];
+    delegate_.delegateChanged = ^{
+      delegate_->quitPolicy->HostChanged();
+      MonitorCurrentHost();
+    };
+    delegate_->quitPolicy->ObserveHost(NSApp.delegate);
+    NativeApiObserveDelegateChanges(NSApp, delegate_);
+    MonitorCurrentHost();
+  }
+
+  void MonitorCurrentHost() {
+    id<NSApplicationDelegate> host = [NSApp delegate];
+    if (!host || host == delegate_)
+      return;
+    if (![delegate_hosts_ containsObject:host]) {
+      [delegate_hosts_ addObject:host];
+      NativeApiObserveHostQuit(host, delegate_);
+      delegate_->quitPolicy->ObserveHost(host);
+    }
+    if (!event_monitoring_ || notification_observers_)
+      return;
+    notification_observers_ = [[NSMutableArray alloc] init];
+    delegate_.usesNotifications = YES;
+    auto* app = app_;
+    NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+    for (NSNotificationName name in @[
+           NSApplicationDidFinishLaunchingNotification, NSApplicationDidBecomeActiveNotification,
+           NSApplicationDidResignActiveNotification, NSApplicationWillTerminateNotification
+         ]) {
+      id token = [center
+          addObserverForName:name
+                      object:NSApp
+                       queue:nil
+                  usingBlock:^(NSNotification* note) {
+                    if ([note.name isEqualToString:NSApplicationDidFinishLaunchingNotification])
+                      app->Emit<ApplicationStartedEvent>();
+                    else if ([note.name isEqualToString:NSApplicationDidBecomeActiveNotification])
+                      app->Emit<ApplicationActivatedEvent>();
+                    else if ([note.name isEqualToString:NSApplicationDidResignActiveNotification])
+                      app->Emit<ApplicationDeactivatedEvent>();
+                    else {
+                      try {
+                        delegate_->quitPolicy->Exiting();
+                        app->Emit<ApplicationExitingEvent>(app->exit_code_);
+                      } catch (...) {
+                        // Preserve the host's mandatory termination notification.
+                      }
+                    }
+                  }];
+      [notification_observers_ addObject:token];
+    }
+  }
+
+  void StopEventMonitoring() {
+    event_monitoring_ = false;
+    for (id token in notification_observers_)
+      [NSNotificationCenter.defaultCenter removeObserver:token];
+#if !__has_feature(objc_arc)
+    [notification_observers_ release];
+#endif
+    notification_observers_ = nil;
+    delegate_.usesNotifications = NO;
+  }
+
   void CleanupEventMonitoring() {
+    StopEventMonitoring();
+    delegate_.delegateChanged = nil;
+    if (objc_getAssociatedObject(NSApp, kApplicationDelegateObserverKey) == delegate_)
+      objc_setAssociatedObject(NSApp, kApplicationDelegateObserverKey, nil,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (id host in delegate_hosts_)
+      if (objc_getAssociatedObject(host, kApplicationQuitObserverKey) == delegate_)
+        objc_setAssociatedObject(host, kApplicationQuitObserverKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Clean up macOS-specific event monitoring
     if (lock_file_handle_ != -1) {
       close(lock_file_handle_);
@@ -258,7 +452,14 @@ class Application::Impl {
     }
 
     if (delegate_) {
-      [NSApp setDelegate:nil];
+      // Do not erase a delegate a host installed after nativeapi initialized.
+      if ([NSApp delegate] == delegate_)
+        [NSApp setDelegate:nil];
+      delegate_->quitPolicy->Shutdown();
+      delegate_.app = nullptr;
+#if !__has_feature(objc_arc)
+      [delegate_ release];
+#endif
       delegate_ = nil;
     }
   }
@@ -266,6 +467,9 @@ class Application::Impl {
  private:
   Application* app_;
   NativeApplicationDelegate* delegate_;
+  bool event_monitoring_ = false;
+  NSMutableArray* notification_observers_ = nil;
+  NSHashTable* delegate_hosts_ = nil;
   int lock_file_handle_ = -1;
   NSImageView* dock_icon_view_ = nil;
   NSProgressIndicator* dock_progress_ = nil;
@@ -273,14 +477,22 @@ class Application::Impl {
 
 Application::Application()
     : initialized_(true), running_(false), exit_code_(0), pimpl_(std::make_unique<Impl>(this)) {
-  // Perform platform-specific initialization automatically
-  pimpl_->Initialize();
+  // A binding may first create this singleton from a Flutter/Dart worker.
+  // AppKit initialization belongs to UI and must not be silently lost.
+  auto initialize =
+      CreateGuardedCallback<>(std::function<void()>([this] { pimpl_->Initialize(); }));
+  if ([NSThread isMainThread])
+    initialize();
+  else
+    (void)RunOnMainThread(std::move(initialize));
 
   // Emit application started event
   Emit<ApplicationStartedEvent>();
 }
 
 Application::~Application() {
+  ShutdownEmitter();
+  InvalidateQuitRequest();
   // Clean up platform-specific event monitoring
   pimpl_->CleanupEventMonitoring();
 }
@@ -320,29 +532,40 @@ int Application::Run(std::shared_ptr<Window> window) {
 }
 
 void Application::Quit(int exit_code) {
-  // The loop, and every listener, lives on the main thread; a quit requested
-  // from another thread is carried over there.
-  if (!IsMainThread() && RunOnMainThread([this, exit_code] { Quit(exit_code); })) {
-    return;
-  }
+  RequestQuit(exit_code);
+}
 
-  exit_code_ = exit_code;
+void Application::PerformQuit(int exit_code) {
+  pimpl_->Quit(exit_code);
+}
 
-  // A QuitRequested listener may itself call Quit(): record its exit code and
-  // let the outer call finish, instead of recursing.
-  static bool announcing = false;
-  if (announcing) {
-    return;
-  }
-  announcing = true;
-  Emit<ApplicationQuitRequestedEvent>();
-  announcing = false;
+void Application::StartEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() > 0)
+      pimpl_->StartEventMonitoring();
+  }));
+  if (IsMainThread())
+    update();
+  else
+    (void)RunOnMainThread(std::move(update));
+}
 
-  // Request platform-specific quit, with the last exit code asked for
-  pimpl_->Quit(exit_code_);
+void Application::StopEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() == 0)
+      pimpl_->StopEventMonitoring();
+  }));
+  if (IsMainThread())
+    update();
+  else
+    (void)RunOnMainThread(std::move(update));
 }
 
 bool Application::IsRunning() const {
+  // The plain Dart UI handoff queries this before it starts pumping AppKit.
+  // Complete a worker-created singleton now, without waiting for that pump.
+  if ([NSThread isMainThread])
+    pimpl_->Initialize();
   return running_;
 }
 

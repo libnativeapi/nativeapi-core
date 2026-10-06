@@ -13,6 +13,7 @@
 
 #include "string_utils_c.h"
 #include "user_data.h"
+#include "event_delivery.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/keyboard.h"
 #include "keyboard_c.h"
@@ -94,6 +95,37 @@ native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monito
           callback(&c_event, holder->get());
           free_c_keyboard_event(&c_event);
         }));
+  } catch (...) {
+    return 0;
+  }
+}
+
+native_listener_id_t native_keyboard_monitor_add_listener_async(native_keyboard_monitor_t keyboard_monitor, native_keyboard_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
+  if (!callback) return 0;
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::KeyboardMonitor>(keyboard_monitor);
+  if (!self) {
+    return 0;
+  }
+  try {
+    auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
+    return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::KeyboardEvent>(*self,
+        [callback, registration](const nativeapi::KeyboardEvent& event) {
+          std::shared_ptr<nativeapi::EventRequest> request;
+          auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
+          native_event_delivery_t delivery = 0;
+          try {
+            auto payload = std::shared_ptr<native_keyboard_event_t>(new native_keyboard_event_t{}, [](native_keyboard_event_t* value) { free_c_keyboard_event(value); delete value; });
+            if (!to_c_keyboard_event(event, payload.get())) { if (request) request->Cancel(); return; }
+            auto* event_pointer = payload.get();
+            auto lease = std::make_shared<nativeapi::capi::EventDelivery>(registration->context, std::move(payload), std::move(vote));
+            delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+            callback(event_pointer, delivery, registration->context->holder->get());
+          } catch (...) {
+            if (request) request->Cancel();
+            if (delivery) native_event_delivery_complete(delivery, false);
+          }
+        }, registration->context->active));
   } catch (...) {
     return 0;
   }

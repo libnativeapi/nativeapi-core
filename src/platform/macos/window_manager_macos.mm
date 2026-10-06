@@ -1,3 +1,4 @@
+#include "../../window_close_dispatch.h"
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 #include <cstring>
@@ -364,6 +365,8 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
   // A closed window that is shown again is back among the application's.
   if ([window isVisible] && NativeApiWindowIsClosed(window)) {
     objc_setAssociatedObject(window, kWindowClosedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // A reopened window has a new lifetime, not the old wrappers/decisions.
+    objc_setAssociatedObject(window, kWindowIdKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
 
   WindowId window_id = ResolveWindowId(window);
@@ -455,6 +458,7 @@ WindowManager::WindowManager() : pimpl_(std::make_unique<Impl>(this)) {
 }
 
 WindowManager::~WindowManager() {
+  ShutdownEmitter();
   StopEventListening();
 }
 
@@ -642,6 +646,7 @@ void WindowManager::StopEventListening() {
 }
 
 void WindowManager::DispatchWindowEvent(const WindowEvent& event) {
+  detail::EmitObservedWindowEvent(event);
   Emit(event);
 }
 

@@ -13,7 +13,10 @@
 
 #include "string_utils_c.h"
 #include "user_data.h"
+#include "event_delivery.h"
 #include "../foundation/handle_table.h"
+#include "../foundation/event_request.h"
+#include "event_request_c.h"
 #include "../window.h"
 #include "window_c.h"
 #include "../menu.h"
@@ -212,6 +215,34 @@ native_listener_id_t native_application_add_listener(native_application_event_ca
   }
 }
 
+native_listener_id_t native_application_add_listener_async(native_application_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
+  if (!callback) return 0;
+  try {
+    auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
+    return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::ApplicationEvent>(nativeapi::Application::GetInstance(),
+        [callback, registration](const nativeapi::ApplicationEvent& event) {
+          std::shared_ptr<nativeapi::EventRequest> request;
+          if (const auto* typed = dynamic_cast<const nativeapi::ApplicationQuitRequestedEvent*>(&event)) request = typed->GetRequest();
+          auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
+          native_event_delivery_t delivery = 0;
+          try {
+            auto payload = std::shared_ptr<native_application_event_t>(new native_application_event_t{}, [](native_application_event_t* value) { free_c_application_event(value); delete value; });
+            if (!to_c_application_event(event, payload.get())) { if (request) request->Cancel(); return; }
+            auto* event_pointer = payload.get();
+            auto lease = std::make_shared<nativeapi::capi::EventDelivery>(registration->context, std::move(payload), std::move(vote));
+            delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+            callback(event_pointer, delivery, registration->context->holder->get());
+          } catch (...) {
+            if (request) request->Cancel();
+            if (delivery) native_event_delivery_complete(delivery, false);
+          }
+        }, registration->context->active));
+  } catch (...) {
+    return 0;
+  }
+}
+
 bool native_application_remove_listener(native_listener_id_t listener_id) {
   try {
     return nativeapi::Application::GetInstance().RemoveListener(static_cast<size_t>(listener_id));
@@ -247,7 +278,7 @@ bool to_c_application_event(const nativeapi::ApplicationEvent& event, native_app
   }
   if (const auto* typed = dynamic_cast<const nativeapi::ApplicationQuitRequestedEvent*>(&event)) {
     out->type = NATIVE_APPLICATION_EVENT_TYPE_QUIT_REQUESTED;
-    (void)typed;
+    out->data.quit_requested.request = nativeapi::HandleTable::GetInstance().Insert(typed->GetRequest());
     return true;
   }
   return false;
@@ -256,6 +287,10 @@ bool to_c_application_event(const nativeapi::ApplicationEvent& event, native_app
 void free_c_application_event(native_application_event_t* value) {
   if (!value) {
     return;
+  }
+  if (value->type == NATIVE_APPLICATION_EVENT_TYPE_QUIT_REQUESTED) {
+    nativeapi::HandleTable::GetInstance().Release(value->data.quit_requested.request);
+    value->data.quit_requested.request = 0;
   }
 }
 

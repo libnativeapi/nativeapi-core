@@ -144,6 +144,7 @@ class OtherEvent : public TestEvent {
 class TestEmitter : public EventEmitter<TestEvent> {
  public:
   ~TestEmitter() override { ShutdownEmitter(); }
+  using EventEmitter<TestEvent>::CreateGuardedCallback;
 
   using EventEmitter<TestEvent>::Emit;
 
@@ -492,6 +493,21 @@ int RunTests() {
   TestEmitAsyncUnderCallerLock();
   TestEmitAsyncFromBackgroundThread();
   TestAsyncAfterEmitterDestroyed();
+  {
+    int completed = 0;
+    std::function<void(bool)> continuation;
+    {
+      TestEmitter emitter;
+      continuation = emitter.CreateGuardedCallback<bool>(std::function<void(bool)>([&](bool accepted) {
+        if (accepted) ++completed;
+      }));
+      continuation(true);
+      RunOnMainThread([continuation] { continuation(true); });
+    }
+    g_main_thread->Drain();
+    continuation(true);
+    Check(completed == 1, "deferred producer completion cannot run after derived destruction");
+  }
   TestRemoveSelfFromCallback();
   TestAddListenerFromCallback();
   TestReentrantEmitFromCallback();

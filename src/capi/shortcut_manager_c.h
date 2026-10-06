@@ -77,6 +77,12 @@ void native_shortcut_manager_emit_shortcut_activated(native_shortcut_id_t id, co
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_shortcut_manager_add_listener_async(native_shortcut_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
+
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT
 bool native_shortcut_manager_remove_listener(native_listener_id_t listener_id);

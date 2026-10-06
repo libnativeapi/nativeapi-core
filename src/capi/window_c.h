@@ -7,11 +7,13 @@
 #include <stdint.h>
 
 #include "common_c.h"
+typedef uint64_t native_event_request_t;
 typedef uint64_t native_view_t;
 typedef uint64_t native_window_shadow_t;
 typedef uint64_t native_window_shape_t;
 
 #include "color_c.h"
+#include "event_request_c.h"
 #include "geometry_c.h"
 #include "view_c.h"
 #include "window_shadow_c.h"
@@ -93,12 +95,13 @@ typedef enum {
   NATIVE_WINDOW_EVENT_TYPE_CLOSED = 8,
   NATIVE_WINDOW_EVENT_TYPE_ENTERED_FULL_SCREEN = 9,
   NATIVE_WINDOW_EVENT_TYPE_EXITED_FULL_SCREEN = 10,
+  NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED = 11,
 } native_window_event_type_t;
 
 /// One WindowEvent, tagged by its concrete type.
 ///
-/// Valid only for the duration of the callback: anything it points at
-/// is released as soon as the callback returns. Copy what you need.
+/// Synchronous callbacks borrow this payload until they return. Async callbacks
+/// borrow it until event_delivery_complete. Copy anything needed after that.
 typedef struct {
   native_window_event_type_t type;
   native_window_id_t window_id;
@@ -109,10 +112,14 @@ typedef struct {
     struct {
       native_size_t new_size;
     } resized;
+    struct {
+      native_event_request_t request;
+    } close_requested;
   } data;
 } native_window_event_t;
 
 typedef void (*native_window_event_callback_t)(const native_window_event_t* event, void* user_data);
+typedef void (*native_window_event_callback_t_async)(const native_window_event_t* event, native_event_delivery_t delivery, void* user_data);
 
 /// Creates a Window instance; release it with native_window_free().
 FFI_PLUGIN_EXPORT
@@ -121,6 +128,12 @@ native_window_t native_window_create(void);
 /// Creates a Window instance; release it with native_window_free().
 FFI_PLUGIN_EXPORT
 native_window_t native_window_create_with_native_window(void* native_window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_close_supported(void);
+
+FFI_PLUGIN_EXPORT
+bool native_window_close(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 native_window_id_t native_window_get_id(native_window_t window);
@@ -451,6 +464,21 @@ void native_window_list_free(native_window_list_t* list);
 /// Frees only the array; the caller takes over the handles.
 FFI_PLUGIN_EXPORT
 void native_window_list_release(native_window_list_t* list);
+
+/// Registers @p callback for every WindowEvent this Window emits.
+/// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_window_add_listener(native_window_t window, native_window_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
+
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_window_add_listener_async(native_window_t window, native_window_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
+
+/// Unregisters a listener. Returns false if unknown.
+FFI_PLUGIN_EXPORT
+bool native_window_remove_listener(native_window_t window, native_listener_id_t listener_id);
 
 #ifdef __cplusplus
 }

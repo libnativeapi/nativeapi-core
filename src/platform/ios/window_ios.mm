@@ -17,7 +17,9 @@ Window::Window() : pimpl_(std::make_unique<Impl>(nil)) {}
 
 Window::Window(void* window) : pimpl_(std::make_unique<Impl>((__bridge UIWindow*)window)) {}
 
-Window::~Window() {}
+Window::~Window() {
+  ShutdownEmitter();
+}
 
 WindowId Window::GetId() const {
   if (!pimpl_->ui_window_) {

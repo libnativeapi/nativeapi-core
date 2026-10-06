@@ -16,7 +16,10 @@ class Application::Impl {
 };
 
 Application::Application() : pimpl_(std::make_unique<Impl>()) {}
-Application::~Application() {}
+Application::~Application() {
+  ShutdownEmitter();
+  InvalidateQuitRequest();
+}
 
 int Application::Run() {
   HILOG_WARN("Application::Run not applicable on OpenHarmony (handled by Ability lifecycle)");
@@ -30,6 +33,10 @@ int Application::Run(std::shared_ptr<Window> window) {
 
 void Application::Quit(int exit_code) {
   HILOG_WARN("Application::Quit requests Ability terminate");
+}
+
+void Application::PerformQuit(int exit_code) {
+  Quit(exit_code);
 }
 
 bool Application::IsRunning() const {
@@ -95,5 +102,9 @@ std::vector<std::shared_ptr<Window>> Application::GetAllWindows() const {
   auto& window_manager = WindowManager::GetInstance();
   return window_manager.GetAll();
 }
+
+void Application::StartEventListening() {}
+
+void Application::StopEventListening() {}
 
 }  // namespace nativeapi

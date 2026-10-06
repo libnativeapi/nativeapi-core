@@ -845,6 +845,7 @@ Window::Window(void* native_window) {
 }
 
 Window::~Window() {
+  ShutdownEmitter();
   if (pimpl_ && pimpl_->window_id_ != IdAllocator::kInvalidId) {
     // Unregister WM_GETMINMAXINFO handler if registered
     if (pimpl_->min_max_handler_id_ != 0 && pimpl_->hwnd_) {

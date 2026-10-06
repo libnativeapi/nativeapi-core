@@ -32,6 +32,14 @@ typedef uint64_t native_listener_id_t;
 /// that let the callback go.
 typedef void (*native_release_user_data_t)(void* user_data);
 
+/// Owns an asynchronous event payload until acknowledged exactly once.
+typedef uint64_t native_event_delivery_t;
+/// Whether the originating listener is still registered. False for stale handles.
+FFI_PLUGIN_EXPORT bool native_event_delivery_is_active(native_event_delivery_t delivery);
+/// Releases the payload and its borrowed handles; accept resolves the implicit request vote.
+/// Pass false on failure. Returns false for duplicate, stale or type-confused handles.
+FFI_PLUGIN_EXPORT bool native_event_delivery_complete(native_event_delivery_t delivery, bool accept);
+
 #ifdef __cplusplus
 }
 #endif

@@ -87,8 +87,8 @@ typedef enum {
 
 /// One MenuEvent, tagged by its concrete type.
 ///
-/// Valid only for the duration of the callback: anything it points at
-/// is released as soon as the callback returns. Copy what you need.
+/// Synchronous callbacks borrow this payload until they return. Async callbacks
+/// borrow it until event_delivery_complete. Copy anything needed after that.
 typedef struct {
   native_menu_event_type_t type;
   union {
@@ -111,6 +111,7 @@ typedef struct {
 } native_menu_event_t;
 
 typedef void (*native_menu_event_callback_t)(const native_menu_event_t* event, void* user_data);
+typedef void (*native_menu_event_callback_t_async)(const native_menu_event_t* event, native_event_delivery_t delivery, void* user_data);
 
 /// Creates a MenuItem instance; release it with native_menu_item_free().
 FFI_PLUGIN_EXPORT
@@ -200,6 +201,12 @@ void native_menu_item_list_release(native_menu_item_list_t* list);
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_menu_item_add_listener(native_menu_item_t menu_item, native_menu_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_menu_item_add_listener_async(native_menu_item_t menu_item, native_menu_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
+
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT
 bool native_menu_item_remove_listener(native_menu_item_t menu_item, native_listener_id_t listener_id);
@@ -281,6 +288,12 @@ void native_menu_free(native_menu_t menu);
 /// @return the listener id, or NATIVE_INVALID_LISTENER_ID on failure.
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_menu_add_listener(native_menu_t menu, native_menu_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
+
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_menu_add_listener_async(native_menu_t menu, native_menu_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
 
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT

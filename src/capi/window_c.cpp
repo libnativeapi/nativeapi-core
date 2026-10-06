@@ -13,11 +13,14 @@
 
 #include "string_utils_c.h"
 #include "user_data.h"
+#include "event_delivery.h"
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 #include "geometry_c.h"
 #include "../foundation/color.h"
 #include "color_c.h"
+#include "../foundation/event_request.h"
+#include "event_request_c.h"
 #include "../window_shape.h"
 #include "window_shape_c.h"
 #include "../window_shadow.h"
@@ -43,6 +46,28 @@ native_window_t native_window_create_with_native_window(void* native_window) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_create_with_native_window");
     return 0;
+  }
+}
+
+bool native_window_is_close_supported(void) {
+  try {
+    return nativeapi::Window::IsCloseSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_close_supported");
+    return false;
+  }
+}
+
+bool native_window_close(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->Close();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_close");
+    return false;
   }
 }
 
@@ -1466,6 +1491,74 @@ void native_window_list_release(native_window_list_t* list) {
   list->count = 0;
 }
 
+native_listener_id_t native_window_add_listener(native_window_t window, native_window_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
+  if (!callback) {
+    return 0;
+  }
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return static_cast<native_listener_id_t>(self->AddListener<nativeapi::WindowEvent>(
+        [callback, holder](const nativeapi::WindowEvent& event) {
+          native_window_event_t c_event = {};
+          if (!to_c_window_event(event, &c_event)) {
+            return;
+          }
+          callback(&c_event, holder->get());
+          free_c_window_event(&c_event);
+        }));
+  } catch (...) {
+    return 0;
+  }
+}
+
+native_listener_id_t native_window_add_listener_async(native_window_t window, native_window_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data) {
+  auto holder = nativeapi::capi::UserData::Make(user_data, release_user_data);
+  if (!callback) return 0;
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return 0;
+  }
+  try {
+    auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
+    return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::WindowEvent>(*self,
+        [callback, registration](const nativeapi::WindowEvent& event) {
+          std::shared_ptr<nativeapi::EventRequest> request;
+          if (const auto* typed = dynamic_cast<const nativeapi::WindowCloseRequestedEvent*>(&event)) request = typed->GetRequest();
+          auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
+          native_event_delivery_t delivery = 0;
+          try {
+            auto payload = std::shared_ptr<native_window_event_t>(new native_window_event_t{}, [](native_window_event_t* value) { free_c_window_event(value); delete value; });
+            if (!to_c_window_event(event, payload.get())) { if (request) request->Cancel(); return; }
+            auto* event_pointer = payload.get();
+            auto lease = std::make_shared<nativeapi::capi::EventDelivery>(registration->context, std::move(payload), std::move(vote));
+            delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+            callback(event_pointer, delivery, registration->context->holder->get());
+          } catch (...) {
+            if (request) request->Cancel();
+            if (delivery) native_event_delivery_complete(delivery, false);
+          }
+        }, registration->context->active));
+  } catch (...) {
+    return 0;
+  }
+}
+
+bool native_window_remove_listener(native_window_t window, native_listener_id_t listener_id) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->RemoveListener(static_cast<size_t>(listener_id));
+  } catch (...) {
+    return false;
+  }
+}
+
 bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_t* out) {
   if (!out) {
     return false;
@@ -1527,12 +1620,21 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
     (void)typed;
     return true;
   }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowCloseRequestedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED;
+    out->data.close_requested.request = nativeapi::HandleTable::GetInstance().Insert(typed->GetRequest());
+    return true;
+  }
   return false;
 }
 
 void free_c_window_event(native_window_event_t* value) {
   if (!value) {
     return;
+  }
+  if (value->type == NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED) {
+    nativeapi::HandleTable::GetInstance().Release(value->data.close_requested.request);
+    value->data.close_requested.request = 0;
   }
 }
 

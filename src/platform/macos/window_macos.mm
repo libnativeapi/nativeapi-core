@@ -1,3 +1,4 @@
+#include "../../window_close_dispatch.h"
 #include <iostream>
 #include <string>
 #include "../../foundation/id_allocator.h"
@@ -343,6 +344,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
     // helper window away as soon as the user clicks into another app.
     panel.hidesOnDeactivate = NO;
     panel.becomesKeyOnlyIfNeeded = NO;
+    nativeapi::detail::RefreshNativeWindowCloseHooks((__bridge void*)window);
     if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
     return;
   }
@@ -355,6 +357,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
     NativeApiInstallFocusOverride(window);
   }
   if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
+  nativeapi::detail::RefreshNativeWindowCloseHooks((__bridge void*)window);
 }
 
 #include "window_shadow_macos.h"
@@ -417,7 +420,9 @@ Window::Window(void* native_window) {
   pimpl_ = std::make_unique<Impl>(id, ns_window);
 }
 
-Window::~Window() {}
+Window::~Window() {
+  ShutdownEmitter();
+}
 
 void Window::Focus() {
   [pimpl_->ns_window_ makeKeyAndOrderFront:nil];

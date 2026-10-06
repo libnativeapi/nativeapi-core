@@ -70,6 +70,12 @@ bool native_window_manager_call_original_hide(native_window_id_t id);
 FFI_PLUGIN_EXPORT
 native_listener_id_t native_window_manager_add_listener(native_window_event_callback_t callback, void* user_data, native_release_user_data_t release_user_data);
 
+/// Registers an asynchronous callback. Its event, borrowed handles and user_data
+/// remain valid until event_delivery_complete is called, including after removal.
+/// Every delivered payload must be acknowledged. Check is_active before invoking a queued callback.
+FFI_PLUGIN_EXPORT
+native_listener_id_t native_window_manager_add_listener_async(native_window_event_callback_t_async callback, void* user_data, native_release_user_data_t release_user_data);
+
 /// Unregisters a listener. Returns false if unknown.
 FFI_PLUGIN_EXPORT
 bool native_window_manager_remove_listener(native_listener_id_t listener_id);
