@@ -968,6 +968,45 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @see SetContentUnderTitleBar() for platform availability.
    */
   static bool IsContentUnderTitleBarSupported();
+
+  /**
+   * @brief Sets the native window's screen capture protection policy.
+   * @param is_content_protected true to request protection, false to remove it
+   * @return true if the native policy was applied; false when unsupported, the
+   *         window is invalid, or the operating system rejects the request.
+   *
+   * This is a capture API policy, not a security boundary. Capture software may
+   * ignore it. IsContentProtected() reads the policy, not whether a particular
+   * screen recorder honours it. Other wrappers of this window share the policy.
+   *
+   * @note Platform availability:
+   * - macOS: ⚠️ Sets NSWindowSharingNone, or NSWindowSharingReadOnly when disabled.
+   *   Recent ScreenCaptureKit capture ignores this legacy sharing policy.
+   * - Windows: ✅ Uses WDA_EXCLUDEFROMCAPTURE on Windows 10 version 2004 and later;
+   *   older systems use WDA_MONITOR (blank content). Requires DWM composition
+   *   and a top-level window belonging to this process.
+   * - Linux: ❌ Not supported - Always returns false
+   * - Android: ❌ Not supported - Always returns false
+   * - iOS: ❌ Not supported - Always returns false
+   * - OpenHarmony: ❌ Not supported - Always returns false
+   */
+  bool SetContentProtection(bool is_content_protected);
+
+  /**
+   * @brief Checks if the native window's capture protection policy is enabled.
+   * @return true if enabled; false when unset, unsupported, or unavailable.
+   * @see SetContentProtection() for platform availability and capture limitations.
+   */
+  bool IsContentProtected() const;
+
+  /**
+   * @brief Checks if this platform exposes a native capture protection policy.
+   * @return true on macOS, or Windows with DWM composition enabled; false elsewhere.
+   *         A supported platform may still reject a particular window.
+   * @see SetContentProtection() for capture limitations.
+   */
+  static bool IsContentProtectionSupported();
+
   // === Appearance and Advanced Behavior ===
 
   /**

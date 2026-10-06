@@ -334,6 +334,18 @@ bool Window::IsContentUnderTitleBar() const {
   return false;
 }
 
+bool Window::SetContentProtection(bool /*is_content_protected*/) {
+  return false;
+}
+
+bool Window::IsContentProtected() const {
+  return false;
+}
+
+bool Window::IsContentProtectionSupported() {
+  return false;
+}
+
 bool Window::SetCornerPreference(WindowCornerPreference /*preference*/) {
   return false;
 }

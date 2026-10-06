@@ -16,6 +16,13 @@ target_link_libraries(screen_layout_test PRIVATE nativeapi)
 add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(window_content_protection_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(window_content_protection_test window_content_protection_test.cpp)
+  target_link_libraries(window_content_protection_test PRIVATE nativeapi)
+  add_test(NAME window_content_protection_test COMMAND window_content_protection_test)
+  set_tests_properties(window_content_protection_test PROPERTIES SKIP_RETURN_CODE 77)
   add_executable(window_corner_preference_unsupported_test window_corner_preference_unsupported_test.cpp)
   target_link_libraries(window_corner_preference_unsupported_test PRIVATE nativeapi)
   add_test(NAME window_corner_preference_unsupported_test COMMAND window_corner_preference_unsupported_test)
@@ -113,6 +120,9 @@ if(WIN32 AND NATIVEAPI_ENABLE_WINUI3)
 endif()
 
 if(WIN32)
+  # Explicit desktop regression; captures only a pixel inside its own windows.
+  add_executable(window_content_protection_windows_test window_content_protection_windows_test.cpp)
+  target_link_libraries(window_content_protection_windows_test PRIVATE nativeapi)
   # Explicit desktop regression; --preview shows all four DWM policies.
   add_executable(window_corner_preference_windows_test window_corner_preference_windows_test.cpp)
   target_link_libraries(window_corner_preference_windows_test PRIVATE nativeapi)

@@ -330,6 +330,15 @@ FFI_PLUGIN_EXPORT
 bool native_window_is_content_under_title_bar_supported(void);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_content_protection(native_window_t window, bool is_content_protected);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_content_protected(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_content_protection_supported(void);
+
+FFI_PLUGIN_EXPORT
 void native_window_set_has_shadow(native_window_t window, bool has_shadow);
 
 FFI_PLUGIN_EXPORT

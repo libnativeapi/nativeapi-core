@@ -749,6 +749,22 @@ bool Window::IsContentUnderTitleBar() const {
   return NativeApiWindowHasContentUnderTitleBar(pimpl_->ns_window_);
 }
 
+bool Window::SetContentProtection(bool is_content_protected) {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return false;
+  window.sharingType = is_content_protected ? NSWindowSharingNone : NSWindowSharingReadOnly;
+  return window.sharingType == (is_content_protected ? NSWindowSharingNone : NSWindowSharingReadOnly);
+}
+
+bool Window::IsContentProtected() const {
+  NSWindow* window = pimpl_->ns_window_;
+  return window && window.sharingType == NSWindowSharingNone;
+}
+
+bool Window::IsContentProtectionSupported() {
+  return true;
+}
+
 bool Window::SetCornerPreference(WindowCornerPreference /*preference*/) {
   return false;
 }

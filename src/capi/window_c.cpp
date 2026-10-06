@@ -984,6 +984,41 @@ bool native_window_is_content_under_title_bar_supported(void) {
   }
 }
 
+bool native_window_set_content_protection(native_window_t window, bool is_content_protected) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->SetContentProtection(is_content_protected);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_content_protection");
+    return false;
+  }
+}
+
+bool native_window_is_content_protected(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsContentProtected();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_content_protected");
+    return false;
+  }
+}
+
+bool native_window_is_content_protection_supported(void) {
+  try {
+    return nativeapi::Window::IsContentProtectionSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_content_protection_supported");
+    return false;
+  }
+}
+
 void native_window_set_has_shadow(native_window_t window, bool has_shadow) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {

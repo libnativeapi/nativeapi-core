@@ -1656,6 +1656,27 @@ TitleBarStyle Window::GetTitleBarStyle() const {
   return TitleBarStyle::Normal;
 }
 
+bool Window::SetContentProtection(bool is_content_protected) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!IsWindow(hwnd)) return false;
+  // Keep compatibility with SDKs predating WDA_EXCLUDEFROMCAPTURE. Before
+  // Windows 10 2004, WDA_MONITOR blanks protected content in captures.
+  const DWORD affinity = !is_content_protected ? WDA_NONE
+      : WindowsBuildNumber() >= 19041 ? 0x00000011 : WDA_MONITOR;
+  return SetWindowDisplayAffinity(hwnd, affinity) != FALSE;
+}
+
+bool Window::IsContentProtected() const {
+  DWORD affinity = WDA_NONE;
+  return IsWindow(pimpl_->hwnd_) && GetWindowDisplayAffinity(pimpl_->hwnd_, &affinity) &&
+         (affinity == WDA_MONITOR || affinity == 0x00000011);
+}
+
+bool Window::IsContentProtectionSupported() {
+  BOOL enabled = FALSE;
+  return SUCCEEDED(DwmIsCompositionEnabled(&enabled)) && enabled;
+}
+
 bool Window::SetCornerPreference(WindowCornerPreference preference) {
   HWND hwnd = pimpl_->hwnd_;
   if (!IsCornerPreferenceSupported() || !IsWindow(hwnd)) return false;
