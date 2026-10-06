@@ -212,3 +212,21 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_focus_policy_test window_focus_policy_test.cpp)
   target_link_libraries(window_focus_policy_test PRIVATE nativeapi)
 endif()
+
+# Real SNI properties and initial watcher registration, on a private session bus.
+# No desktop or tray panel required.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(tray_identifier_linux_test tray_identifier_linux_test.cpp)
+  target_link_libraries(tray_identifier_linux_test PRIVATE nativeapi Threads::Threads)
+  add_test(NAME tray_identifier_linux_test COMMAND tray_identifier_linux_test)
+  set_tests_properties(tray_identifier_linux_test PROPERTIES TIMEOUT 30)
+endif()
+
+# Explicit desktop test: macOS status items require an AppKit session.
+if(WIN32 OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(tray_identifier_desktop_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(tray_identifier_desktop_test tray_identifier_desktop_test.cpp)
+  target_link_libraries(tray_identifier_desktop_test PRIVATE nativeapi)
+endif()

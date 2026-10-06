@@ -12,6 +12,7 @@ class TrayIcon::Impl {
 };
 
 TrayIcon::TrayIcon() : pimpl_(std::make_unique<Impl>()) {}
+TrayIcon::TrayIcon(const std::string& /*identifier*/) : TrayIcon() {}
 TrayIcon::TrayIcon(void* tray) : pimpl_(std::make_unique<Impl>()) {}
 TrayIcon::~TrayIcon() {}
 
@@ -22,6 +23,8 @@ void* TrayIcon::GetNativeObjectInternal() const {
 TrayIconId TrayIcon::GetId() {
   return IdAllocator::kInvalidId;
 }
+
+std::string TrayIcon::GetIdentifier() const { return ""; }
 
 void TrayIcon::SetIcon(std::shared_ptr<Image> image) {
   ALOGW("TrayIcon::SetIcon uses Android notifications");

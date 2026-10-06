@@ -91,10 +91,18 @@ native_tray_icon_t native_tray_icon_create(void);
 
 /// Creates a TrayIcon instance; release it with native_tray_icon_free().
 FFI_PLUGIN_EXPORT
+native_tray_icon_t native_tray_icon_create_with_identifier(const char* identifier);
+
+/// Creates a TrayIcon instance; release it with native_tray_icon_free().
+FFI_PLUGIN_EXPORT
 native_tray_icon_t native_tray_icon_create_with_tray(void* tray);
 
 FFI_PLUGIN_EXPORT
 native_tray_icon_id_t native_tray_icon_get_id(native_tray_icon_t tray_icon);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_tray_icon_get_identifier(native_tray_icon_t tray_icon);
 
 FFI_PLUGIN_EXPORT
 void native_tray_icon_set_icon(native_tray_icon_t tray_icon, native_image_t image);

@@ -34,6 +34,16 @@ native_tray_icon_t native_tray_icon_create(void) {
   }
 }
 
+native_tray_icon_t native_tray_icon_create_with_identifier(const char* identifier) {
+  try {
+    return nativeapi::HandleTable::GetInstance().Insert(
+        std::make_shared<nativeapi::TrayIcon>(std::string(identifier ? identifier : "")));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_create_with_identifier");
+    return 0;
+  }
+}
+
 native_tray_icon_t native_tray_icon_create_with_tray(void* tray) {
   try {
     return nativeapi::HandleTable::GetInstance().Insert(
@@ -54,6 +64,19 @@ native_tray_icon_id_t native_tray_icon_get_id(native_tray_icon_t tray_icon) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_get_id");
     return 0;
+  }
+}
+
+char* native_tray_icon_get_identifier(native_tray_icon_t tray_icon) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TrayIcon>(tray_icon);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    return to_c_str(self->GetIdentifier());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_tray_icon_get_identifier");
+    return nullptr;
   }
 }
 

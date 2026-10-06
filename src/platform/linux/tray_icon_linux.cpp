@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdint>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -26,6 +27,70 @@
 #include "../../view.h"
 
 namespace nativeapi {
+
+namespace {
+std::string DefaultTrayIdentifier() {
+  if (auto* app = g_application_get_default()) {
+    const char* id = g_application_get_application_id(app);
+    if (id && *id) return id;
+  }
+  gchar* executable = g_file_read_link("/proc/self/exe", nullptr);
+  if (executable) {
+    gchar* basename = g_path_get_basename(executable);
+    gchar* utf8 = g_filename_to_utf8(basename, -1, nullptr, nullptr, nullptr);
+    std::string result = utf8 ? utf8 : "";
+    g_free(utf8);
+    g_free(basename);
+    g_free(executable);
+    // Linux adds this marker when a running executable has been replaced.
+    const std::string deleted = " (deleted)";
+    if (result.size() >= deleted.size() &&
+        result.compare(result.size() - deleted.size(), deleted.size(), deleted) == 0) {
+      result.resize(result.size() - deleted.size());
+    }
+    if (!result.empty()) return result;
+  }
+  const char* name = g_get_prgname();
+  return name && *name && g_utf8_validate(name, -1, nullptr) ? name : "nativeapi";
+}
+
+// Reserve live names rather than using the object ID or PID, which change
+// between sessions. Explicit names also reserve their spelling for defaults.
+struct TrayIdentifiers {
+  std::mutex mutex;
+  std::unordered_map<std::string, size_t> users;
+};
+
+TrayIdentifiers& Identifiers() {
+  static TrayIdentifiers identifiers;
+  return identifiers;
+}
+
+std::string AcquireIdentifier(const std::string& requested) {
+  auto& identifiers = Identifiers();
+  std::lock_guard<std::mutex> lock(identifiers.mutex);
+  std::string result = requested;
+  if (result.empty() || result.find('\0') != std::string::npos ||
+      !g_utf8_validate(result.c_str(), -1, nullptr)) {
+    const std::string base = DefaultTrayIdentifier();
+    result = base;
+    for (size_t suffix = 2; identifiers.users.count(result); ++suffix) {
+      result = base + "-" + std::to_string(suffix);
+    }
+  }
+  ++identifiers.users[result];
+  return result;
+}
+
+void ReleaseIdentifier(const std::string& identifier) {
+  auto& identifiers = Identifiers();
+  std::lock_guard<std::mutex> lock(identifiers.mutex);
+  auto found = identifiers.users.find(identifier);
+  if (found != identifiers.users.end() && --found->second == 0) {
+    identifiers.users.erase(found);
+  }
+}
+}  // namespace
 
 // ── D-Bus introspection XML for org.kde.StatusNotifierItem ───────────────────
 
@@ -186,6 +251,7 @@ class TrayIcon::Impl {
  public:
   TrayIcon* owner_;
   TrayIconId id_;
+  const std::string identifier_;
 
   std::shared_ptr<Image> image_;
   bool icon_template_ = false;
@@ -212,8 +278,9 @@ class TrayIcon::Impl {
   gint64 last_activate_us_ = 0;
   std::unordered_map<std::string, bool> gnome_shell_callers_;
 
-  explicit Impl(TrayIcon* owner)
+  explicit Impl(TrayIcon* owner, const std::string& identifier)
       : owner_(owner),
+        identifier_(AcquireIdentifier(identifier)),
         image_(nullptr),
         title_(std::nullopt),
         tooltip_(std::nullopt),
@@ -228,7 +295,10 @@ class TrayIcon::Impl {
     id_ = IdAllocator::Allocate<TrayIcon>();
   }
 
-  ~Impl() { Cleanup(); }
+  ~Impl() {
+    Cleanup();
+    ReleaseIdentifier(identifier_);
+  }
 
   // Connect to the session bus, register the SNI object, and request a
   // well-known service name.  Returns false on error (icon will be invisible).
@@ -552,7 +622,7 @@ class TrayIcon::Impl {
       return g_variant_new_string("ApplicationStatus");
 
     if (g_strcmp0(property_name, "Id") == 0)
-      return g_variant_new_string("nativeapi-tray");
+      return g_variant_new_string(self->identifier_.c_str());
 
     if (g_strcmp0(property_name, "Title") == 0)
       return g_variant_new_string(self->title_.value_or("").c_str());
@@ -950,7 +1020,10 @@ class TrayIcon::Impl {
 
 // ── TrayIcon public interface ─────────────────────────────────────────────────
 
-TrayIcon::TrayIcon() : pimpl_(std::make_unique<Impl>(this)) {
+TrayIcon::TrayIcon() : TrayIcon(std::string()) {}
+
+TrayIcon::TrayIcon(const std::string& identifier)
+    : pimpl_(std::make_unique<Impl>(this, identifier)) {
   if (pimpl_->Init()) {
     pimpl_->visible_ = true;
   } else {
@@ -959,15 +1032,8 @@ TrayIcon::TrayIcon() : pimpl_(std::make_unique<Impl>(this)) {
   }
 }
 
-TrayIcon::TrayIcon(void* /*tray*/) : pimpl_(std::make_unique<Impl>(this)) {
-  // For API compatibility; create a fresh SNI tray icon ignoring the raw pointer.
-  if (pimpl_->Init()) {
-    pimpl_->visible_ = true;
-  } else {
-    std::cerr << "[nativeapi] TrayIcon: D-Bus initialisation failed; icon will not appear"
-              << std::endl;
-  }
-}
+// Linux has no native pointer to wrap; create a fresh SNI item.
+TrayIcon::TrayIcon(void* /*tray*/) : TrayIcon() {}
 
 TrayIcon::~TrayIcon() {
   // Impl::~Impl calls Cleanup(), which unregisters the D-Bus object and
@@ -976,6 +1042,10 @@ TrayIcon::~TrayIcon() {
 
 TrayIconId TrayIcon::GetId() {
   return pimpl_->id_;
+}
+
+std::string TrayIcon::GetIdentifier() const {
+  return pimpl_->identifier_;
 }
 
 void TrayIcon::SetIcon(std::shared_ptr<Image> image) {

@@ -102,6 +102,7 @@ class TaskbarRestartWatcher {
 // Private implementation class
 class TrayIcon::Impl {
  public:
+  std::string identifier_;
   std::shared_ptr<Image> image_;
   bool icon_template_ = false;
   Size icon_size_ = Size{18, 18};
@@ -259,6 +260,10 @@ class TrayIcon::Impl {
 
 TrayIcon::TrayIcon() : TrayIcon(nullptr) {}
 
+TrayIcon::TrayIcon(const std::string& identifier) : TrayIcon(nullptr) {
+  pimpl_->identifier_ = identifier;
+}
+
 TrayIcon::TrayIcon(void* native_tray_icon) {
   HWND hwnd = nullptr;
 
@@ -325,6 +330,10 @@ void TrayIcon::StopEventListening() {
 
 TrayIconId TrayIcon::GetId() {
   return pimpl_->tray_icon_id_;
+}
+
+std::string TrayIcon::GetIdentifier() const {
+  return pimpl_->identifier_;
 }
 
 void TrayIcon::SetIcon(std::shared_ptr<Image> image) {

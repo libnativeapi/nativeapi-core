@@ -200,8 +200,35 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * Creates a new tray icon instance with platform-specific initialization.
    * The icon will not be visible until SetVisible(true) is called.
    * This constructor handles all platform-specific setup internally.
+   * Uses the default persistent host identifier described by
+   * TrayIcon(const std::string&).
    */
   TrayIcon();
+
+  /**
+   * @brief Creates a tray icon with a persistent host identifier.
+   * @param identifier Stable UTF-8 name without embedded NULs. Empty selects
+   *        the platform default. Use a different name for each logical icon.
+   *
+   * This name is fixed before registration and cannot be changed afterwards.
+   * It lets the tray host remember an icon's position and visibility across
+   * sessions. It is separate from GetId(), the process-local numeric object ID.
+   *
+   * On Linux the default is the default GApplication's application ID, falling
+   * back to the executable basename, then GLib's program name. The first live
+   * icon uses that name; additional icons use -2, -3, etc. Released names can be
+   * reused, and creating another icon never renames an existing one. Specify
+   * names explicitly when icon creation order can vary between sessions.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - Maps to NSStatusItem.autosaveName; empty leaves it unset
+   * - Windows: ⚠️ Recorded only - The notification area uses its own identity
+   * - Linux: ✅ Fully supported - Maps to the immutable StatusNotifierItem Id
+   * - Android: ❌ Not applicable - Always ignored
+   * - iOS: ❌ Not applicable - Always ignored
+   * - OpenHarmony: ❌ Not applicable - Always ignored
+   */
+  explicit TrayIcon(const std::string& identifier);
 
   /**
    * @brief Constructor that wraps an existing platform-specific tray icon.
@@ -211,7 +238,7 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    *
    * @param tray Pointer to the platform-specific tray icon object
    */
-  TrayIcon(void* tray);
+  explicit TrayIcon(void* tray);
 
   /**
    * @brief Destructor for TrayIcon.
@@ -221,12 +248,24 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    */
   virtual ~TrayIcon();
 
+  TrayIcon(const TrayIcon&) = delete;
+  TrayIcon& operator=(const TrayIcon&) = delete;
+  TrayIcon(TrayIcon&&) = delete;
+  TrayIcon& operator=(TrayIcon&&) = delete;
+
   /**
    * @brief Get the unique identifier for this tray icon.
    *
    * @return The unique identifier for this tray icon
    */
   TrayIconId GetId();
+
+  /**
+   * @brief Gets the persistent host identifier.
+   * @return The name used by the host, or an empty string if unset or unsupported.
+   * @see TrayIcon(const std::string&) for platform availability.
+   */
+  std::string GetIdentifier() const;
 
   /**
    * @brief Set the icon image for the tray icon using an Image object.

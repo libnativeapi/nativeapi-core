@@ -300,6 +300,13 @@ class TrayIcon::Impl {
 
 TrayIcon::TrayIcon() : TrayIcon(nullptr) {}
 
+TrayIcon::TrayIcon(const std::string& identifier) : TrayIcon(nullptr) {
+  if (!identifier.empty() && pimpl_->ns_status_item_) {
+    pimpl_->ns_status_item_.autosaveName = [[NSString alloc]
+        initWithBytes:identifier.data() length:identifier.size() encoding:NSUTF8StringEncoding];
+  }
+}
+
 TrayIcon::TrayIcon(void* tray) {
   NSStatusItem* status_item = nullptr;
 
@@ -361,6 +368,11 @@ void TrayIcon::StopEventListening() {
 
 TrayIconId TrayIcon::GetId() {
   return pimpl_->id_;
+}
+
+std::string TrayIcon::GetIdentifier() const {
+  const char* name = pimpl_->ns_status_item_.autosaveName.UTF8String;
+  return name ? name : "";
 }
 
 void TrayIcon::SetIcon(std::shared_ptr<Image> image) {
