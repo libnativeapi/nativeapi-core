@@ -438,6 +438,10 @@ bool Window::IsSystemMenuSupported() {
   return false;
 }
 
+bool Window::PerformTitleBarDoubleClick() {
+  return false;
+}
+
 void Window::StartDragging() {
   // StartDragging not supported on OpenHarmony
 }

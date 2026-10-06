@@ -427,6 +427,9 @@ FFI_PLUGIN_EXPORT
 bool native_window_is_system_menu_supported(void);
 
 FFI_PLUGIN_EXPORT
+bool native_window_perform_title_bar_double_click(native_window_t window);
+
+FFI_PLUGIN_EXPORT
 void native_window_start_dragging(native_window_t window);
 
 FFI_PLUGIN_EXPORT

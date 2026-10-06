@@ -497,6 +497,10 @@ bool Window::IsSystemMenuSupported() {
   return false;
 }
 
+bool Window::PerformTitleBarDoubleClick() {
+  return false;
+}
+
 void Window::StartDragging() {
   // Not applicable to iOS
 }

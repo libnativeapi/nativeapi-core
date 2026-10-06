@@ -1919,6 +1919,15 @@ bool Window::IsSystemMenuSupported() {
   return false;
 }
 
+bool Window::PerformTitleBarDoubleClick() {
+  GdkWindow* window = pimpl_->gdk_window_;
+  if (!window || gdk_window_is_destroyed(window) || IsFullScreen() || IsMinimized() ||
+      !IsMaximizable()) return false;
+  if (IsMaximized()) Unmaximize();
+  else Maximize();
+  return true;
+}
+
 void Window::StartDragging() {
   if (!pimpl_->gdk_window_) {
     return;

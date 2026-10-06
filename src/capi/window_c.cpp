@@ -1390,6 +1390,19 @@ bool native_window_is_system_menu_supported(void) {
   }
 }
 
+bool native_window_perform_title_bar_double_click(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->PerformTitleBarDoubleClick();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_perform_title_bar_double_click");
+    return false;
+  }
+}
+
 void native_window_start_dragging(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {

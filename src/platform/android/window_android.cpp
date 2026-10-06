@@ -454,6 +454,10 @@ bool Window::IsSystemMenuSupported() {
   return false;
 }
 
+bool Window::PerformTitleBarDoubleClick() {
+  return false;
+}
+
 void Window::StartDragging() {
   ALOGW("StartDragging not supported on Android");
 }

@@ -49,7 +49,10 @@ enum class TitleBarStyle {
    *
    * The content owns the area where the title bar was: dragging there does
    * not move the window. Move it from custom chrome with
-   * Window::StartDragging() (or a WindowDragSession).
+   * Window::StartDragging() (or a WindowDragSession). Handle a double-click
+   * in that custom chrome with Window::PerformTitleBarDoubleClick(). On macOS,
+   * empty backgrounds in the original title-bar band automatically perform that
+   * action; controls, custom mouse handlers and host window dispatchers keep it.
    * - macOS: the content extends under a title bar that is transparent and
    *   empty; the window buttons are hidden. The system is kept from moving
    *   the window, even while IsMovable() is true. To keep the buttons over
@@ -1390,6 +1393,35 @@ class Window : public NativeObjectProvider, public std::enable_shared_from_this<
    * @see ShowSystemMenu() for platform availability.
    */
   static bool IsSystemMenuSupported();
+
+  /**
+   * @brief Performs the double-click action for a custom title bar.
+   * @return true if an action was requested, or the macOS preference explicitly
+   *         disables it; false if unsupported, unavailable or rejected.
+   *
+   * Call from your custom title bar's double-click handler. Hidden title bars
+   * leave hit testing to the application. On macOS, empty backgrounds within the
+   * original title-bar band also invoke this action automatically; controls and
+   * custom mouse handlers and host window event dispatchers are excluded.
+   * The macOS preference is read on each call, so changes take effect immediately.
+   * A successful request does not guarantee the window manager applies it.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Uses the user's AppleActionOnDoubleClick preference: Maximize
+   *   (or unset) zooms, Minimize miniaturizes, None deliberately does nothing.
+   *   Legacy Zoom is also accepted. Fill requests the OS native Fill action when
+   *   available; this currently requires a runtime-checked private AppKit action.
+   *   Unsupported or unknown actions return false.
+   * - Windows: ✅ Toggles maximize/restore using the native system command.
+   * - Linux: ⚠️ Requests maximize/unmaximize; the window manager may ignore it.
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   *
+   * Full-screen and minimized windows reject state changes. Disabled maximize or
+   * minimize controls reject their corresponding action.
+   */
+  bool PerformTitleBarDoubleClick();
 
   /**
    * @brief Initiates a user drag operation for moving the window.

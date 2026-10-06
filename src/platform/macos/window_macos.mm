@@ -184,6 +184,91 @@ static void NativeApiUpdateWindowMovable(NSWindow* window) {
   [window setMovable:requested && !NativeApiWindowIsTitleBarHidden(window)];
 }
 
+static bool NativeApiPerformTitleBarDoubleClick(NSWindow* window) {
+  if (!window) return false;
+  NSString* action = [NSUserDefaults.standardUserDefaults stringForKey:@"AppleActionOnDoubleClick"];
+  if ([action isEqualToString:@"None"]) return true;
+  if ((window.styleMask & NSWindowStyleMaskFullScreen) || window.isMiniaturized) return false;
+  if ([action isEqualToString:@"Minimize"]) {
+    if (!(window.styleMask & NSWindowStyleMaskMiniaturizable)) return false;
+    [window miniaturize:nil];
+    return true;
+  }
+  if ([action isEqualToString:@"Fill"]) {
+    if (!(window.styleMask & NSWindowStyleMaskResizable)) return false;
+    // AppKit exposes no public Fill action. Ask for the native action only
+    // when this OS provides it, rather than substituting standard-state zoom.
+    SEL selector = NSSelectorFromString(@"_zoomFill:");
+    if (![window respondsToSelector:selector]) return false;
+    using Action = void (*)(id, SEL, id);
+    reinterpret_cast<Action>([window methodForSelector:selector])(window, selector, nil);
+    return true;
+  }
+  if (!action || [action isEqualToString:@"Maximize"] || [action isEqualToString:@"Zoom"]) {
+    if (!(window.styleMask & NSWindowStyleMaskResizable)) return false;
+    // Use the action itself so custom chrome does not require a native zoom box.
+    [window zoom:nil];
+    return true;
+  }
+  return false;
+}
+
+// A plain hidden window still has a conventional title-bar band. Only empty
+// backgrounds inherit its double-click action: controls and views that handle
+// mouse presses/releases own their gestures (Flutter uses the explicit action).
+static bool NativeApiIsEmptyTitleBarBackground(NSWindow* window, NSEvent* event) {
+  if (!NativeApiWindowIsTitleBarHidden(window) || event.window != window ||
+      event.type != NSEventTypeLeftMouseUp || event.clickCount != 2) return false;
+  NSView* content = window.contentView;
+  if (!content) return false;
+  const NSWindowStyleMask mask = (window.styleMask | NSWindowStyleMaskTitled) &
+                                 ~NSWindowStyleMaskFullSizeContentView;
+  const NSRect frame = NSMakeRect(0, 0, window.frame.size.width, window.frame.size.height);
+  const CGFloat height = NSHeight(frame) - NSHeight([NSWindow contentRectForFrameRect:frame styleMask:mask]);
+  const NSPoint point = [content convertPoint:event.locationInWindow fromView:nil];
+  const NSRect band = NSMakeRect(NSMinX(content.bounds),
+      content.isFlipped ? NSMinY(content.bounds) : NSMaxY(content.bounds) - height,
+      NSWidth(content.bounds), height);
+  if (!NSPointInRect(point, band)) return false;
+  const NSPoint hit_point = content.superview
+      ? [content.superview convertPoint:event.locationInWindow fromView:nil] : event.locationInWindow;
+  NSView* target = [content hitTest:hit_point];
+  if (!target) return false;
+  const IMP default_down = class_getMethodImplementation([NSView class], @selector(mouseDown:));
+  const IMP default_up = class_getMethodImplementation([NSView class], @selector(mouseUp:));
+  for (NSView* view = target; view; view = view.superview) {
+    if ([view isKindOfClass:[NSControl class]] ||
+        class_getMethodImplementation(object_getClass(view), @selector(mouseDown:)) != default_down ||
+        class_getMethodImplementation(object_getClass(view), @selector(mouseUp:)) != default_up)
+      return false;
+    if (view == content) return true;
+  }
+  return false;
+}
+
+// Preserve the live runtime class (including AppKit's KVO bookkeeping). The
+// associated hidden flag makes this override inert on other class instances.
+static void NativeApiInstallTitleBarDoubleClick(NSWindow* window) {
+  static const void* installed_key = &installed_key;
+  Class cls = object_getClass(window);
+  if (objc_getAssociatedObject(cls, installed_key)) return;
+  SEL selector = @selector(sendEvent:);
+  Method method = class_getInstanceMethod(cls, selector);
+  auto original = reinterpret_cast<void (*)(id, SEL, NSEvent*)>(method_getImplementation(method));
+  // A host with its own window-level event dispatch owns the gesture as well.
+  const IMP implementation = method_getImplementation(method);
+  if (implementation != class_getMethodImplementation([NSWindow class], selector) &&
+      implementation != class_getMethodImplementation([NSPanel class], selector)) return;
+  IMP replacement = imp_implementationWithBlock(^(NSWindow* instance, NSEvent* event) {
+    if (NativeApiIsEmptyTitleBarBackground(instance, event) &&
+        NativeApiPerformTitleBarDoubleClick(instance)) return;
+    original(instance, selector, event);
+  });
+  if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)))
+    class_replaceMethod(cls, selector, replacement, method_getTypeEncoding(method));
+  objc_setAssociatedObject(cls, installed_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static BOOL NativeApiWindowIsFocusable(NSWindow* window) {
   NSNumber* value = objc_getAssociatedObject(window, kWindowFocusableKey);
   return value ? [value boolValue] : YES;
@@ -258,6 +343,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
     // helper window away as soon as the user clicks into another app.
     panel.hidesOnDeactivate = NO;
     panel.becomesKeyOnlyIfNeeded = NO;
+    if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
     return;
   }
   if (NativeApiWindowIsNonActivating(window)) {
@@ -268,6 +354,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
       (NativeApiWindowIsTitleBarHidden(window) && objc_getAssociatedObject(window, kWindowShapeFrameKey))) {
     NativeApiInstallFocusOverride(window);
   }
+  if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
 }
 
 #include "window_shadow_macos.h"
@@ -1070,6 +1157,10 @@ bool Window::ShowSystemMenu(Point /*position*/) {
 
 bool Window::IsSystemMenuSupported() {
   return false;
+}
+
+bool Window::PerformTitleBarDoubleClick() {
+  return NativeApiPerformTitleBarDoubleClick(pimpl_->ns_window_);
 }
 
 void Window::StartDragging() {

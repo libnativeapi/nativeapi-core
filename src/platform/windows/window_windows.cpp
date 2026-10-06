@@ -2194,6 +2194,14 @@ bool Window::IsSystemMenuSupported() {
   return true;
 }
 
+bool Window::PerformTitleBarDoubleClick() {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !IsWindow(hwnd) || IsFullScreen() || IsIconic(hwnd) || !IsMaximizable())
+    return false;
+  SendMessageW(hwnd, WM_SYSCOMMAND, IsZoomed(hwnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+  return true;
+}
+
 void Window::StartDragging() {
   if (pimpl_->hwnd_) {
     StartSystemFrameDrag(pimpl_->hwnd_, HTCAPTION);
