@@ -1437,6 +1437,45 @@ bool native_window_is_system_menu_supported(void) {
   }
 }
 
+bool native_window_set_maximize_button_bounds(native_window_t window, native_rectangle_t bounds) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto bounds_cpp = to_cpp_rectangle(bounds);
+    return self->SetMaximizeButtonBounds(bounds_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_maximize_button_bounds");
+    return false;
+  }
+}
+
+native_rectangle_t native_window_get_maximize_button_bounds(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    native_rectangle_t result = {};
+    return result;
+  }
+  try {
+    const auto cpp_result = self->GetMaximizeButtonBounds();
+    return to_c_rectangle(cpp_result);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_maximize_button_bounds");
+    native_rectangle_t result = {};
+    return result;
+  }
+}
+
+bool native_window_is_maximize_button_bounds_supported(void) {
+  try {
+    return nativeapi::Window::IsMaximizeButtonBoundsSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_maximize_button_bounds_supported");
+    return false;
+  }
+}
+
 bool native_window_perform_title_bar_double_click(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {

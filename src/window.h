@@ -1585,6 +1585,51 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
   static bool IsSystemMenuSupported();
 
   /**
+   * @brief Tells the window where the app draws its own maximize button.
+   *
+   * A hidden title bar takes the system's caption buttons with it, and on
+   * Windows 11 the snap layouts that open when the pointer rests on the
+   * maximize button. Report the rectangle of the app's own button and the
+   * window answers the system's hit test there as its maximize button, so
+   * resting on it opens the snap layouts again. The button keeps receiving
+   * the pointer: moves, presses and releases over it are passed on to the
+   * content, so it still draws its hover and pressed states and handles the
+   * click (maximize or restore) itself.
+   *
+   * Update it whenever the button moves or changes size; an empty rectangle
+   * removes it. The window's resize borders still win where they overlap.
+   *
+   * @param bounds The button, in logical coordinates relative to the content
+   *               area's top-left corner (the space ShowSystemMenu() uses).
+   * @return true if the platform uses it; false where unsupported, or for a
+   *         rectangle that is not finite.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Not applicable - Always returns false; the zoom button has no
+   *   snap layouts to bring back.
+   * - Windows: ✅ Supported - Snap layouts on Windows 11; Windows 10 shows the
+   *   maximize tooltip only. Not with NATIVEAPI_ENABLE_WINUI3.
+   * - Linux: ❌ Not applicable - Always returns false
+   * - Android: ❌ Not applicable - Always returns false
+   * - iOS: ❌ Not applicable - Always returns false
+   * - OpenHarmony: ❌ Not applicable - Always returns false
+   */
+  bool SetMaximizeButtonBounds(Rectangle bounds);
+
+  /**
+   * @brief The rectangle last given to SetMaximizeButtonBounds().
+   * @return It, or an empty rectangle when none is set or it is unsupported.
+   * @see SetMaximizeButtonBounds() for platform availability.
+   */
+  Rectangle GetMaximizeButtonBounds() const;
+
+  /**
+   * @brief Whether SetMaximizeButtonBounds() can take effect here.
+   * @see SetMaximizeButtonBounds() for platform availability.
+   */
+  static bool IsMaximizeButtonBoundsSupported();
+
+  /**
    * @brief Performs the double-click action for a custom title bar.
    * @return true if an action was requested, or the macOS preference explicitly
    *         disables it; false if unsupported, unavailable or rejected.

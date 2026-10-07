@@ -15,6 +15,12 @@ add_executable(screen_layout_test screen_layout_test.cpp)
 target_link_libraries(screen_layout_test PRIVATE nativeapi)
 add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
+# SetMaximizeButtonBounds (#70): Windows hit testing and forwarding; unsupported elsewhere.
+add_executable(window_maximize_button_test window_maximize_button_test.cpp)
+target_link_libraries(window_maximize_button_test PRIVATE nativeapi)
+add_test(NAME window_maximize_button_test COMMAND window_maximize_button_test)
+set_tests_properties(window_maximize_button_test PROPERTIES TIMEOUT 20)
+
 # Occlusion on a real desktop; puts windows on screen, so run by hand (77 = skipped).
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
   if(APPLE)

@@ -1229,6 +1229,18 @@ bool Window::IsSystemMenuSupported() {
   return false;
 }
 
+bool Window::SetMaximizeButtonBounds(Rectangle) {
+  return false;
+}
+
+Rectangle Window::GetMaximizeButtonBounds() const {
+  return {0, 0, 0, 0};
+}
+
+bool Window::IsMaximizeButtonBoundsSupported() {
+  return false;
+}
+
 bool Window::PerformTitleBarDoubleClick() {
   return NativeApiPerformTitleBarDoubleClick(pimpl_->ns_window_);
 }

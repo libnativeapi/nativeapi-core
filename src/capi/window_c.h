@@ -474,6 +474,15 @@ FFI_PLUGIN_EXPORT
 bool native_window_is_system_menu_supported(void);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_maximize_button_bounds(native_window_t window, native_rectangle_t bounds);
+
+FFI_PLUGIN_EXPORT
+native_rectangle_t native_window_get_maximize_button_bounds(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_maximize_button_bounds_supported(void);
+
+FFI_PLUGIN_EXPORT
 bool native_window_perform_title_bar_double_click(native_window_t window);
 
 FFI_PLUGIN_EXPORT

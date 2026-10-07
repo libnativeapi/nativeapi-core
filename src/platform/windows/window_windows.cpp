@@ -121,6 +121,13 @@ static const wchar_t* kFocusReturnWindowProperty = L"NativeAPIFocusReturnWindow"
 // hands the foreground back to it. Distinct from the focus-policy property above,
 // which only a no-activate window uses and its policy change clears.
 static const wchar_t* kBlurReturnWindowProperty = L"NativeAPIBlurReturnWindow";
+// The app-drawn maximize button (MaximizeButtonArea), owned by the HWND.
+static const wchar_t* kMaximizeButtonProperty = L"NativeAPIMaximizeButton";
+struct MaximizeButtonArea {
+  Rectangle bounds;            // Content-area logical coordinates.
+  bool tracking_leave = false;  // TME_NONCLIENT | TME_LEAVE is armed.
+  HWND hovered = nullptr;       // Content window that was sent the last move.
+};
 // The translucent background color of the window, as 0x1AARRGGBB (the leading 1 tells
 // a transparent black from "no property"). Set while the window is see-through.
 static const wchar_t* kTranslucentBackgroundProperty = L"NativeAPITranslucentBackground";
@@ -379,6 +386,98 @@ static LRESULT HiddenFrameResizeHit(HWND root, LPARAM point) {
   return 0;
 }
 
+// Whether a screen point (WM_NCHITTEST's lParam) is on the app-drawn maximize
+// button of |root|, and where in its content area, in physical pixels.
+static bool IsOverMaximizeButton(HWND root, LPARAM point, POINT* client = nullptr) {
+  const auto* area = static_cast<MaximizeButtonArea*>(GetPropW(root, kMaximizeButtonProperty));
+  if (!area) return false;
+  POINT local = {static_cast<short>(LOWORD(point)), static_cast<short>(HIWORD(point))};
+  if (!ScreenToClient(root, &local)) return false;
+  const double scale = GetScaleFactorForWindow(root);
+  const double x = local.x / scale, y = local.y / scale;
+  const Rectangle& b = area->bounds;
+  if (x < b.x || y < b.y || x >= b.x + b.width || y >= b.y + b.height) return false;
+  if (client) *client = local;
+  return true;
+}
+
+// The innermost visible, enabled content window under a client point of |root|.
+static HWND ContentWindowAt(HWND root, POINT client, POINT* local) {
+  HWND target = root;
+  POINT at = client;
+  for (int depth = 0; depth < 32; ++depth) {
+    HWND child = ChildWindowFromPointEx(target, at, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED |
+                                                        CWP_SKIPTRANSPARENT);
+    if (!child || child == target) break;
+    MapWindowPoints(target, child, &at, 1);
+    target = child;
+  }
+  *local = at;
+  return target;
+}
+
+// Passes a non-client mouse message over the maximize button on to the content
+// as the client message it would have been, so the app's button sees it.
+static void ForwardToContent(HWND root, MaximizeButtonArea* area, UINT message, LPARAM point) {
+  POINT client = {static_cast<short>(LOWORD(point)), static_cast<short>(HIWORD(point))};
+  ScreenToClient(root, &client);
+  POINT local = {};
+  HWND target = ContentWindowAt(root, client, &local);
+  WPARAM keys = 0;
+  if (GetKeyState(VK_LBUTTON) < 0) keys |= MK_LBUTTON;
+  if (GetKeyState(VK_RBUTTON) < 0) keys |= MK_RBUTTON;
+  if (GetKeyState(VK_MBUTTON) < 0) keys |= MK_MBUTTON;
+  if (GetKeyState(VK_SHIFT) < 0) keys |= MK_SHIFT;
+  if (GetKeyState(VK_CONTROL) < 0) keys |= MK_CONTROL;
+  if (message == WM_LBUTTONDOWN) keys |= MK_LBUTTON;
+  if (message == WM_LBUTTONUP) keys &= ~static_cast<WPARAM>(MK_LBUTTON);
+  area->hovered = target;
+  SendMessageW(target, message, keys, MAKELPARAM(local.x, local.y));
+}
+
+// The maximize button's share of the window procedure: answer the hit test,
+// and hand hover, press and release to the content instead of letting
+// DefWindowProc run its caption-button loop (it would draw a classic button
+// and maximize on its own).
+static std::optional<LRESULT> HandleMaximizeButtonArea(HWND hwnd, UINT message, WPARAM wp,
+                                                       LPARAM lp) {
+  auto* area = static_cast<MaximizeButtonArea*>(GetPropW(hwnd, kMaximizeButtonProperty));
+  if (!area) return std::nullopt;
+  switch (message) {
+    case WM_NCHITTEST:
+      if (!IsOverMaximizeButton(hwnd, lp)) return std::nullopt;
+      // A resize border overlapping the button keeps working.
+      if (GetPropW(hwnd, kTitleBarHiddenProperty) && HiddenFrameResizeHit(hwnd, lp) != 0)
+        return std::nullopt;
+      return HTMAXBUTTON;
+    case WM_NCMOUSEMOVE:
+      if (wp != HTMAXBUTTON) break;
+      if (!area->tracking_leave) {
+        TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE | TME_NONCLIENT, hwnd, 0};
+        area->tracking_leave = TrackMouseEvent(&track) != FALSE;
+      }
+      ForwardToContent(hwnd, area, WM_MOUSEMOVE, lp);
+      return 0;
+    case WM_NCMOUSELEAVE:
+      area->tracking_leave = false;
+      if (area->hovered && IsWindow(area->hovered)) SendMessageW(area->hovered, WM_MOUSELEAVE, 0, 0);
+      area->hovered = nullptr;
+      break;  // DefWindowProc has its own bookkeeping for it.
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+      if (wp != HTMAXBUTTON) break;
+      ForwardToContent(hwnd, area, WM_LBUTTONDOWN, lp);
+      return 0;
+    case WM_NCLBUTTONUP:
+      if (wp != HTMAXBUTTON) break;
+      ForwardToContent(hwnd, area, WM_LBUTTONUP, lp);
+      return 0;
+    default:
+      break;
+  }
+  return std::nullopt;
+}
+
 // Subclass of the child windows of a window with a hidden title bar. A child that
 // covers the content (a Flutter view, for one) is hit-tested before its parent;
 // on a resize edge it steps aside so the parent can answer it.
@@ -387,7 +486,7 @@ static LRESULT CALLBACK TopEdgeChildProc(HWND child, UINT message, WPARAM wp, LP
   if (message == WM_NCHITTEST) {
     // HTTRANSPARENT passes the hit test on to windows of the same thread only.
     HWND root = GetAncestor(child, GA_ROOT);
-    if (root && HiddenFrameResizeHit(root, lp) != 0 &&
+    if (root && (HiddenFrameResizeHit(root, lp) != 0 || IsOverMaximizeButton(root, lp)) &&
         GetWindowThreadProcessId(root, nullptr) == GetCurrentThreadId())
       return HTTRANSPARENT;
   } else if (message == WM_NCDESTROY) {
@@ -618,6 +717,7 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     RemovePropW(hwnd, kNonActivatingProperty);
     RemovePropW(hwnd, kFocusReturnWindowProperty);
     RemovePropW(hwnd, kBlurReturnWindowProperty);
+    delete static_cast<MaximizeButtonArea*>(RemovePropW(hwnd, kMaximizeButtonProperty));
     RemovePropW(hwnd, kVisualEffectProperty);
     RemovePropW(hwnd, kCornerPreferenceProperty);
     RemovePropW(hwnd, kBackgroundColorProperty);
@@ -652,6 +752,10 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     return result;
   }
 #ifndef NATIVEAPI_ENABLE_WINUI3
+  if (auto handled = HandleMaximizeButtonArea(hwnd, message, wp, lp)) return *handled;
+  if (message == WM_PARENTNOTIFY && LOWORD(wp) == WM_CREATE &&
+      GetPropW(hwnd, kMaximizeButtonProperty))
+    AttachTopEdgeChild(reinterpret_cast<HWND>(lp), 0);
   if (message == WM_NCCALCSIZE || message == WM_NCHITTEST || message == WM_PARENTNOTIFY ||
       message == WM_NCACTIVATE || message == WM_NCPAINT || message == 0x00AE ||
       message == 0x00AF || message == WM_SETTEXT || message == WM_SETICON) {
@@ -2371,6 +2475,50 @@ bool Window::ShowSystemMenu(Point position) {
 
 bool Window::IsSystemMenuSupported() {
   return true;
+}
+
+bool Window::SetMaximizeButtonBounds(Rectangle bounds) {
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  (void)bounds;
+  return false;
+#else
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !IsWindow(hwnd) || !std::isfinite(bounds.x) || !std::isfinite(bounds.y) ||
+      !std::isfinite(bounds.width) || !std::isfinite(bounds.height))
+    return false;
+  auto* area = static_cast<MaximizeButtonArea*>(GetPropW(hwnd, kMaximizeButtonProperty));
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    delete static_cast<MaximizeButtonArea*>(RemovePropW(hwnd, kMaximizeButtonProperty));
+    return true;
+  }
+  if (!area) {
+    area = new MaximizeButtonArea();
+    if (!SetPropW(hwnd, kMaximizeButtonProperty, area)) {
+      delete area;
+      return false;
+    }
+    // Content windows (a Flutter view) are hit-tested first: let them step
+    // aside over the button so this window can answer HTMAXBUTTON.
+    EnumChildWindows(hwnd, AttachTopEdgeChild, 0);
+  }
+  area->bounds = bounds;
+  return true;
+#endif
+}
+
+Rectangle Window::GetMaximizeButtonBounds() const {
+  HWND hwnd = pimpl_->hwnd_;
+  const auto* area =
+      hwnd ? static_cast<MaximizeButtonArea*>(GetPropW(hwnd, kMaximizeButtonProperty)) : nullptr;
+  return area ? area->bounds : Rectangle{0, 0, 0, 0};
+}
+
+bool Window::IsMaximizeButtonBoundsSupported() {
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  return false;
+#else
+  return true;
+#endif
 }
 
 bool Window::PerformTitleBarDoubleClick() {
