@@ -1558,10 +1558,14 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * @return true if the menu was displayed or the window manager accepted the
    *         request, including cancellation; false if unsupported or rejected.
    *
-   * Use this from a secondary-button press in a custom title bar. Windows runs
-   * a nested native menu loop until selection or cancellation; selected items
-   * are delivered as system window commands. Linux asks the window manager to
-   * show its own menu. Its contents and actions remain the manager's choice.
+   * Use this from a secondary click in a custom title bar: on Windows from the
+   * button's release, as a native title bar does, and on Linux from its press
+   * (see below). Windows runs a nested native menu loop until selection or
+   * cancellation, which takes the mouse messages meanwhile: called from the
+   * press, the release goes to the menu and the content never sees it (Flutter
+   * then ignores the next secondary click). Selected items are delivered as
+   * system window commands. Linux asks the window manager to show its own menu.
+   * Its contents and actions remain the manager's choice.
    *
    * @note Platform availability:
    * - macOS: ❌ No equivalent - Always returns false
