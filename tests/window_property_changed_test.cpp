@@ -74,18 +74,19 @@ int main(int argc, char** argv) {
 #endif
   Pump([] { return false; }, 300);  // Linux subscribes on the next main loop turn.
 
-  // GTK reports keep-above only once the window manager confirms it, which
-  // not every one does (Openbox on Xvfb does not); check with a plain window.
+  // Keep-above is up to the window manager (Wayland has none for clients);
+  // check with a separate shown window whether this one honors it.
   bool keep_above_confirmed = true;
 #if !defined(__APPLE__) && !defined(_WIN32)
   {
-    GtkWidget* plain = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_widget_show(plain);
+    Window probe;
+    probe.Show();
     Pump([] { return false; }, 300);
-    gtk_window_set_keep_above(GTK_WINDOW(plain), TRUE);
-    Pump([&] { return !!(gdk_window_get_state(gtk_widget_get_window(plain)) & GDK_WINDOW_STATE_ABOVE); });
-    keep_above_confirmed = gdk_window_get_state(gtk_widget_get_window(plain)) & GDK_WINDOW_STATE_ABOVE;
-    gtk_widget_destroy(plain);
+    probe.SetAlwaysOnTop(true);
+    Pump([&] { return probe.IsAlwaysOnTop(); });
+    keep_above_confirmed = probe.IsAlwaysOnTop();
+    gtk_widget_destroy(GTK_WIDGET(probe.GetNativeObject()));
+    Pump([] { return false; }, 100);
     if (!keep_above_confirmed)
       std::cout << "SKIP always-on-top: the window manager does not confirm keep-above" << std::endl;
   }

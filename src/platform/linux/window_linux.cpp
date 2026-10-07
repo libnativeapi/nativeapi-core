@@ -770,6 +770,33 @@ class Window::Impl {
   Size requested_content_size_ = {0, 0};
 };
 
+#ifdef GDK_WINDOWING_X11
+// Whether the window manager lists |state| (an atom name such as
+// "_NET_WM_STATE_ABOVE") in the window's _NET_WM_STATE. GDK does not track the
+// above/below states it requests, so its window state never shows them.
+static bool HasX11WindowState(GdkWindow* surface, const char* state) {
+  auto* display = gdk_window_get_display(surface);
+  auto* xdisplay = GDK_DISPLAY_XDISPLAY(display);
+  const Atom wanted = gdk_x11_get_xatom_by_name_for_display(display, state);
+  Atom type = 0;
+  int format = 0;
+  unsigned long count = 0, remaining = 0;
+  unsigned char* data = nullptr;
+  bool found = false;
+  gdk_x11_display_error_trap_push(display);
+  if (XGetWindowProperty(xdisplay, GDK_WINDOW_XID(surface),
+                         gdk_x11_get_xatom_by_name_for_display(display, "_NET_WM_STATE"), 0, 64,
+                         False, XA_ATOM, &type, &format, &count, &remaining, &data) == Success &&
+      data && type == XA_ATOM && format == 32) {
+    const auto* atoms = reinterpret_cast<Atom*>(data);
+    for (unsigned long i = 0; i < count && !found; ++i) found = atoms[i] == wanted;
+  }
+  if (data) XFree(data);
+  gdk_x11_display_error_trap_pop_ignored(display);
+  return found;
+}
+#endif
+
 // Reports direct changes to the properties WindowPropertyChangedEvent covers:
 // the GtkWindow's title, resizable and deletable properties, and the window
 // manager's above/below state. The handlers sit on the widget itself, so GTK
@@ -807,6 +834,23 @@ static bool ObserveWindowProperties(GtkWidget* widget) {
                            return FALSE;
                          }),
                          nullptr);
+#ifdef GDK_WINDOWING_X11
+  // The above/below states only show in _NET_WM_STATE (see HasX11WindowState).
+  if (auto* surface = gtk_widget_get_window(widget); surface && GDK_IS_X11_WINDOW(surface)) {
+    gdk_window_add_filter(
+        surface,
+        +[](GdkXEvent* native, GdkEvent*, gpointer data) -> GdkFilterReturn {
+          auto* event = static_cast<XEvent*>(native);
+          auto* self = static_cast<GtkWidget*>(data);
+          if (event->type == PropertyNotify &&
+              event->xproperty.atom == gdk_x11_get_xatom_by_name_for_display(
+                                           gtk_widget_get_display(self), "_NET_WM_STATE"))
+            RefreshPropertiesOf(self);
+          return GDK_FILTER_CONTINUE;
+        },
+        widget);
+  }
+#endif
   // Occlusion: shown and hidden (minimizing is the window-state-event above).
   auto on_mapping = +[](GtkWidget* self, gpointer) { RefreshOcclusionOf(self); };
   g_signal_connect_after(widget, "map", G_CALLBACK(on_mapping), nullptr);
@@ -1542,6 +1586,10 @@ void Window::SetAlwaysOnTop(bool is_always_on_top) {
 bool Window::IsAlwaysOnTop() const {
   if (!pimpl_->gdk_window_)
     return false;
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_WINDOW(pimpl_->gdk_window_))
+    return HasX11WindowState(pimpl_->gdk_window_, "_NET_WM_STATE_ABOVE");
+#endif
   GdkWindowState state = gdk_window_get_state(pimpl_->gdk_window_);
   return state & GDK_WINDOW_STATE_ABOVE;
 }
@@ -1558,6 +1606,10 @@ void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
 bool Window::IsAlwaysOnBottom() const {
   if (!pimpl_->gdk_window_)
     return false;
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_WINDOW(pimpl_->gdk_window_))
+    return HasX11WindowState(pimpl_->gdk_window_, "_NET_WM_STATE_BELOW");
+#endif
   GdkWindowState state = gdk_window_get_state(pimpl_->gdk_window_);
   return state & GDK_WINDOW_STATE_BELOW;
 }
