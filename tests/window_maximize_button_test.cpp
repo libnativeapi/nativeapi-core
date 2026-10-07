@@ -9,6 +9,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
@@ -41,6 +42,75 @@ LRESULT CALLBACK ContentProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(hwnd, message, wp, lp);
 }
 
+// --serve: a window for a real-pointer check (tools/gui/core_window_snap_layout_test.ps1).
+// Prints the button's screen rectangle, then logs what the content receives.
+LRESULT CALLBACK LoggingContentProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+  const char* name = message == WM_MOUSEMOVE     ? "WM_MOUSEMOVE"
+                     : message == WM_MOUSELEAVE  ? "WM_MOUSELEAVE"
+                     : message == WM_LBUTTONDOWN ? "WM_LBUTTONDOWN"
+                     : message == WM_LBUTTONUP   ? "WM_LBUTTONUP"
+                                                 : nullptr;
+  // Moves in the title band (where the button is), each new point once.
+  const int x = static_cast<short>(LOWORD(lp)), y = static_cast<short>(HIWORD(lp));
+  static UINT last_message = 0;
+  static int last_x = -1, last_y = -1;
+  const bool repeat = message == last_message && x == last_x && y == last_y;
+  if (name && !repeat && (message != WM_MOUSEMOVE || y < 100))
+    std::cout << "CONTENT " << name << " " << x << " " << y << std::endl;
+  last_message = message;
+  last_x = x;
+  last_y = y;
+  return DefWindowProcW(hwnd, message, wp, lp);
+}
+
+int Serve() {
+  SetProcessDPIAware();
+  Window window;
+  window.SetTitle("nativeapi snap layout");
+  window.SetBounds({200, 200, 720, 420});
+  window.SetTitleBarStyle(TitleBarStyle::Hidden);
+  auto root = static_cast<HWND>(window.GetNativeObject());
+  WNDCLASSW cls = {};
+  cls.lpfnWndProc = LoggingContentProc;
+  cls.hInstance = GetModuleHandleW(nullptr);
+  cls.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  cls.hbrBackground = static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH));
+  cls.lpszClassName = L"NativeApiSnapLayoutContent";
+  RegisterClassW(&cls);
+  RECT client;
+  GetClientRect(root, &client);
+  CreateWindowExW(0, cls.lpszClassName, L"", WS_CHILD | WS_VISIBLE, 0, 0, client.right,
+                  client.bottom, root, nullptr, cls.hInstance, nullptr);
+  window.Show();
+  const double scale = GetDpiForWindow(root) / 96.0;
+  const nativeapi::Rectangle button = {client.right / scale - 146, 0, 46, 32};
+  if (!window.SetMaximizeButtonBounds(button)) {
+    std::cout << "FAIL SetMaximizeButtonBounds" << std::endl;
+    return 1;
+  }
+  POINT origin = {0, 0};
+  ClientToScreen(root, &origin);
+  // The button in the content window's own (physical) coordinates, which its
+  // log uses.
+  std::cout << "BUTTON_CONTENT " << std::lround(button.x * scale) << " "
+            << std::lround(button.y * scale) << " " << std::lround(button.width * scale) << " "
+            << std::lround(button.height * scale) << std::endl;
+  std::cout << "READY " << std::lround(origin.x + button.x * scale) << " "
+            << std::lround(origin.y + button.y * scale) << " " << std::lround(button.width * scale)
+            << " " << std::lround(button.height * scale) << std::endl;
+  const auto end = GetTickCount64() + 60000;
+  while (GetTickCount64() < end && IsWindow(root)) {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    std::cout << std::flush;
+    Sleep(10);
+  }
+  return 0;
+}
+
 LPARAM ScreenPoint(HWND root, double scale, double x, double y) {
   POINT p = {static_cast<LONG>(std::lround(x * scale)), static_cast<LONG>(std::lround(y * scale))};
   ClientToScreen(root, &p);
@@ -49,8 +119,14 @@ LPARAM ScreenPoint(HWND root, double scale, double x, double y) {
 #endif
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   Application::GetInstance();
+#ifdef _WIN32
+  if (argc > 1 && std::string(argv[1]) == "--serve") return Serve();
+#else
+  (void)argc;
+  (void)argv;
+#endif
 #ifndef _WIN32
   Window window;
   Check(!Window::IsMaximizeButtonBoundsSupported(), "unsupported on this platform");
