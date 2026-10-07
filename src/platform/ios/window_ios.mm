@@ -88,6 +88,14 @@ bool Window::IsVisible() const {
   return pimpl_->ui_window_ && !pimpl_->ui_window_.hidden;
 }
 
+WindowOcclusionState Window::GetOcclusionState() const {
+  return WindowOcclusionState::Unknown;
+}
+
+bool Window::IsOcclusionStateSupported() {
+  return false;
+}
+
 void Window::Maximize() {
   // Maximize is not applicable to iOS (fullscreen is used instead)
 }

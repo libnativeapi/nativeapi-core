@@ -193,6 +193,28 @@ bool native_window_is_visible(native_window_t window) {
   }
 }
 
+native_window_occlusion_state_t native_window_get_occlusion_state(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return (native_window_occlusion_state_t)NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN;
+  }
+  try {
+    return to_c_window_occlusion_state(self->GetOcclusionState());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_occlusion_state");
+    return (native_window_occlusion_state_t)NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN;
+  }
+}
+
+bool native_window_is_occlusion_state_supported(void) {
+  try {
+    return nativeapi::Window::IsOcclusionStateSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_occlusion_state_supported");
+    return false;
+  }
+}
+
 void native_window_maximize(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -1628,6 +1650,11 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
   if (const auto* typed = dynamic_cast<const nativeapi::WindowPropertyChangedEvent*>(&event)) {
     out->type = NATIVE_WINDOW_EVENT_TYPE_PROPERTY_CHANGED;
     out->data.property_changed.property = to_c_window_property(typed->GetProperty());
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowOcclusionChangedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_OCCLUSION_CHANGED;
+    out->data.occlusion_changed.occlusion_state = to_c_window_occlusion_state(typed->GetOcclusionState());
     return true;
   }
   return false;

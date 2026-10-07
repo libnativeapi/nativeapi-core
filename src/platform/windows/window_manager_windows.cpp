@@ -4,12 +4,14 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <dwmapi.h>
 #include <psapi.h>
 #include <cmath>
 #include "../../window.h"
 #include "../../window_manager.h"
+#include "../../window_property_dispatch.h"
 #include "../../window_registry.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
@@ -471,6 +473,65 @@ static void UninstallHooks() {
 }  // namespace
 
 // Private implementation to hide Windows-specific details
+// Occlusion tracking for WindowOcclusionChangedEvent. Any window of any
+// process can cover ours, so these hooks are system-wide. The callback only
+// arms a short timer: the events come in bursts (a drag moves a window dozens
+// of times a second) and out-of-context WinEvents arrive whenever this thread
+// next reads a message, so the recomputation and the listeners run later from
+// the timer, never inside someone else's message handling.
+#ifndef EVENT_OBJECT_CLOAKED  // Windows 8 SDK constants, absent for older targets.
+#define EVENT_OBJECT_CLOAKED 0x8017
+#define EVENT_OBJECT_UNCLOAKED 0x8018
+#endif
+static HWINEVENTHOOK g_occlusion_hooks[5] = {};
+static UINT_PTR g_occlusion_timer = 0;
+constexpr UINT kOcclusionDelayMs = 100;
+
+static void CALLBACK OcclusionTimerProc(HWND, UINT, UINT_PTR timer, DWORD) {
+  KillTimer(nullptr, timer);
+  g_occlusion_timer = 0;
+  std::vector<HWND> windows;
+  windows.reserve(g_window_snapshots.size());
+  for (const auto& entry : g_window_snapshots) windows.push_back(entry.first);
+  for (HWND hwnd : windows) {
+    if (!IsWindow(hwnd)) continue;
+    Window window(hwnd);
+    detail::WindowPropertyDispatch::RefreshOcclusion(window);
+  }
+}
+
+static void CALLBACK OcclusionEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG id_object,
+                                        LONG id_child, DWORD, DWORD) {
+  if (id_object != OBJID_WINDOW || id_child != CHILDID_SELF || !hwnd ||
+      GetAncestor(hwnd, GA_ROOT) != hwnd)
+    return;
+  if (!g_occlusion_timer)
+    g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
+}
+
+static void InstallOcclusionHooks() {
+  if (g_occlusion_hooks[0]) return;
+  const DWORD ranges[5][2] = {
+      {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND},
+      {EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND},
+      {EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER},  // Show, hide, reorder.
+      {EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE},
+      {EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED},  // Virtual desktop switches.
+  };
+  for (int i = 0; i < 5; ++i)
+    g_occlusion_hooks[i] = SetWinEventHook(ranges[i][0], ranges[i][1], nullptr,
+                                           OcclusionEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+}
+
+static void RemoveOcclusionHooks() {
+  for (auto& hook : g_occlusion_hooks) {
+    if (hook) UnhookWinEvent(hook);
+    hook = nullptr;
+  }
+  if (g_occlusion_timer) KillTimer(nullptr, g_occlusion_timer);
+  g_occlusion_timer = 0;
+}
+
 class WindowManager::Impl {
  public:
   Impl(WindowManager* manager) : manager_(manager) {}
@@ -515,12 +576,16 @@ class WindowManager::Impl {
                                         WINEVENT_OUTOFCONTEXT);
     }
 
+    InstallOcclusionHooks();
+
     // Windows that exist already have a state to compare the first change with
     EnumWindows(
         [](HWND hwnd, LPARAM) -> BOOL {
           if (IsOwnProcessWindow(hwnd) && IsReportableWindow(hwnd)) {
             g_window_snapshots[hwnd] = TakeSnapshot(hwnd);
             WatchWindowGeometry(hwnd);
+            Window window(hwnd);
+            detail::WindowPropertyDispatch::RefreshOcclusion(window);
             // Already on screen, so not created under our eyes: no
             // WindowCreatedEvent for it, only the WindowClosedEvent.
             if (IsWindowVisible(hwnd)) {
@@ -536,6 +601,7 @@ class WindowManager::Impl {
   }
 
   void StopEventListening() {
+    RemoveOcclusionHooks();
     if (g_foreground_hook) {
       UnhookWinEvent(g_foreground_hook);
       g_foreground_hook = nullptr;

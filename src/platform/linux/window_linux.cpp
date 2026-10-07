@@ -782,6 +782,12 @@ static void RefreshPropertiesOf(GtkWidget* widget) {
   detail::WindowPropertyDispatch::Refresh(window);
 }
 
+static void RefreshOcclusionOf(GtkWidget* widget) {
+  if (!widget || gtk_widget_in_destruction(widget)) return;
+  Window window(widget);
+  detail::WindowPropertyDispatch::RefreshOcclusion(window);
+}
+
 static bool ObserveWindowProperties(GtkWidget* widget) {
   if (!widget || !GTK_IS_WINDOW(widget) || g_object_get_data(G_OBJECT(widget), kPropertyObserverKey))
     return false;
@@ -795,9 +801,16 @@ static bool ObserveWindowProperties(GtkWidget* widget) {
                          G_CALLBACK(+[](GtkWidget* self, GdkEventWindowState* event, gpointer) {
                            if (event->changed_mask & (GDK_WINDOW_STATE_ABOVE | GDK_WINDOW_STATE_BELOW))
                              RefreshPropertiesOf(self);
+                           if (event->changed_mask &
+                               (GDK_WINDOW_STATE_ICONIFIED | GDK_WINDOW_STATE_WITHDRAWN))
+                             RefreshOcclusionOf(self);
                            return FALSE;
                          }),
                          nullptr);
+  // Occlusion: shown and hidden (minimizing is the window-state-event above).
+  auto on_mapping = +[](GtkWidget* self, gpointer) { RefreshOcclusionOf(self); };
+  g_signal_connect_after(widget, "map", G_CALLBACK(on_mapping), nullptr);
+  g_signal_connect_after(widget, "unmap", G_CALLBACK(on_mapping), nullptr);
   return true;
 }
 
@@ -843,8 +856,11 @@ Window::Window() {
 
   // Only create the instance, don't show the window
   pimpl_ = std::make_unique<Impl>(widget, gdk_window);
-  if (ObserveWindowProperties(widget))
-    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+  if (ObserveWindowProperties(widget)) {
+    // The values later changes are compared with.
+    detail::WindowPropertyDispatch::Refresh(*this);
+    detail::WindowPropertyDispatch::RefreshOcclusion(*this);
+  }
 }
 
 Window::Window(void* native_window) {
@@ -898,8 +914,11 @@ Window::Window(void* native_window) {
   }
 
   pimpl_ = std::make_unique<Impl>(widget, gdk_window);
-  if (ObserveWindowProperties(widget))
-    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+  if (ObserveWindowProperties(widget)) {
+    // The values later changes are compared with.
+    detail::WindowPropertyDispatch::Refresh(*this);
+    detail::WindowPropertyDispatch::RefreshOcclusion(*this);
+  }
 }
 
 Window::~Window() {
@@ -1192,6 +1211,25 @@ bool Window::IsVisible() const {
     return gdk_window_is_visible(pimpl_->gdk_window_);
   }
   return false;
+}
+
+// Whether other windows cover a shown window is not known: X11's
+// VisibilityNotify is meaningless under the compositing managers every
+// desktop runs (GDK reports one even on Xvfb with Openbox), and Wayland tells
+// clients nothing about it.
+WindowOcclusionState Window::GetOcclusionState() const {
+  GtkWidget* widget = pimpl_->widget_;
+  GdkWindow* surface = pimpl_->gdk_window_;
+  if (!widget && !surface) return WindowOcclusionState::Unknown;
+  if (!IsVisible() || (widget && !gtk_widget_get_mapped(widget)) ||
+      (surface && (gdk_window_get_state(surface) &
+                   (GDK_WINDOW_STATE_ICONIFIED | GDK_WINDOW_STATE_WITHDRAWN))))
+    return WindowOcclusionState::Occluded;
+  return WindowOcclusionState::Unknown;
+}
+
+bool Window::IsOcclusionStateSupported() {
+  return true;
 }
 
 void Window::Maximize() {

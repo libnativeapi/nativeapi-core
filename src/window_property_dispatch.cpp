@@ -61,6 +61,10 @@ std::unordered_map<WindowId, Readings>& Store() {
   static auto* store = new std::unordered_map<WindowId, Readings>();  // Outlives exit.
   return *store;
 }
+std::unordered_map<WindowId, WindowOcclusionState>& OcclusionStore() {
+  static auto* store = new std::unordered_map<WindowId, WindowOcclusionState>();
+  return *store;
+}
 thread_local int g_scope_depth = 0;
 
 }  // namespace
@@ -89,9 +93,26 @@ void WindowPropertyDispatch::Refresh(const Window& window) {
   }
 }
 
+void WindowPropertyDispatch::RefreshOcclusion(const Window& window) {
+  const WindowId id = window.GetId();
+  if (id == IdAllocator::kInvalidId) return;
+  const WindowOcclusionState now = window.GetOcclusionState();
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto [entry, inserted] = OcclusionStore().try_emplace(id, now);
+    if (inserted || entry->second == now) return;
+    entry->second = now;
+  }
+  try {
+    WindowManager::GetInstance().DispatchWindowEvent(WindowOcclusionChangedEvent(id, now));
+  } catch (...) {
+  }
+}
+
 void WindowPropertyDispatch::Forget(WindowId id) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Store().erase(id);
+  OcclusionStore().erase(id);
 }
 
 WindowPropertyScope::WindowPropertyScope(const Window& window) : window_(window) {

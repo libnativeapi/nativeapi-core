@@ -97,6 +97,14 @@ bool Window::IsVisible() const {
   return pimpl_->native_window_ != nullptr;
 }
 
+WindowOcclusionState Window::GetOcclusionState() const {
+  return WindowOcclusionState::Unknown;
+}
+
+bool Window::IsOcclusionStateSupported() {
+  return false;
+}
+
 void Window::Maximize() {
   // Maximize is not applicable to Android Activities
   ALOGW("Maximize not supported on Android");

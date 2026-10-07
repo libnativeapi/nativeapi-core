@@ -58,6 +58,12 @@ typedef enum {
 } native_window_property_t;
 
 typedef enum {
+  NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN = 0,
+  NATIVE_WINDOW_OCCLUSION_STATE_VISIBLE = 1,
+  NATIVE_WINDOW_OCCLUSION_STATE_OCCLUDED = 2,
+} native_window_occlusion_state_t;
+
+typedef enum {
   NATIVE_VISUAL_EFFECT_NONE = 0,
   NATIVE_VISUAL_EFFECT_BLUR = 1,
   NATIVE_VISUAL_EFFECT_ACRYLIC = 2,
@@ -111,6 +117,7 @@ typedef enum {
   NATIVE_WINDOW_EVENT_TYPE_EXITED_FULL_SCREEN = 10,
   NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED = 11,
   NATIVE_WINDOW_EVENT_TYPE_PROPERTY_CHANGED = 12,
+  NATIVE_WINDOW_EVENT_TYPE_OCCLUSION_CHANGED = 13,
 } native_window_event_type_t;
 
 /// One WindowEvent, tagged by its concrete type.
@@ -133,6 +140,9 @@ typedef struct {
     struct {
       native_window_property_t property;
     } property_changed;
+    struct {
+      native_window_occlusion_state_t occlusion_state;
+    } occlusion_changed;
   } data;
 } native_window_event_t;
 
@@ -180,6 +190,12 @@ void native_window_hide(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 bool native_window_is_visible(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+native_window_occlusion_state_t native_window_get_occlusion_state(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_occlusion_state_supported(void);
 
 FFI_PLUGIN_EXPORT
 void native_window_maximize(native_window_t window);
@@ -528,6 +544,8 @@ inline native_window_corner_preference_t to_c_window_corner_preference(nativeapi
 inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_window_corner_preference_t value);
 inline native_window_property_t to_c_window_property(nativeapi::WindowProperty value);
 inline nativeapi::WindowProperty to_cpp_window_property(native_window_property_t value);
+inline native_window_occlusion_state_t to_c_window_occlusion_state(nativeapi::WindowOcclusionState value);
+inline nativeapi::WindowOcclusionState to_cpp_window_occlusion_state(native_window_occlusion_state_t value);
 inline native_visual_effect_t to_c_visual_effect(nativeapi::VisualEffect value);
 inline nativeapi::VisualEffect to_cpp_visual_effect(native_visual_effect_t value);
 inline native_resize_edge_t to_c_resize_edge(nativeapi::ResizeEdge value);
@@ -640,6 +658,32 @@ inline nativeapi::WindowProperty to_cpp_window_property(native_window_property_t
       return nativeapi::WindowProperty::TitleBarStyle;
     default:
       return static_cast<nativeapi::WindowProperty>(value);
+  }
+}
+
+inline native_window_occlusion_state_t to_c_window_occlusion_state(nativeapi::WindowOcclusionState value) {
+  switch (value) {
+    case nativeapi::WindowOcclusionState::Unknown:
+      return NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN;
+    case nativeapi::WindowOcclusionState::Visible:
+      return NATIVE_WINDOW_OCCLUSION_STATE_VISIBLE;
+    case nativeapi::WindowOcclusionState::Occluded:
+      return NATIVE_WINDOW_OCCLUSION_STATE_OCCLUDED;
+    default:
+      return NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN;
+  }
+}
+
+inline nativeapi::WindowOcclusionState to_cpp_window_occlusion_state(native_window_occlusion_state_t value) {
+  switch (value) {
+    case NATIVE_WINDOW_OCCLUSION_STATE_UNKNOWN:
+      return nativeapi::WindowOcclusionState::Unknown;
+    case NATIVE_WINDOW_OCCLUSION_STATE_VISIBLE:
+      return nativeapi::WindowOcclusionState::Visible;
+    case NATIVE_WINDOW_OCCLUSION_STATE_OCCLUDED:
+      return nativeapi::WindowOcclusionState::Occluded;
+    default:
+      return static_cast<nativeapi::WindowOcclusionState>(value);
   }
 }
 

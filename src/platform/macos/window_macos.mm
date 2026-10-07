@@ -455,7 +455,9 @@ Window::Window(void* native_window) {
   pimpl_ = std::make_unique<Impl>(id, ns_window);
   if (ns_window && !objc_getAssociatedObject(ns_window, kWindowPropertyObserverKey)) {
     NativeApiObserveWindowProperties(ns_window);
-    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+    // The values later changes are compared with.
+    detail::WindowPropertyDispatch::Refresh(*this);
+    detail::WindowPropertyDispatch::RefreshOcclusion(*this);
   }
 }
 
@@ -501,6 +503,17 @@ void Window::Hide() {
 
 bool Window::IsVisible() const {
   return [pimpl_->ns_window_ isVisible];
+}
+
+WindowOcclusionState Window::GetOcclusionState() const {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return WindowOcclusionState::Unknown;
+  return ([window occlusionState] & NSWindowOcclusionStateVisible) ? WindowOcclusionState::Visible
+                                                                   : WindowOcclusionState::Occluded;
+}
+
+bool Window::IsOcclusionStateSupported() {
+  return true;
 }
 
 void Window::Maximize() {

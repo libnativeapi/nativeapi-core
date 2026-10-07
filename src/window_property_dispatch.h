@@ -15,6 +15,9 @@ struct WindowPropertyDispatch {
   // reading of a native window only records the values. Ignored while a
   // WindowPropertyScope is open on this thread: that scope refreshes at its end.
   static void Refresh(const Window& window);
+  // Re-reads Window::GetOcclusionState() and emits WindowOcclusionChangedEvent
+  // when it differs from the last reading; the first reading only records it.
+  static void RefreshOcclusion(const Window& window);
   // Drops the readings of a native window that is gone.
   static void Forget(WindowId id);
 };

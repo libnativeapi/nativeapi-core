@@ -164,6 +164,20 @@ enum class WindowProperty {
 };
 
 /**
+ * @brief Whether any part of a window can be seen.
+ * @see Window::GetOcclusionState() for platform availability.
+ */
+enum class WindowOcclusionState {
+  /** The platform cannot tell. */
+  Unknown,
+  /** Some part of the window is on screen and not covered. */
+  Visible,
+  /** Nothing of the window can be seen: hidden, minimized, on another
+      workspace, off screen or covered by other windows. */
+  Occluded
+};
+
+/**
  * @brief Translucent materials that can replace a window's background.
  *
  * A visual effect blurs or samples whatever is behind the window and draws the
@@ -450,6 +464,40 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * @return true if the window is visible, false if hidden or minimized
    */
   bool IsVisible() const;
+
+  /**
+   * @brief Tells whether any part of the window can be seen.
+   *
+   * Unlike IsVisible(), which only says the window is shown, this accounts for
+   * minimizing, other workspaces and other windows on top of it. Useful to
+   * pause rendering or video nobody can see. WindowOcclusionChangedEvent
+   * reports changes.
+   *
+   * @return The current state, or WindowOcclusionState::Unknown where the
+   *         platform cannot tell.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - NSWindow.occlusionState, as the system computes it.
+   * - Windows: ⚠️ Approximated - Hidden, minimized and cloaked (another
+   *   virtual desktop) windows are occluded; otherwise the window is occluded
+   *   when the opaque windows above it in the Z order, clipped to the screens,
+   *   cover it entirely. Click-through and translucent layered windows do not
+   *   count as covering.
+   * - Linux: ⚠️ Partial - Hidden and minimized windows are occluded; whether
+   *   other windows cover a shown one is not known, so it is Unknown (X11
+   *   visibility is meaningless under a compositing manager, and Wayland
+   *   does not tell).
+   * - Android: ❌ Not applicable - Always Unknown
+   * - iOS: ❌ Not applicable - Always Unknown
+   * - OpenHarmony: ❌ Not applicable - Always Unknown
+   */
+  WindowOcclusionState GetOcclusionState() const;
+
+  /**
+   * @brief Whether GetOcclusionState() can report anything but Unknown here.
+   * @see GetOcclusionState() for platform availability.
+   */
+  static bool IsOcclusionStateSupported();
   // === Window State Management ===
 
   /**
@@ -2005,6 +2053,33 @@ class WindowPropertyChangedEvent : public WindowEvent {
 
  private:
   WindowProperty property_;
+};
+
+/**
+ * Event class for a change of whether a window can be seen
+ *
+ * Emitted when Window::GetOcclusionState() changes for a window that was
+ * already seen once, whoever caused it: showing, hiding, minimizing, moving
+ * it or other windows. GetOcclusionState() on the event is the new state.
+ *
+ * @see Window::GetOcclusionState() for platform availability. On Windows the
+ * state is recomputed shortly after windows change, so a brief covering may
+ * not be reported.
+ */
+class WindowOcclusionChangedEvent : public WindowEvent {
+ public:
+  WindowOcclusionChangedEvent(WindowId window_id, WindowOcclusionState occlusion_state)
+      : WindowEvent(window_id), occlusion_state_(occlusion_state) {}
+
+  /**
+   * @return The new state
+   */
+  WindowOcclusionState GetOcclusionState() const { return occlusion_state_; }
+
+  std::string GetTypeName() const override { return "WindowOcclusionChangedEvent"; }
+
+ private:
+  WindowOcclusionState occlusion_state_;
 };
 
 }  // namespace nativeapi

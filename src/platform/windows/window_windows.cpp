@@ -830,8 +830,11 @@ Window::Window() {
 
   // Create the instance with allocated ID
   pimpl_ = std::make_unique<Impl>(hwnd, id);
-  if (TrackWindowLifetime(hwnd, id))
-    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+  if (TrackWindowLifetime(hwnd, id)) {
+    // The values later changes are compared with.
+    detail::WindowPropertyDispatch::Refresh(*this);
+    detail::WindowPropertyDispatch::RefreshOcclusion(*this);
+  }
 
   // Note: Window registration in WindowRegistry is now handled by WindowManager::GetAll()
   // which uses EnumWindows to discover and register all windows dynamically
@@ -868,8 +871,11 @@ Window::Window(void* native_window) {
   }
 
   pimpl_ = std::make_unique<Impl>(hwnd, id);
-  if (TrackWindowLifetime(hwnd, id))
-    detail::WindowPropertyDispatch::Refresh(*this);  // The values changes are compared with.
+  if (TrackWindowLifetime(hwnd, id)) {
+    // The values later changes are compared with.
+    detail::WindowPropertyDispatch::Refresh(*this);
+    detail::WindowPropertyDispatch::RefreshOcclusion(*this);
+  }
 
   // Note: Window registration in WindowRegistry is now handled by WindowManager::GetAll()
   // which uses EnumWindows to discover and register all windows dynamically
@@ -1005,6 +1011,75 @@ void Window::Hide() {
 
 bool Window::IsVisible() const {
   return pimpl_->hwnd_ && IsWindowVisible(pimpl_->hwnd_);
+}
+
+static bool IsCloakedWindow(HWND hwnd) {
+  BOOL cloaked = FALSE;
+  return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
+         cloaked;
+}
+
+// The rectangle a window paints, without the invisible resize borders that
+// GetWindowRect() includes on Windows 10 and later.
+static RECT PaintedBounds(HWND hwnd) {
+  RECT rect = {};
+  if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect))))
+    GetWindowRect(hwnd, &rect);
+  return rect;
+}
+
+// Whether a window above another one hides what is under it.
+static bool CoversWindowsBelow(HWND hwnd) {
+  if (!IsWindowVisible(hwnd) || IsIconic(hwnd) || IsCloakedWindow(hwnd)) return false;
+  const LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if (ex_style & WS_EX_TRANSPARENT) return false;  // Click-through overlays.
+  if (ex_style & WS_EX_LAYERED) {
+    // Only a layered window with constant full opacity covers; per-pixel alpha
+    // (UpdateLayeredWindow) fails this query and may be see-through anywhere.
+    BYTE alpha = 0;
+    DWORD flags = 0;
+    if (!GetLayeredWindowAttributes(hwnd, nullptr, &alpha, &flags) || (flags & LWA_COLORKEY) ||
+        ((flags & LWA_ALPHA) && alpha != 255))
+      return false;
+  }
+  return true;
+}
+
+WindowOcclusionState Window::GetOcclusionState() const {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !IsWindow(hwnd)) return WindowOcclusionState::Unknown;
+  if (!IsWindowVisible(hwnd) || IsIconic(hwnd) || IsCloakedWindow(hwnd))
+    return WindowOcclusionState::Occluded;
+  const RECT bounds = PaintedBounds(hwnd);
+  HRGN visible = CreateRectRgnIndirect(&bounds);
+  HRGN screens = CreateRectRgn(0, 0, 0, 0);
+  EnumDisplayMonitors(
+      nullptr, nullptr,
+      [](HMONITOR, HDC, LPRECT monitor, LPARAM data) -> BOOL {
+        HRGN area = CreateRectRgnIndirect(monitor);
+        CombineRgn(reinterpret_cast<HRGN>(data), reinterpret_cast<HRGN>(data), area, RGN_OR);
+        DeleteObject(area);
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(screens));
+  int kind = CombineRgn(visible, visible, screens, RGN_AND);
+  DeleteObject(screens);
+  // Windows above this one, nearest first; stop once nothing is left.
+  for (HWND above = GetWindow(hwnd, GW_HWNDPREV); above && kind != NULLREGION && kind != ERROR;
+       above = GetWindow(above, GW_HWNDPREV)) {
+    if (!CoversWindowsBelow(above)) continue;
+    const RECT cover = PaintedBounds(above);
+    HRGN area = CreateRectRgnIndirect(&cover);
+    kind = CombineRgn(visible, visible, area, RGN_DIFF);
+    DeleteObject(area);
+  }
+  DeleteObject(visible);
+  if (kind == ERROR) return WindowOcclusionState::Unknown;
+  return kind == NULLREGION ? WindowOcclusionState::Occluded : WindowOcclusionState::Visible;
+}
+
+bool Window::IsOcclusionStateSupported() {
+  return true;
 }
 
 void Window::Maximize() {

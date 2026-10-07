@@ -9,6 +9,7 @@
 
 #include "../../window.h"
 #include "../../window_manager.h"
+#include "../../window_property_dispatch.h"
 #include "../../window_registry.h"
 #include "coordinate_utils_macos.h"
 
@@ -443,6 +444,9 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
         manager_->DispatchWindowEvent(restored_event);
       }
     }
+  } else if (event_type == "occlusion") {
+    Window wrapper((__bridge void*)window);
+    detail::WindowPropertyDispatch::RefreshOcclusion(wrapper);
   } else if (event_type == "moved") {
     // Same top-left origin as Window::GetPosition()
     CGPoint top_left = NSRectExt::topLeft([window frame]);
