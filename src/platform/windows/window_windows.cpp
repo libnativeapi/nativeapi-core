@@ -121,6 +121,13 @@ static const wchar_t* kFocusReturnWindowProperty = L"NativeAPIFocusReturnWindow"
 // hands the foreground back to it. Distinct from the focus-policy property above,
 // which only a no-activate window uses and its policy change clears.
 static const wchar_t* kBlurReturnWindowProperty = L"NativeAPIBlurReturnWindow";
+// Maximize() on a window that is not shown yet: shown later by anyone - a
+// Flutter runner's first-frame ShowWindow(SW_SHOWNORMAL) - it appears maximized.
+static const wchar_t* kShowMaximizedProperty = L"NativeAPIShowMaximized";
+static UINT ShowMaximizedMessage() {
+  static const UINT message = RegisterWindowMessageW(L"NativeAPIShowMaximized");
+  return message;
+}
 // The app-drawn maximize button (MaximizeButtonArea), owned by the HWND.
 static const wchar_t* kMaximizeButtonProperty = L"NativeAPIMaximizeButton";
 struct MaximizeButtonArea {
@@ -717,6 +724,7 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     RemovePropW(hwnd, kNonActivatingProperty);
     RemovePropW(hwnd, kFocusReturnWindowProperty);
     RemovePropW(hwnd, kBlurReturnWindowProperty);
+    RemovePropW(hwnd, kShowMaximizedProperty);
     delete static_cast<MaximizeButtonArea*>(RemovePropW(hwnd, kMaximizeButtonProperty));
     RemovePropW(hwnd, kVisualEffectProperty);
     RemovePropW(hwnd, kCornerPreferenceProperty);
@@ -740,6 +748,19 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
   if (message == WM_PARENTNOTIFY && LOWORD(wp) == WM_CREATE &&
       (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE))
     EnumChildWindows(hwnd, InstallFocusPolicyChild, 0);
+  if (message == WM_WINDOWPOSCHANGING && GetPropW(hwnd, kShowMaximizedProperty)) {
+    auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
+    if (pos && (pos->flags & SWP_SHOWWINDOW)) {
+      // Whatever shows it would show it restored (SW_SHOWNORMAL restores even a
+      // maximized window): keep it hidden and show it maximized right after.
+      pos->flags &= ~SWP_SHOWWINDOW;
+      PostMessageW(hwnd, ShowMaximizedMessage(), 0, 0);
+    }
+  }
+  if (message == ShowMaximizedMessage()) {
+    if (RemovePropW(hwnd, kShowMaximizedProperty)) ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+    return 0;
+  }
   if (message == WM_WINDOWPOSCHANGED) {
     const auto* pos = reinterpret_cast<const WINDOWPOS*>(lp);
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
@@ -1187,12 +1208,19 @@ bool Window::IsOcclusionStateSupported() {
 }
 
 void Window::Maximize() {
-  if (pimpl_->hwnd_ && !IsMaximized()) {
-    ShowWindow(pimpl_->hwnd_, SW_MAXIMIZE);
+  if (!pimpl_->hwnd_ || IsMaximized()) return;
+  if (!IsWindowVisible(pimpl_->hwnd_)) {
+    // SW_MAXIMIZE would show it now, before its content is ready, and the
+    // host's own show (a Flutter runner's, on its first frame) would restore
+    // it. Shown maximized when it is shown; see kShowMaximizedProperty.
+    SetPropW(pimpl_->hwnd_, kShowMaximizedProperty, reinterpret_cast<HANDLE>(1));
+    return;
   }
+  ShowWindow(pimpl_->hwnd_, SW_MAXIMIZE);
 }
 
 void Window::Unmaximize() {
+  if (pimpl_->hwnd_ && RemovePropW(pimpl_->hwnd_, kShowMaximizedProperty)) return;
   if (pimpl_->hwnd_ && IsMaximized()) {
     ShowWindow(pimpl_->hwnd_, SW_RESTORE);
   }
@@ -1201,6 +1229,7 @@ void Window::Unmaximize() {
 bool Window::IsMaximized() const {
   if (!pimpl_->hwnd_)
     return false;
+  if (GetPropW(pimpl_->hwnd_, kShowMaximizedProperty)) return true;  // To be shown maximized.
   WINDOWPLACEMENT wp = {};
   wp.length = sizeof(WINDOWPLACEMENT);
   GetWindowPlacement(pimpl_->hwnd_, &wp);

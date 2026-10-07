@@ -504,7 +504,10 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * @brief Maximizes the window to fill the available screen space.
    *
    * Expands the window to occupy the maximum available area on the screen,
-   * typically excluding taskbars and docks.
+   * typically excluding taskbars and docks. A window that is not shown yet
+   * stays hidden and appears maximized when it is shown, also when its host
+   * shows it as a restored window (a Flutter runner on its first frame);
+   * IsMaximized() already reports true, and Unmaximize() takes it back.
    */
   void Maximize();
 
