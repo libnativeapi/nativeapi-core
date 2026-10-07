@@ -53,9 +53,17 @@ static WindowId GetOrCreateWindowId(GdkWindow* gdk_window) {
     return IdAllocator::kInvalidId;
   }
 
-  // First, try to read ID attached to the GObject
-  gpointer data = g_object_get_data(G_OBJECT(gdk_window), kWindowIdKey);
+  // The owning widget's ID first (see Window(void*)), then the GdkWindow's; an ID
+  // found or allocated here goes on both, or a Window wrapper made later would
+  // not match the widget its close gate and events are keyed on.
+  gpointer owner = nullptr;
+  gdk_window_get_user_data(gdk_window, &owner);
+  GObject* widget = owner && GTK_IS_WIDGET(owner) ? G_OBJECT(owner) : nullptr;
+  gpointer data = widget ? g_object_get_data(widget, kWindowIdKey) : nullptr;
+  if (!data) data = g_object_get_data(G_OBJECT(gdk_window), kWindowIdKey);
   if (data) {
+    g_object_set_data(G_OBJECT(gdk_window), kWindowIdKey, data);
+    if (widget) g_object_set_data(widget, kWindowIdKey, data);
     WindowId id = static_cast<WindowId>(reinterpret_cast<uintptr_t>(data));
     // Cache it in the map for faster lookup next time
     std::lock_guard<std::mutex> lock(g_map_mutex);
@@ -77,6 +85,9 @@ static WindowId GetOrCreateWindowId(GdkWindow* gdk_window) {
   if (new_id != IdAllocator::kInvalidId) {
     g_object_set_data(G_OBJECT(gdk_window), kWindowIdKey,
                       reinterpret_cast<gpointer>(static_cast<uintptr_t>(new_id)));
+    if (widget)
+      g_object_set_data(widget, kWindowIdKey,
+                        reinterpret_cast<gpointer>(static_cast<uintptr_t>(new_id)));
     std::lock_guard<std::mutex> lock(g_map_mutex);
     g_window_id_map[gdk_window] = new_id;
   }

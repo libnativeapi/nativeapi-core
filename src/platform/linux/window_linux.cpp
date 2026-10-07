@@ -932,17 +932,23 @@ Window::Window(void* native_window) {
   }
 
   // Like the other platforms, a wrapped window gets an ID on first sight, stored
-  // on the native objects so every later wrapper and WindowManager agree on it.
+  // on both native objects so every later wrapper and WindowManager agree on it.
+  // The widget's ID wins: it is the identity GetNativeObject() reports, and the
+  // close gate and the per-window events check it there. WindowManager, which
+  // sees windows through their GdkWindow, may have stored one on that alone.
   gpointer existing_id = nullptr;
-  if (gdk_window) {
-    existing_id = g_object_get_data(G_OBJECT(gdk_window), kWindowIdKey);
-  }
-  if (!existing_id && widget) {
+  if (widget) {
     existing_id = g_object_get_data(G_OBJECT(widget), kWindowIdKey);
+  }
+  if (!existing_id && gdk_window) {
+    existing_id = g_object_get_data(G_OBJECT(gdk_window), kWindowIdKey);
   }
   if (existing_id) {
     if (gdk_window) {
       g_object_set_data(G_OBJECT(gdk_window), kWindowIdKey, existing_id);
+    }
+    if (widget) {
+      g_object_set_data(G_OBJECT(widget), kWindowIdKey, existing_id);
     }
   } else if (gdk_window || widget) {
     WindowId id = IdAllocator::Allocate<Window>();
