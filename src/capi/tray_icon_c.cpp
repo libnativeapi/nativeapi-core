@@ -456,6 +456,7 @@ native_listener_id_t native_tray_icon_add_listener(native_tray_icon_t tray_icon,
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::TrayIconEvent>(
         [callback, holder](const nativeapi::TrayIconEvent& event) {
+          if (holder->revoked()) return;
           native_tray_icon_event_t c_event = {};
           if (!to_c_tray_icon_event(event, &c_event)) {
             return;
@@ -479,6 +480,7 @@ native_listener_id_t native_tray_icon_add_listener_async(native_tray_icon_t tray
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::TrayIconEvent>(*self,
         [callback, registration](const nativeapi::TrayIconEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

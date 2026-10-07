@@ -680,6 +680,7 @@ native_listener_id_t native_view_add_listener(native_view_t view, native_view_ev
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::ViewEvent>(
         [callback, holder](const nativeapi::ViewEvent& event) {
+          if (holder->revoked()) return;
           native_view_event_t c_event = {};
           if (!to_c_view_event(event, &c_event)) {
             return;
@@ -703,6 +704,7 @@ native_listener_id_t native_view_add_listener_async(native_view_t view, native_v
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::ViewEvent>(*self,
         [callback, registration](const nativeapi::ViewEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

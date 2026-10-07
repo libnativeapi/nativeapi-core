@@ -40,6 +40,19 @@ FFI_PLUGIN_EXPORT bool native_event_delivery_is_active(native_event_delivery_t d
 /// Pass false on failure. Returns false for duplicate, stale or type-confused handles.
 FFI_PLUGIN_EXPORT bool native_event_delivery_complete(native_event_delivery_t delivery, bool accept);
 
+/// Releases a handle of any type for a garbage collector's native finalizer,
+/// such as Dart's NativeFinalizer, which runs it on an arbitrary thread and
+/// also when the runtime shuts down (a Flutter hot restart, for one). `handle`
+/// is the handle's value cast to a pointer; the release itself runs on the
+/// main thread. Stale or invalid handles are ignored.
+FFI_PLUGIN_EXPORT void native_handle_finalize(void* handle);
+
+/// Tells the core a binding's runtime is gone for this user_data, from a
+/// native finalizer like the one above: from now on it calls neither the
+/// callback that travels with it nor its release. Safe from any thread.
+/// A binding must not pass a revoked value again.
+FFI_PLUGIN_EXPORT void native_user_data_revoke(void* user_data);
+
 #ifdef __cplusplus
 }
 #endif

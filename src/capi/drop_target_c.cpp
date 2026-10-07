@@ -114,6 +114,7 @@ native_listener_id_t native_drop_target_add_listener(native_drop_target_t drop_t
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::DropTargetEvent>(
         [callback, holder](const nativeapi::DropTargetEvent& event) {
+          if (holder->revoked()) return;
           native_drop_target_event_t c_event = {};
           if (!to_c_drop_target_event(event, &c_event)) {
             return;
@@ -137,6 +138,7 @@ native_listener_id_t native_drop_target_add_listener_async(native_drop_target_t 
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::DropTargetEvent>(*self,
         [callback, registration](const nativeapi::DropTargetEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

@@ -77,7 +77,7 @@ void native_window_manager_set_will_show_hook(native_window_manager_set_will_sho
   try {
     std::optional<std::function<void(unsigned int)>> hook_cpp;
     if (hook) {
-      hook_cpp = [hook, hook_holder](unsigned int arg0) { hook(arg0, hook_holder->get()); };
+      hook_cpp = [hook, hook_holder](unsigned int arg0) { if (!hook_holder->revoked()) hook(arg0, hook_holder->get()); };
     }
     nativeapi::WindowManager::GetInstance().SetWillShowHook(hook_cpp);
     return;
@@ -92,7 +92,7 @@ void native_window_manager_set_will_hide_hook(native_window_manager_set_will_hid
   try {
     std::optional<std::function<void(unsigned int)>> hook_cpp;
     if (hook) {
-      hook_cpp = [hook, hook_holder](unsigned int arg0) { hook(arg0, hook_holder->get()); };
+      hook_cpp = [hook, hook_holder](unsigned int arg0) { if (!hook_holder->revoked()) hook(arg0, hook_holder->get()); };
     }
     nativeapi::WindowManager::GetInstance().SetWillHideHook(hook_cpp);
     return;
@@ -166,6 +166,7 @@ native_listener_id_t native_window_manager_add_listener(native_window_event_call
   try {
     return static_cast<native_listener_id_t>(nativeapi::WindowManager::GetInstance().AddListener<nativeapi::WindowEvent>(
         [callback, holder](const nativeapi::WindowEvent& event) {
+          if (holder->revoked()) return;
           native_window_event_t c_event = {};
           if (!to_c_window_event(event, &c_event)) {
             return;
@@ -185,6 +186,7 @@ native_listener_id_t native_window_manager_add_listener_async(native_window_even
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::WindowEvent>(nativeapi::WindowManager::GetInstance(),
         [callback, registration](const nativeapi::WindowEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           if (const auto* typed = dynamic_cast<const nativeapi::WindowCloseRequestedEvent*>(&event)) request = typed->GetRequest();
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;

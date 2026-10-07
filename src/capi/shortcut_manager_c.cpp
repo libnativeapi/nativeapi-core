@@ -33,7 +33,7 @@ native_shortcut_t native_shortcut_manager_register_with_accelerator_and_callback
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
+      callback_cpp = [callback, callback_holder]() { if (!callback_holder->revoked()) callback(callback_holder->get()); };
     }
     return nativeapi::HandleTable::GetInstance().Insert(nativeapi::ShortcutManager::GetInstance().Register(std::string(accelerator ? accelerator : ""), callback_cpp));
   } catch (...) {
@@ -198,6 +198,7 @@ native_listener_id_t native_shortcut_manager_add_listener(native_shortcut_event_
   try {
     return static_cast<native_listener_id_t>(nativeapi::ShortcutManager::GetInstance().AddListener<nativeapi::ShortcutEvent>(
         [callback, holder](const nativeapi::ShortcutEvent& event) {
+          if (holder->revoked()) return;
           native_shortcut_event_t c_event = {};
           if (!to_c_shortcut_event(event, &c_event)) {
             return;
@@ -217,6 +218,7 @@ native_listener_id_t native_shortcut_manager_add_listener_async(native_shortcut_
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::ShortcutEvent>(nativeapi::ShortcutManager::GetInstance(),
         [callback, registration](const nativeapi::ShortcutEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

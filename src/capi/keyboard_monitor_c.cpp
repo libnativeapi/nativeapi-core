@@ -88,6 +88,7 @@ native_listener_id_t native_keyboard_monitor_add_listener(native_keyboard_monito
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::KeyboardEvent>(
         [callback, holder](const nativeapi::KeyboardEvent& event) {
+          if (holder->revoked()) return;
           native_keyboard_event_t c_event = {};
           if (!to_c_keyboard_event(event, &c_event)) {
             return;
@@ -111,6 +112,7 @@ native_listener_id_t native_keyboard_monitor_add_listener_async(native_keyboard_
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::KeyboardEvent>(*self,
         [callback, registration](const nativeapi::KeyboardEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

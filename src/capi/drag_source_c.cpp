@@ -207,6 +207,7 @@ native_listener_id_t native_drag_source_add_listener(native_drag_source_t drag_s
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::DragSourceEvent>(
         [callback, holder](const nativeapi::DragSourceEvent& event) {
+          if (holder->revoked()) return;
           native_drag_source_event_t c_event = {};
           if (!to_c_drag_source_event(event, &c_event)) {
             return;
@@ -230,6 +231,7 @@ native_listener_id_t native_drag_source_add_listener_async(native_drag_source_t 
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::DragSourceEvent>(*self,
         [callback, registration](const nativeapi::DragSourceEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

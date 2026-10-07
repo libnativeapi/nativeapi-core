@@ -42,7 +42,7 @@ native_shortcut_t native_shortcut_create_with_id_and_accelerator_and_callback(na
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
+      callback_cpp = [callback, callback_holder]() { if (!callback_holder->revoked()) callback(callback_holder->get()); };
     }
     return nativeapi::HandleTable::GetInstance().Insert(
         std::make_shared<nativeapi::Shortcut>(id, std::string(accelerator ? accelerator : ""), callback_cpp));
@@ -168,7 +168,7 @@ void native_shortcut_set_callback(native_shortcut_t shortcut, native_shortcut_se
   try {
     std::function<void()> callback_cpp;
     if (callback) {
-      callback_cpp = [callback, callback_holder]() { callback(callback_holder->get()); };
+      callback_cpp = [callback, callback_holder]() { if (!callback_holder->revoked()) callback(callback_holder->get()); };
     }
     self->SetCallback(callback_cpp);
     return;

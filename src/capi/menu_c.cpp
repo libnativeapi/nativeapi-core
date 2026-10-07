@@ -353,6 +353,7 @@ native_listener_id_t native_menu_item_add_listener(native_menu_item_t menu_item,
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::MenuEvent>(
         [callback, holder](const nativeapi::MenuEvent& event) {
+          if (holder->revoked()) return;
           native_menu_event_t c_event = {};
           if (!to_c_menu_event(event, &c_event)) {
             return;
@@ -376,6 +377,7 @@ native_listener_id_t native_menu_item_add_listener_async(native_menu_item_t menu
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::MenuEvent>(*self,
         [callback, registration](const nativeapi::MenuEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;
@@ -711,6 +713,7 @@ native_listener_id_t native_menu_add_listener(native_menu_t menu, native_menu_ev
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::MenuEvent>(
         [callback, holder](const nativeapi::MenuEvent& event) {
+          if (holder->revoked()) return;
           native_menu_event_t c_event = {};
           if (!to_c_menu_event(event, &c_event)) {
             return;
@@ -734,6 +737,7 @@ native_listener_id_t native_menu_add_listener_async(native_menu_t menu, native_m
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::MenuEvent>(*self,
         [callback, registration](const nativeapi::MenuEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;

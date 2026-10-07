@@ -204,7 +204,7 @@ inline nativeapi::ShortcutOptions to_cpp_shortcut_options(const native_shortcut_
   auto callback_holder = nativeapi::capi::UserData::Make(value.callback_user_data, value.callback_release_user_data);
   if (value.callback) {
     auto callback = value.callback;
-    result.callback = [callback, holder = callback_holder]() { callback(holder->get()); };
+    result.callback = [callback, holder = callback_holder]() { if (!holder->revoked()) callback(holder->get()); };
   }
   result.description = value.description ? value.description : "";
   result.scope = to_cpp_shortcut_scope(value.scope);

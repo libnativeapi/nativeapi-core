@@ -1564,6 +1564,7 @@ native_listener_id_t native_window_add_listener(native_window_t window, native_w
   try {
     return static_cast<native_listener_id_t>(self->AddListener<nativeapi::WindowEvent>(
         [callback, holder](const nativeapi::WindowEvent& event) {
+          if (holder->revoked()) return;
           native_window_event_t c_event = {};
           if (!to_c_window_event(event, &c_event)) {
             return;
@@ -1587,6 +1588,7 @@ native_listener_id_t native_window_add_listener_async(native_window_t window, na
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::WindowEvent>(*self,
         [callback, registration](const nativeapi::WindowEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           if (const auto* typed = dynamic_cast<const nativeapi::WindowCloseRequestedEvent*>(&event)) request = typed->GetRequest();
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;

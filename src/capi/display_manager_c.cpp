@@ -72,6 +72,7 @@ native_listener_id_t native_display_manager_add_listener(native_display_event_ca
   try {
     return static_cast<native_listener_id_t>(nativeapi::DisplayManager::GetInstance().AddListener<nativeapi::DisplayEvent>(
         [callback, holder](const nativeapi::DisplayEvent& event) {
+          if (holder->revoked()) return;
           native_display_event_t c_event = {};
           if (!to_c_display_event(event, &c_event)) {
             return;
@@ -91,6 +92,7 @@ native_listener_id_t native_display_manager_add_listener_async(native_display_ev
     auto registration = std::make_shared<nativeapi::capi::EventDeliveryRegistration>(holder);
     return static_cast<native_listener_id_t>(nativeapi::detail::EventListenerDispatch::AddListener<nativeapi::DisplayEvent>(nativeapi::DisplayManager::GetInstance(),
         [callback, registration](const nativeapi::DisplayEvent& event) {
+          if (registration->context->holder->revoked()) return;
           std::shared_ptr<nativeapi::EventRequest> request;
           auto vote = request && request->IsCancelable() ? request->Defer() : nullptr;
           native_event_delivery_t delivery = 0;
