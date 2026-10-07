@@ -112,6 +112,8 @@ static const char kSniIntrospectionXml[] =
     "    <property name='ToolTip'            type='(sa(iiay)ss)' access='read'/>"
     "    <property name='ItemIsMenu'         type='b'        access='read'/>"
     "    <property name='Menu'               type='o'        access='read'/>"
+    "    <property name='XAyatanaLabel'      type='s'        access='read'/>"
+    "    <property name='XAyatanaLabelGuide' type='s'        access='read'/>"
     "    <method name='ContextMenu'>"
     "      <arg type='i' direction='in' name='x'/>"
     "      <arg type='i' direction='in' name='y'/>"
@@ -133,6 +135,10 @@ static const char kSniIntrospectionXml[] =
     "    <signal name='NewAttentionIcon'/>"
     "    <signal name='NewOverlayIcon'/>"
     "    <signal name='NewToolTip'/>"
+    "    <signal name='XAyatanaNewLabel'>"
+    "      <arg type='s' name='label'/>"
+    "      <arg type='s' name='guide'/>"
+    "    </signal>"
     "    <signal name='NewStatus'>"
     "      <arg type='s' name='status'/>"
     "    </signal>"
@@ -624,8 +630,19 @@ class TrayIcon::Impl {
     if (g_strcmp0(property_name, "Id") == 0)
       return g_variant_new_string(self->identifier_.c_str());
 
-    if (g_strcmp0(property_name, "Title") == 0)
+    // The SNI Title names the application; hosts list the item by it and fall
+    // back to it for an empty tooltip. SetTitle's text is the Ayatana label below.
+    if (g_strcmp0(property_name, "Title") == 0) {
+      const char* name = g_get_application_name();
+      return g_variant_new_string(name ? name : self->identifier_.c_str());
+    }
+
+    // Drawn next to the icon by hosts that know it (GNOME's AppIndicator
+    // extension), as macOS draws the title; KDE and most bars ignore it.
+    if (g_strcmp0(property_name, "XAyatanaLabel") == 0)
       return g_variant_new_string(self->title_.value_or("").c_str());
+    if (g_strcmp0(property_name, "XAyatanaLabelGuide") == 0)
+      return g_variant_new_string("");
 
     if (g_strcmp0(property_name, "Status") == 0)
       return g_variant_new_string(self->visible_ ? "Active" : "Passive");
@@ -651,10 +668,10 @@ class TrayIcon::Impl {
     if (g_strcmp0(property_name, "AttentionMovieName") == 0) return g_variant_new_string("");
 
     if (g_strcmp0(property_name, "ToolTip") == 0) {
-      // (sa(iiay)ss): iconName, iconPixmap[], title, description
-      const std::string& tip = self->tooltip_.value_or(self->title_.value_or(""));
+      // (sa(iiay)ss): iconName, iconPixmap[], title, description. The tooltip
+      // is the heading; hosts show an empty one as the item's Title.
       return g_variant_new("(s@a(iiay)ss)", "", PixbufToSniIconPixmaps(nullptr),
-                           self->title_.value_or("").c_str(), tip.c_str());
+                           self->tooltip_.value_or("").c_str(), "");
     }
 
     if (g_strcmp0(property_name, "ItemIsMenu") == 0)
@@ -1095,7 +1112,8 @@ std::shared_ptr<View> TrayIcon::GetContentView() const {
 
 void TrayIcon::SetTitle(std::optional<std::string> title) {
   pimpl_->title_ = title;
-  pimpl_->EmitSignal("NewTitle");
+  pimpl_->EmitSignal("XAyatanaNewLabel",
+                     g_variant_new("(ss)", pimpl_->title_.value_or("").c_str(), ""));
 }
 
 std::optional<std::string> TrayIcon::GetTitle() {
