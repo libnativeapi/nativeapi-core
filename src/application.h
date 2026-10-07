@@ -322,8 +322,19 @@ class Application : public EventEmitter<ApplicationEvent> {
    * Sets the application icon that appears in the dock (macOS), taskbar (Windows),
    * or application list (Linux).
    *
-   * @param icon_path Path to the icon file
+   * @param icon_path Path to the icon file (UTF-8)
    * @return true if the icon was set successfully, false otherwise
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - The Dock icon, from any image file NSImage reads.
+   * - Windows: ⚠️ Current windows - An .ico file, set as the big (taskbar,
+   *   Alt+Tab) and small (title bar) icon of every top-level window the
+   *   application has now; windows created later keep the executable's icon.
+   *   False when the file is no icon or there is no window yet.
+   * - Linux: ✅ Supported - GTK's default icon for every window without its own.
+   * - Android: ❌ Not supported - Always returns false
+   * - iOS: ❌ Not supported - Always returns false; the icon comes from Info.plist
+   * - OpenHarmony: ❌ Not supported - Always returns false
    */
   bool SetIcon(const std::string& icon_path);
 

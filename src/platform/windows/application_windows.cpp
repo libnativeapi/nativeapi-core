@@ -241,21 +241,48 @@ class Application::Impl {
     if (icon_path.empty()) {
       return false;
     }
-
-    // Convert to wide string
-    std::wstring wide_path(icon_path.begin(), icon_path.end());
-
-    // Load icon from file using LoadImageW for wide strings
-    HICON icon = static_cast<HICON>(
-        LoadImageW(nullptr, wide_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-
-    if (!icon) {
+    const std::wstring path = StringToWString(icon_path);
+    // The big icon is the one Alt+Tab and the taskbar use, the small one the
+    // title bar's; each loaded at the size the system asks for.
+    auto load = [&path](int width, int height) {
+      return static_cast<HICON>(
+          LoadImageW(nullptr, path.c_str(), IMAGE_ICON, width, height, LR_LOADFROMFILE));
+    };
+    HICON big_icon = load(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    HICON small_icon = load(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+    if (!big_icon || !small_icon) {
+      if (big_icon) DestroyIcon(big_icon);
+      if (small_icon) DestroyIcon(small_icon);
       return false;
     }
-
-    // Set application icon
-    SetClassLongPtr(GetConsoleWindow(), GCLP_HICON, reinterpret_cast<LONG_PTR>(icon));
-
+    // Windows has no application-wide icon besides the executable's resource:
+    // set it on every top-level window of this process.
+    struct Icons {
+      HICON big_icon, small_icon;
+      int windows;
+    } icons{big_icon, small_icon, 0};
+    ::EnumWindows(
+        [](HWND hwnd, LPARAM data) -> BOOL {
+          DWORD process = 0;
+          GetWindowThreadProcessId(hwnd, &process);
+          if (process != GetCurrentProcessId() || GetWindow(hwnd, GW_OWNER)) return TRUE;
+          auto* icons = reinterpret_cast<Icons*>(data);
+          SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons->big_icon));
+          SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons->small_icon));
+          ++icons->windows;
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&icons));
+    if (!icons.windows) {
+      DestroyIcon(big_icon);
+      DestroyIcon(small_icon);
+      return false;
+    }
+    // The windows now hold the new icons; the ones this replaced are free.
+    if (big_icon_) DestroyIcon(big_icon_);
+    if (small_icon_) DestroyIcon(small_icon_);
+    big_icon_ = big_icon;
+    small_icon_ = small_icon;
     return true;
   }
 
@@ -399,6 +426,9 @@ class Application::Impl {
   HANDLE mutex_ = nullptr;
   ITaskbarList3* taskbar_ = nullptr;
   HICON badge_icon_ = nullptr;
+  // SetIcon()'s icons, held by the windows they were set on.
+  HICON big_icon_ = nullptr;
+  HICON small_icon_ = nullptr;
   bool quit_posted_ = false;
   int pending_exit_code_ = 0;
 

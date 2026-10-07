@@ -531,11 +531,11 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
   void Minimize();
 
   /**
-   * @brief Restores the window from minimized or maximized state.
+   * @brief Restores a minimized window: the opposite of Minimize().
    *
-   * Returns the window to its normal state and size. If the window was
-   * minimized, it becomes visible again. If maximized, it returns to
-   * its previous non-maximized size.
+   * The window comes back in the state it was minimized from, maximized
+   * included. A window that is not minimized is left as it is; Unmaximize()
+   * is the opposite of Maximize().
    */
   void Restore();
 

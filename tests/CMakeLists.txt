@@ -15,6 +15,20 @@ add_executable(screen_layout_test screen_layout_test.cpp)
 target_link_libraries(screen_layout_test PRIVATE nativeapi)
 add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
+# window_manager#569 (#77): WS_POPUP windows and their caption.
+# window_manager#534 (#78): Application::SetIcon on the application's windows.
+if(WIN32)
+  add_executable(application_icon_windows_test application_icon_windows_test.cpp)
+  target_link_libraries(application_icon_windows_test PRIVATE nativeapi)
+  target_compile_options(application_icon_windows_test PRIVATE /utf-8)
+  add_test(NAME application_icon_windows_test COMMAND application_icon_windows_test)
+  set_tests_properties(application_icon_windows_test PROPERTIES TIMEOUT 20)
+  add_executable(window_popup_caption_windows_test window_popup_caption_windows_test.cpp)
+  target_link_libraries(window_popup_caption_windows_test PRIVATE nativeapi)
+  add_test(NAME window_popup_caption_windows_test COMMAND window_popup_caption_windows_test)
+  set_tests_properties(window_popup_caption_windows_test PROPERTIES TIMEOUT 20)
+endif()
+
 # SetMaximizeButtonBounds (#70): Windows hit testing and forwarding; unsupported elsewhere.
 add_executable(window_maximize_button_test window_maximize_button_test.cpp)
 target_link_libraries(window_maximize_button_test PRIVATE nativeapi)
