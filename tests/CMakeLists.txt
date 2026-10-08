@@ -425,3 +425,14 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   add_test(NAME application_native_quit_macos_test COMMAND application_native_quit_macos_test)
   set_tests_properties(application_native_quit_macos_test PROPERTIES TIMEOUT 10)
 endif()
+
+add_executable(clipboard_validation_test clipboard_validation_test.cpp)
+target_link_libraries(clipboard_validation_test PRIVATE nativeapi)
+add_test(NAME clipboard_validation_test COMMAND clipboard_validation_test)
+
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # Manually run: snapshots and restores every native pasteboard item/type.
+  add_executable(clipboard_macos_test clipboard_macos_test.mm)
+  target_compile_options(clipboard_macos_test PRIVATE -fobjc-arc)
+  target_link_libraries(clipboard_macos_test PRIVATE nativeapi "-framework Cocoa")
+endif()

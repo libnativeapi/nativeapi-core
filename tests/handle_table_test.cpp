@@ -381,5 +381,14 @@ int RunTests() {
 }  // namespace
 
 int main() {
+  // A retained slot is independent while preserving dynamic/base type tags.
+  auto original = Table().Insert(std::make_shared<FakeDerived>());
+  auto retained = Table().Retain(original);
+  Check(retained != 0 && retained != original, "retain allocates an independent slot");
+  Table().Release(original);
+  Check(Table().Resolve<FakeBase>(retained)->Kind() == 1, "retained slot preserves base tags");
+  Check(Table().Retain(original) == 0 && Table().Retain(0) == 0, "cannot retain stale/zero handles");
+  Table().Release(retained);
+
   return RunTests();
 }

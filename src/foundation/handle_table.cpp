@@ -103,6 +103,21 @@ bool HandleTable::Contains(HandleValue handle) const {
   return FindLiveSlotLocked(handle) != nullptr;
 }
 
+HandleValue HandleTable::Retain(HandleValue handle) {
+  std::shared_ptr<void> object;
+  TypeTags tags{};
+  uint8_t depth = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const Slot* slot = FindLiveSlotLocked(handle);
+    if (!slot) return kInvalidHandle;
+    object = slot->object;
+    tags = slot->type_tags;
+    depth = slot->depth;
+  }
+  return InsertErased(std::move(object), tags, depth);
+}
+
 uint32_t HandleTable::GetTypeTag(HandleValue handle) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const Slot* slot = FindLiveSlotLocked(handle);

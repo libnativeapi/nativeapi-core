@@ -207,6 +207,18 @@ void TestThrowingCallback() {
 }  // namespace
 
 int main() {
+  {
+    int token = 0;
+    auto holder = nativeapi::capi::UserData::Make(&token, nullptr);
+    auto context = std::make_shared<nativeapi::capi::EventDeliveryContext>(holder);
+    auto delivery = nativeapi::HandleTable::GetInstance().Insert(
+        std::make_shared<nativeapi::capi::EventDelivery>(context, nullptr, nullptr));
+    Check(native_event_delivery_is_active(delivery), "ordinary callback delivery starts active");
+    native_user_data_revoke(&token);
+    Check(!native_event_delivery_is_active(delivery), "runtime revocation suppresses queued callback delivery");
+    Check(native_event_delivery_complete(delivery, false), "revoked delivery can still release its payload");
+  }
+
   nativeapi::SetMainThreadDispatcher([](std::function<void()> fn) {
     std::lock_guard<std::mutex> lock(posted_mutex); posted.push_back(std::move(fn)); return true;
   }, [] { return true; });

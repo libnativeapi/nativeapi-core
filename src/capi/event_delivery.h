@@ -38,7 +38,7 @@ class EventDelivery {
 
   bool IsActive() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return !completed_ && context_->active->load();
+    return !completed_ && context_->active->load() && !context_->holder->revoked();
   }
 
   bool Complete(bool accept) {

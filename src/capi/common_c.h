@@ -34,6 +34,8 @@ typedef void (*native_release_user_data_t)(void* user_data);
 
 /// Owns an asynchronous event payload until acknowledged exactly once.
 typedef uint64_t native_event_delivery_t;
+/// Creates an independently owned reference; returns zero for invalid handles.
+FFI_PLUGIN_EXPORT uint64_t native_handle_retain(uint64_t handle);
 /// Whether the originating listener is still registered. False for stale handles.
 FFI_PLUGIN_EXPORT bool native_event_delivery_is_active(native_event_delivery_t delivery);
 /// Releases the payload and its borrowed handles; accept resolves the implicit request vote.

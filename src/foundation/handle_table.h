@@ -112,6 +112,9 @@ class HandleTable {
    */
   bool Release(HandleValue handle);
 
+  /** @brief Creates an independently releasable reference, or 0 for a stale handle. */
+  HandleValue Retain(HandleValue handle);
+
   /** @brief Whether @p handle currently resolves, ignoring type. */
   bool Contains(HandleValue handle) const;
 

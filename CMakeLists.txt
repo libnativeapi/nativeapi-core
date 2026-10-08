@@ -45,3 +45,6 @@ add_subdirectory(examples/desktop_features_example)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
+
+add_subdirectory(examples/clipboard_example)
+add_subdirectory(examples/clipboard_c_example)

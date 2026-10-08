@@ -1,0 +1,2 @@
+add_executable(clipboard_example main.cpp)
+target_link_libraries(clipboard_example PRIVATE nativeapi)

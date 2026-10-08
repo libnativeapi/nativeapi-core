@@ -1,0 +1,3 @@
+add_executable(clipboard_c_example main.c)
+set_target_properties(clipboard_c_example PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(clipboard_c_example PRIVATE nativeapi)

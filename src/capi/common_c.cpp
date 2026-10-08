@@ -7,6 +7,7 @@
 #include "../foundation/handle_table.h"
 #include "user_data.h"
 
+uint64_t native_handle_retain(uint64_t handle) { try { return nativeapi::HandleTable::GetInstance().Retain(handle); } catch (...) { return 0; } }
 bool native_event_delivery_is_active(native_event_delivery_t delivery) {
   auto value = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::capi::EventDelivery>(delivery);
   return value && value->IsActive();
