@@ -1,6 +1,9 @@
 #include "../../display.h"
 
 #include <windows.h>
+
+#include <string>
+#include <vector>
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 
@@ -41,11 +44,60 @@ DisplayId Display::GetId() const {
   return pimpl_->id_;
 }
 
+// The monitor's own name (its EDID model, "DELL U2720Q"), found by matching the
+// GDI device name against the active display paths. Empty when Windows has
+// none, as for many built-in panels.
+static std::wstring FriendlyMonitorName(const WCHAR* gdi_device_name) {
+  UINT32 path_count = 0;
+  UINT32 mode_count = 0;
+  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) !=
+      ERROR_SUCCESS) {
+    return L"";
+  }
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+  if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count,
+                         modes.data(), nullptr) != ERROR_SUCCESS) {
+    return L"";
+  }
+  for (UINT32 i = 0; i < path_count; ++i) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = paths[i].sourceInfo.adapterId;
+    source.header.id = paths[i].sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS ||
+        wcscmp(source.viewGdiDeviceName, gdi_device_name) != 0) {
+      continue;
+    }
+    DISPLAYCONFIG_TARGET_DEVICE_NAME target = {};
+    target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    target.header.size = sizeof(target);
+    target.header.adapterId = paths[i].targetInfo.adapterId;
+    target.header.id = paths[i].targetInfo.id;
+    if (DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS &&
+        target.monitorFriendlyDeviceName[0] != L'\0') {
+      return target.monitorFriendlyDeviceName;
+    }
+  }
+  return L"";
+}
+
 std::string Display::GetName() const {
   if (!pimpl_->h_monitor_)
     return "";
   MONITORINFOEXW monitorInfo = GetMonitorInfoEx(pimpl_->h_monitor_);
-  return WCharArrayToString(monitorInfo.szDevice);
+  std::wstring name = FriendlyMonitorName(monitorInfo.szDevice);
+  if (name.empty()) {
+    // The monitor's driver description ("Generic PnP Monitor"), still better
+    // than the adapter output name "\\.\DISPLAY1".
+    DISPLAY_DEVICEW device = {};
+    device.cb = sizeof(device);
+    if (EnumDisplayDevicesW(monitorInfo.szDevice, 0, &device, 0)) {
+      name = device.DeviceString;
+    }
+  }
+  return name.empty() ? WCharArrayToString(monitorInfo.szDevice) : WStringToString(name);
 }
 
 // Bounds and work area are in the library's screen coordinates, which lay the
