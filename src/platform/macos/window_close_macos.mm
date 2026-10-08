@@ -6,6 +6,7 @@ extern const void* kWindowIdKey;
 namespace {
 const void* kPolicy = &kPolicy;
 const void* kPerformInstalled = &kPerformInstalled;
+const void* kButtonCloseInstalled = &kButtonCloseInstalled;
 const void* kCloseInstalled = &kCloseInstalled;
 struct ObjcRef {
   id value;
@@ -106,6 +107,37 @@ void InstallHooks(NSWindow* window) {
     if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)))
       class_replaceMethod(cls, selector, replacement, method_getTypeEncoding(method));
     objc_setAssociatedObject(cls, kPerformInstalled, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  // The title bar's close button does not go through performClose: on every
+  // macOS: on macOS 26 it sends the private -__close, which calls -close
+  // directly, the path that cannot be cancelled. Confirm it the same way as
+  // performClose:; where the selector does not exist there is nothing to hook.
+  SEL button_close = NSSelectorFromString(@"__close");
+  if (!objc_getAssociatedObject(cls, kButtonCloseInstalled) &&
+      class_getInstanceMethod(cls, button_close)) {
+    Method method = class_getInstanceMethod(cls, button_close);
+    auto original = reinterpret_cast<void (*)(id, SEL)>(method_getImplementation(method));
+    IMP replacement = imp_implementationWithBlock(^(NSWindow* instance) {
+      auto* box = (NativeApiWindowCloseBox*)objc_getAssociatedObject(instance, kPolicy);
+      auto policy = box ? box->policy : nullptr;
+      if (!policy || !policy->Valid() || policy->bypass) {
+        original(instance, button_close);
+        return;
+      }
+      try {
+        if (!policy->state->HasObservers() && !policy->state->IsPending()) {
+          original(instance, button_close);
+          return;
+        }
+        ObjcRef keep_target(instance);
+        (void)policy->Request(
+            [original, button_close](NSWindow* target) { original(target, button_close); });
+      } catch (...) {
+      }  // A failed confirmation cannot silently close.
+    });
+    if (!class_addMethod(cls, button_close, replacement, method_getTypeEncoding(method)))
+      class_replaceMethod(cls, button_close, replacement, method_getTypeEncoding(method));
+    objc_setAssociatedObject(cls, kButtonCloseInstalled, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
   if (!objc_getAssociatedObject(cls, kCloseInstalled)) {
     SEL selector = @selector(close);
