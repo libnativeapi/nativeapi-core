@@ -39,10 +39,6 @@ class Application::Impl {
       return false;
     }
 
-    // Set default application name. GtkApplication has no "application-name"
-    // property; the name is a process-wide GLib setting.
-    g_set_application_name("NativeAPI Application");
-
     // Connect to GTK application signals
     g_signal_connect(gtk_app_, "startup", G_CALLBACK(OnStartup), this);
     g_signal_connect(gtk_app_, "activate", G_CALLBACK(OnActivate), this);
