@@ -29,6 +29,10 @@ HICON ImageToTemplateHICON(const Image* image, int width, int height, COLORREF f
 
 namespace {
 
+// The message the shell posts to the icon's window. Every icon on the shared
+// host window uses it and tells them apart by wParam (NOTIFYICONDATA::uID).
+constexpr UINT kTrayCallbackMessage = WM_USER + 1;
+
 COLORREF TrayForeground() {
   HIGHCONTRASTW contrast = {};
   contrast.cbSize = sizeof(contrast);
@@ -89,6 +93,13 @@ class TaskbarRestartWatcher {
       // An elevated process does not get broadcasts from the (unelevated) shell
       // unless it opts in.
       ChangeWindowMessageFilterEx(hwnd_, taskbar_created_message_, MSGFLT_ALLOW, nullptr);
+    }
+    // The theme broadcasts come from whichever process changed the setting, so
+    // an elevated application has to let them through as well; otherwise its
+    // template icons keep the old foreground colour after a theme change.
+    if (hwnd_) {
+      ChangeWindowMessageFilterEx(hwnd_, WM_SETTINGCHANGE, MSGFLT_ALLOW, nullptr);
+      ChangeWindowMessageFilterEx(hwnd_, WM_SYSCOLORCHANGE, MSGFLT_ALLOW, nullptr);
     }
   }
 
@@ -161,7 +172,13 @@ class TrayIcon::Impl {
     nid_.hWnd = hwnd_;
     nid_.uID = static_cast<UINT>(tray_icon_id_);  // Use tray_icon_id_ directly
     nid_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    nid_.uCallbackMessage = WM_USER + 1;  // Custom message for tray icon events
+    nid_.uCallbackMessage = kTrayCallbackMessage;
+
+    // The shell runs at a lower integrity level than an elevated application,
+    // so User Interface Privilege Isolation drops the callback message on its
+    // way in unless the window opts in. Without this an elevated application's
+    // icon is visible but dead to clicks.
+    ChangeWindowMessageFilterEx(hwnd_, kTrayCallbackMessage, MSGFLT_ALLOW, nullptr);
 
     taskbar_watch_id_ = TaskbarRestartWatcher::GetInstance().Add([this](bool restarted) {
       if (icon_template_)
@@ -226,7 +243,7 @@ class TrayIcon::Impl {
 
   // Handle window procedure delegate
   std::optional<LRESULT> HandleWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (message == WM_USER + 1 && wparam == static_cast<WPARAM>(tray_icon_id_)) {
+    if (message == kTrayCallbackMessage && wparam == static_cast<WPARAM>(tray_icon_id_)) {
       if (lparam == WM_LBUTTONUP) {
         std::cout << "TrayIcon: Left button clicked, tray_icon_id = " << tray_icon_id_ << std::endl;
         // Call clicked callback
