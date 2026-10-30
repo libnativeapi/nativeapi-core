@@ -1,5 +1,7 @@
-#include "../../foundation/dispatcher_platform.h"
 #include "../../foundation/dispatcher_common.h"
+#include "../../foundation/dispatcher_platform.h"
+
+#include "ui_thread_windows.h"
 
 #include <windows.h>
 
@@ -16,6 +18,32 @@ constexpr wchar_t kDispatchWindowClass[] = L"NativeApiDispatcherWindow";
 
 HWND g_dispatch_window = nullptr;
 std::once_flag g_dispatch_window_once;
+
+// The Win32 id of the thread that loaded this library, or of the one SetMainThread()
+// declared. dispatcher_common.h holds the same thread as a std::thread::id; this
+// copy can be compared with the ids Win32 hands out.
+DWORD g_captured_thread_id = GetCurrentThreadId();
+// SetMainThread() is an explicit statement about the host's loop and wins over the
+// detection below.
+bool g_main_thread_declared = false;
+
+/**
+ * The thread that owns this process's windows, when it is not the captured thread.
+ *
+ * Win32 only reads a thread's message queue on that thread, and only the thread
+ * that owns a window is dispatched to for it. A Flutter app built with the default
+ * thread policy loads this library from its UI isolate, which never reads a Win32
+ * message, so deferring to it would lose the delivery without a trace. The
+ * window-owning thread is where that work has to run instead; with no window of
+ * this process yet, the captured thread is all there is.
+ */
+DWORD UiThreadIfNotCaptured() {
+  if (g_main_thread_declared) {
+    return 0;
+  }
+  const DWORD ui_thread = detail::FindUiThreadId();
+  return ui_thread && ui_thread != g_captured_thread_id ? ui_thread : 0;
+}
 
 LRESULT CALLBACK DispatchWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == kDispatchMessage) {
@@ -57,6 +85,10 @@ void EnsureDispatchWindowOnMainThread() {
 }  // namespace
 
 bool PlatformIsMainThread() {
+  const DWORD ui_thread = UiThreadIfNotCaptured();
+  if (ui_thread) {
+    return GetCurrentThreadId() == ui_thread;
+  }
   const bool is_main = dispatcher_internal::IsMainThreadByCapturedId();
   if (is_main) {
     // Prime the dispatch window while we are provably on the right thread, so
@@ -68,6 +100,8 @@ bool PlatformIsMainThread() {
 
 void PlatformSetMainThread() {
   dispatcher_internal::CaptureCallerAsMainThread();
+  g_captured_thread_id = GetCurrentThreadId();
+  g_main_thread_declared = true;
   EnsureDispatchWindowOnMainThread();
 }
 
@@ -78,6 +112,13 @@ bool PlatformIsMainThreadDispatchSupported() {
 bool PlatformRunOnMainThread(std::function<void()> fn) {
   if (!fn) {
     return true;
+  }
+
+  // The library was loaded on a thread that Win32 never dispatches to: queue the
+  // work where the message loop actually runs.
+  const DWORD ui_thread = UiThreadIfNotCaptured();
+  if (ui_thread) {
+    return detail::PostToThread(ui_thread, std::move(fn));
   }
 
   if (dispatcher_internal::IsMainThreadByCapturedId()) {

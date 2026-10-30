@@ -1,7 +1,10 @@
 #include "../../window_close_dispatch.h"
 #include <windows.h>
 #include <commctrl.h>
+#include <atomic>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -15,6 +18,7 @@
 #include "../../window_registry.h"
 #include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
+#include "ui_thread_windows.h"
 
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -61,6 +65,27 @@ static WindowId GetWindowIdFromHwnd(HWND hwnd) {
 
 namespace {
 
+// The observation below is installed on, and delivered by, the thread that owns
+// this process's windows (see ui_thread_windows.h). WindowManager itself is a
+// singleton destroyed at exit on whichever thread gets there first, and the
+// teardown is marshaled to that thread, so every callback goes through this guard:
+// it keeps a callback from reaching an Impl that is already gone, and makes the
+// destroyer wait for a callback that is already inside.
+static std::recursive_mutex g_observer_mutex;
+static std::shared_ptr<std::atomic<bool>> g_observer_lifetime;
+
+// Runs |fn| while the observer is alive. Callbacks from several sources (WinEvents,
+// the geometry subclass, a full-screen change reported by a setter) are serialized
+// by the lock, and the Win32 work below them is not re-entered.
+template <typename Fn>
+static void WithObserver(Fn fn) {
+  std::lock_guard<std::recursive_mutex> lock(g_observer_mutex);
+  if (!g_observer_lifetime || !g_observer_lifetime->load()) {
+    return;
+  }
+  fn();
+}
+
 // Foreground-change tracking for WindowFocusedEvent / WindowBlurredEvent.
 // The hook is system-wide because a window of this process loses focus exactly
 // when some *other* process's window becomes foreground; a process-scoped hook
@@ -71,7 +96,7 @@ static HWND g_focused_hwnd = nullptr;
 
 // The WinEvent callback is a free function and cannot name the private
 // WindowManager::Impl, so it dispatches through this trampoline, installed by
-// Impl::StartEventListening().
+// Impl::InstallObservation().
 using ForegroundChangedFn = void (*)(void* impl, HWND hwnd);
 static ForegroundChangedFn g_foreground_changed_fn = nullptr;
 static void* g_foreground_changed_context = nullptr;
@@ -96,13 +121,15 @@ static void CALLBACK ForegroundEventProc(HWINEVENTHOOK hook,
   (void)event_thread;
   (void)event_time;
 
-  if (event != EVENT_SYSTEM_FOREGROUND || id_object != OBJID_WINDOW ||
-      id_child != CHILDID_SELF || !hwnd) {
+  if (event != EVENT_SYSTEM_FOREGROUND || id_object != OBJID_WINDOW || id_child != CHILDID_SELF ||
+      !hwnd) {
     return;
   }
-  if (g_foreground_changed_fn && g_foreground_changed_context) {
-    g_foreground_changed_fn(g_foreground_changed_context, hwnd);
-  }
+  WithObserver([&] {
+    if (g_foreground_changed_fn && g_foreground_changed_context) {
+      g_foreground_changed_fn(g_foreground_changed_context, hwnd);
+    }
+  });
 }
 
 // Geometry and show-state tracking for WindowMinimizedEvent, WindowMaximizedEvent,
@@ -145,9 +172,11 @@ static void* g_full_screen_changed_context = nullptr;
 
 // Declared in window_windows.cpp, hence outside the anonymous namespace.
 void NotifyWindowFullScreenChanged(HWND hwnd, bool is_full_screen) {
-  if (g_full_screen_changed_fn && g_full_screen_changed_context) {
-    g_full_screen_changed_fn(g_full_screen_changed_context, hwnd, is_full_screen);
-  }
+  WithObserver([&] {
+    if (g_full_screen_changed_fn && g_full_screen_changed_context) {
+      g_full_screen_changed_fn(g_full_screen_changed_context, hwnd, is_full_screen);
+    }
+  });
 }
 
 namespace {
@@ -171,15 +200,17 @@ static bool IsReportableWindow(HWND hwnd) {
   return !(GetWindowLongPtr(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
 }
 
-static LRESULT CALLBACK WindowGeometryProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
-                                           UINT_PTR subclass_id, DWORD_PTR) {
+static LRESULT CALLBACK
+WindowGeometryProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR) {
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(hwnd, WindowGeometryProc, subclass_id);
   } else if (message == WM_WINDOWPOSCHANGED) {
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
-    if (g_window_changed_fn && g_window_changed_context) {
-      g_window_changed_fn(g_window_changed_context, EVENT_OBJECT_LOCATIONCHANGE, hwnd);
-    }
+    WithObserver([&] {
+      if (g_window_changed_fn && g_window_changed_context) {
+        g_window_changed_fn(g_window_changed_context, EVENT_OBJECT_LOCATIONCHANGE, hwnd);
+      }
+    });
     return result;
   }
   return DefSubclassProc(hwnd, message, wp, lp);
@@ -212,9 +243,11 @@ static void CALLBACK WindowChangedEventProc(HWINEVENTHOOK hook,
   if (id_object != OBJID_WINDOW || id_child != CHILDID_SELF || !hwnd) {
     return;
   }
-  if (g_window_changed_fn && g_window_changed_context) {
-    g_window_changed_fn(g_window_changed_context, event, hwnd);
-  }
+  WithObserver([&] {
+    if (g_window_changed_fn && g_window_changed_context) {
+      g_window_changed_fn(g_window_changed_context, event, hwnd);
+    }
+  });
 }
 
 using PFN_ShowWindow = BOOL(WINAPI*)(HWND, int);
@@ -488,29 +521,36 @@ static UINT_PTR g_occlusion_timer = 0;
 constexpr UINT kOcclusionDelayMs = 100;
 
 static void CALLBACK OcclusionTimerProc(HWND, UINT, UINT_PTR timer, DWORD) {
-  KillTimer(nullptr, timer);
-  g_occlusion_timer = 0;
-  std::vector<HWND> windows;
-  windows.reserve(g_window_snapshots.size());
-  for (const auto& entry : g_window_snapshots) windows.push_back(entry.first);
-  for (HWND hwnd : windows) {
-    if (!IsWindow(hwnd)) continue;
-    Window window(hwnd);
-    detail::WindowPropertyDispatch::RefreshOcclusion(window);
-  }
+  WithObserver([&] {
+    KillTimer(nullptr, timer);
+    g_occlusion_timer = 0;
+    std::vector<HWND> windows;
+    windows.reserve(g_window_snapshots.size());
+    for (const auto& entry : g_window_snapshots)
+      windows.push_back(entry.first);
+    for (HWND hwnd : windows) {
+      if (!IsWindow(hwnd))
+        continue;
+      Window window(hwnd);
+      detail::WindowPropertyDispatch::RefreshOcclusion(window);
+    }
+  });
 }
 
-static void CALLBACK OcclusionEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG id_object,
-                                        LONG id_child, DWORD, DWORD) {
+static void CALLBACK
+OcclusionEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG id_object, LONG id_child, DWORD, DWORD) {
   if (id_object != OBJID_WINDOW || id_child != CHILDID_SELF || !hwnd ||
       GetAncestor(hwnd, GA_ROOT) != hwnd)
     return;
-  if (!g_occlusion_timer)
-    g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
+  WithObserver([&] {
+    if (!g_occlusion_timer)
+      g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
+  });
 }
 
 static void InstallOcclusionHooks() {
-  if (g_occlusion_hooks[0]) return;
+  if (g_occlusion_hooks[0])
+    return;
   const DWORD ranges[5][2] = {
       {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND},
       {EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND},
@@ -519,66 +559,159 @@ static void InstallOcclusionHooks() {
       {EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED},  // Virtual desktop switches.
   };
   for (int i = 0; i < 5; ++i)
-    g_occlusion_hooks[i] = SetWinEventHook(ranges[i][0], ranges[i][1], nullptr,
-                                           OcclusionEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+    g_occlusion_hooks[i] = SetWinEventHook(ranges[i][0], ranges[i][1], nullptr, OcclusionEventProc,
+                                           0, 0, WINEVENT_OUTOFCONTEXT);
 }
 
 static void RemoveOcclusionHooks() {
   for (auto& hook : g_occlusion_hooks) {
-    if (hook) UnhookWinEvent(hook);
+    if (hook)
+      UnhookWinEvent(hook);
     hook = nullptr;
   }
-  if (g_occlusion_timer) KillTimer(nullptr, g_occlusion_timer);
+  if (g_occlusion_timer)
+    KillTimer(nullptr, g_occlusion_timer);
   g_occlusion_timer = 0;
 }
 
 class WindowManager::Impl {
  public:
-  Impl(WindowManager* manager) : manager_(manager) {}
-  ~Impl() {}
+  Impl(WindowManager* manager)
+      : manager_(manager), lifetime_(std::make_shared<std::atomic<bool>>(true)) {}
+  ~Impl() {
+    // The marshaled teardown may still be on its way, and must not reach us then.
+    lifetime_->store(false);
+    StopEventListening();
+  }
 
-  // WINEVENT_OUTOFCONTEXT callbacks are delivered through the message queue of
-  // the thread that installs the hook, so WindowManager must first be touched
-  // from the UI thread; UnhookWinEvent has to run on that same thread.
+  // Everything the WinEvent hooks and the geometry subclass do has to happen on
+  // the thread that owns this process's windows: out-of-context WinEvents are
+  // queued to the installing thread and only delivered while that thread reads
+  // messages, and Win32 refuses to subclass another thread's window. That thread
+  // is not necessarily the caller's — a Flutter app with the default thread
+  // policy first touches this from its UI isolate — so the work is marshaled
+  // instead of depending on which thread happened to call the API first.
   void StartEventListening() {
-    g_foreground_changed_context = this;
-    g_foreground_changed_fn = [](void* impl, HWND hwnd) {
-      static_cast<Impl*>(impl)->OnForegroundChanged(hwnd);
-    };
+    std::function<void()> install_inline;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (started_) {
+        return;
+      }
+      started_ = true;
+      // Queued work runs later, possibly after a stop or another start. The
+      // generation tells it whether its own transition is still the current one.
+      const uint64_t generation = ++generation_;
+
+      auto lifetime = lifetime_;
+      auto install = [this, lifetime, generation] {
+        if (!lifetime->load()) {
+          return;
+        }
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        if (generation != generation_ || !started_) {
+          return;
+        }
+        InstallObservation(lifetime);
+      };
+      const DWORD ui_thread = detail::FindUiThreadId();
+      observation_thread_ = ui_thread;
+      if (ui_thread && ui_thread != GetCurrentThreadId() &&
+          detail::PostToThread(ui_thread, install)) {
+        return;
+      }
+      // Already on the UI thread, or the process has no window of its own yet: do
+      // it here, which is what this did before the marshaling existed. It runs
+      // after the lock is released: it takes the lock itself.
+      observation_thread_ = GetCurrentThreadId();
+      install_inline = std::move(install);
+    }
+    install_inline();
+  }
+
+  void StopEventListening() {
+    std::function<void()> remove_inline;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (!started_) {
+        return;
+      }
+      started_ = false;
+      const uint64_t generation = ++generation_;
+      const DWORD thread = observation_thread_;
+      observation_thread_ = 0;
+
+      auto lifetime = lifetime_;
+      auto remove = [this, lifetime, generation] {
+        if (!lifetime->load()) {
+          // The manager is gone: only the hooks are left to unhook, and no start
+          // can follow, so this teardown is never stale.
+          RemoveObservation();
+          return;
+        }
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        if (generation != generation_ || started_) {
+          return;
+        }
+        RemoveObservation();
+      };
+      if (thread && thread != GetCurrentThreadId() && detail::PostToThread(thread, remove)) {
+        return;
+      }
+      remove_inline = std::move(remove);
+    }
+    remove_inline();
+  }
+
+ private:
+  // Runs on the UI thread.
+  void InstallObservation(const std::shared_ptr<std::atomic<bool>>& lifetime) {
+    // The callbacks are read under the observer lock, so claim the observation and
+    // install them there: NotifyWindowFullScreenChanged() may arrive from any thread.
+    {
+      std::lock_guard<std::recursive_mutex> lock(g_observer_mutex);
+      if (g_observer_lifetime && g_observer_lifetime->load()) {
+        return;  // Already installed (a start queued twice, or after a failed stop).
+      }
+      g_observer_lifetime = lifetime;
+      g_foreground_changed_context = this;
+      g_foreground_changed_fn = [](void* impl, HWND hwnd) {
+        static_cast<Impl*>(impl)->OnForegroundChanged(hwnd);
+      };
+      g_window_changed_context = this;
+      g_window_changed_fn = [](void* impl, DWORD event, HWND hwnd) {
+        static_cast<Impl*>(impl)->OnWindowChanged(event, hwnd);
+      };
+      g_full_screen_changed_context = this;
+      g_full_screen_changed_fn = [](void* impl, HWND hwnd, bool is_full_screen) {
+        static_cast<Impl*>(impl)->OnWindowEvent(
+            hwnd, is_full_screen ? "entered_full_screen" : "exited_full_screen");
+      };
+    }
 
     if (!g_foreground_hook) {
-      g_foreground_hook =
-          SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
-                          ForegroundEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+      g_foreground_hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                          ForegroundEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     }
 
     // Seed the tracked window so the first blur names the right window.
     HWND foreground = GetForegroundWindow();
     g_focused_hwnd = IsOwnProcessWindow(foreground) ? foreground : nullptr;
 
-    g_window_changed_context = this;
-    g_window_changed_fn = [](void* impl, DWORD event, HWND hwnd) {
-      static_cast<Impl*>(impl)->OnWindowChanged(event, hwnd);
-    };
-    g_full_screen_changed_context = this;
-    g_full_screen_changed_fn = [](void* impl, HWND hwnd, bool is_full_screen) {
-      static_cast<Impl*>(impl)->OnWindowEvent(
-          hwnd, is_full_screen ? "entered_full_screen" : "exited_full_screen");
-    };
-
     // Unlike the foreground hook this only concerns our own windows, so it is
     // scoped to this process and costs nothing while other applications work.
     // Showing and destroying are rare, unlike location changes (see above).
     if (!g_lifetime_hook) {
       // EVENT_OBJECT_DESTROY and EVENT_OBJECT_SHOW are adjacent
-      g_lifetime_hook = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW, nullptr,
-                                        WindowChangedEventProc, GetCurrentProcessId(), 0,
-                                        WINEVENT_OUTOFCONTEXT);
+      g_lifetime_hook =
+          SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW, nullptr, WindowChangedEventProc,
+                          GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
     }
 
     InstallOcclusionHooks();
 
-    // Windows that exist already have a state to compare the first change with
+    // Windows that exist already have a state to compare the first change with.
+    // Only this thread can subclass them, which is why this runs here.
     EnumWindows(
         [](HWND hwnd, LPARAM) -> BOOL {
           if (IsOwnProcessWindow(hwnd) && IsReportableWindow(hwnd)) {
@@ -600,7 +733,22 @@ class WindowManager::Impl {
         0);
   }
 
-  void StopEventListening() {
+  // Runs on the thread that installed the hooks; only touches this file's state,
+  // so a teardown queued before the destructor can still finish the job.
+  static void RemoveObservation() {
+    {
+      // Detach the callbacks first: nothing may reach the Impl from here on, and a
+      // callback already inside finishes before this returns.
+      std::lock_guard<std::recursive_mutex> lock(g_observer_mutex);
+      g_observer_lifetime.reset();
+      g_foreground_changed_fn = nullptr;
+      g_foreground_changed_context = nullptr;
+      g_window_changed_fn = nullptr;
+      g_window_changed_context = nullptr;
+      g_full_screen_changed_fn = nullptr;
+      g_full_screen_changed_context = nullptr;
+      g_focused_hwnd = nullptr;
+    }
     RemoveOcclusionHooks();
     if (g_foreground_hook) {
       UnhookWinEvent(g_foreground_hook);
@@ -610,13 +758,6 @@ class WindowManager::Impl {
       UnhookWinEvent(g_lifetime_hook);
       g_lifetime_hook = nullptr;
     }
-    g_focused_hwnd = nullptr;
-    g_foreground_changed_fn = nullptr;
-    g_foreground_changed_context = nullptr;
-    g_window_changed_fn = nullptr;
-    g_window_changed_context = nullptr;
-    g_full_screen_changed_fn = nullptr;
-    g_full_screen_changed_context = nullptr;
     for (const auto& [hwnd, snapshot] : g_window_snapshots) {
       UnwatchWindowGeometry(hwnd);
     }
@@ -624,6 +765,7 @@ class WindowManager::Impl {
     g_shown_windows.clear();
   }
 
+ public:
   static WindowSnapshot TakeSnapshot(HWND hwnd) {
     WindowSnapshot snapshot = {};
     snapshot.minimized = IsIconic(hwnd) != FALSE;
@@ -765,6 +907,16 @@ class WindowManager::Impl {
 
  private:
   WindowManager* manager_;
+  // Shared with the marshaled install, so a start that arrives after the manager
+  // is gone does nothing instead of reaching freed memory.
+  std::shared_ptr<std::atomic<bool>> lifetime_;
+  std::mutex lifecycle_mutex_;
+  bool started_ = false;
+  // Bumped by every start and stop, so a queued transition can tell that its own
+  // is no longer the current one.
+  uint64_t generation_ = 0;
+  // The thread the hooks were installed on; 0 while stopped.
+  DWORD observation_thread_ = 0;
   // Optional pre-show/hide hooks
   // Held by shared_ptr so HandleWillShow/Hide can keep a hook alive while it
   // replaces or clears itself, without copying it.

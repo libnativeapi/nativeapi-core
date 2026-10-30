@@ -430,6 +430,19 @@ if(WIN32)
   target_link_libraries(window_close_windows_test PRIVATE nativeapi Threads::Threads)
   add_test(NAME window_close_windows_test COMMAND window_close_windows_test)
   set_tests_properties(window_close_windows_test PROPERTIES TIMEOUT 10)
+  # WindowManager first touched from a thread that never reads Win32 messages: the
+  # WinEvent hooks and the geometry subclass still have to end up on the thread
+  # that owns the windows.
+  add_executable(window_manager_ui_thread_windows_test window_manager_ui_thread_windows_test.cpp)
+  target_link_libraries(window_manager_ui_thread_windows_test PRIVATE nativeapi Threads::Threads)
+  add_test(NAME window_manager_ui_thread_windows_test COMMAND window_manager_ui_thread_windows_test)
+  set_tests_properties(window_manager_ui_thread_windows_test PROPERTIES TIMEOUT 30)
+  # Deferred work from the thread that loaded the library, which never pumps, lands
+  # on the thread that owns this process's windows.
+  add_executable(run_on_main_thread_windows_test run_on_main_thread_windows_test.cpp)
+  target_link_libraries(run_on_main_thread_windows_test PRIVATE nativeapi Threads::Threads)
+  add_test(NAME run_on_main_thread_windows_test COMMAND run_on_main_thread_windows_test)
+  set_tests_properties(run_on_main_thread_windows_test PROPERTIES TIMEOUT 30)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_close_linux_test window_close_linux_test.cpp)
   target_link_libraries(window_close_linux_test PRIVATE nativeapi Threads::Threads)
