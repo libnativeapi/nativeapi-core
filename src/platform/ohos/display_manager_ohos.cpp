@@ -224,9 +224,26 @@ void DisplayManager::StopEventListening() {
 }
 
 Point DisplayManager::GetCursorPosition() {
+  // OH_Input_GetPointerLocation arrives with a newer input SDK than the pinned
+  // one, whose header does not declare it. Resolve it at runtime: an older
+  // runtime only loses the cursor position instead of failing to build.
+  using PointerLocationQuery = int32_t (*)(int32_t*, double*, double*);
+  static const auto pointer_location = [] {
+    auto query =
+        reinterpret_cast<PointerLocationQuery>(dlsym(RTLD_DEFAULT, "OH_Input_GetPointerLocation"));
+    if (!query) {
+      // Nothing else here calls into libohinput, so it is not necessarily a
+      // load-time dependency of this library.
+      if (void* input = dlopen("libohinput.so", RTLD_LAZY | RTLD_LOCAL))
+        query = reinterpret_cast<PointerLocationQuery>(dlsym(input, "OH_Input_GetPointerLocation"));
+    }
+    return query;
+  }();
+  if (!pointer_location)
+    return {};
   int32_t display_id = -1;
   double x = 0, y = 0;
-  if (OH_Input_GetPointerLocation(&display_id, &x, &y) != INPUT_SUCCESS || display_id < 0 ||
+  if (pointer_location(&display_id, &x, &y) != INPUT_SUCCESS || display_id < 0 ||
       !std::isfinite(x) || !std::isfinite(y))
     return {};
   auto display = ohos::ReadDisplay(ohos::DisplayToken(static_cast<uint32_t>(display_id)));

@@ -167,25 +167,34 @@ jobs:
         uses: actions/cache@v4
         with:
           path: sdk
-          key: ohos-sdk-v5.1.0-linux-x64-${{ runner.os }}
+          key: ohos-sdk-v7.0-linux-x64-${{ runner.os }}
 
       - name: Download OpenHarmony Native SDK
         if: steps.cache-ohos-sdk.outputs.cache-hit != 'true'
         run: |
           echo $PWD
+          # OpenHarmony 7.0 / API 26. The preferences NDK surface core uses
+          # needs API 23 or later, and the display manager's cursor query needs
+          # a header the older public SDKs do not ship.
           wget -q \
-            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.aa
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v7.0/ohos-sdk-windows_linux-public.tar.gz.aa
           wget -q \
-            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.ab
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v7.0/ohos-sdk-windows_linux-public.tar.gz.ab
           cat ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab > sdk.tar.gz
           echo "Extracting native..."
           mkdir sdk
-          tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
-          tar -xzf sdk.tar.gz ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip
-          unzip -qq ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
-          unzip -qq ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
+          # The archive member names carry the SDK build number, so find them
+          # instead of hardcoding a version that changes with every release.
+          tar -tzf sdk.tar.gz > members.txt
+          NATIVE_ZIP=$(grep -E '^ohos-sdk/linux/native-linux-x64-.*-Release\.zip$' members.txt | head -1)
+          TOOLCHAIN_ZIP=$(grep -E '^ohos-sdk/linux/toolchains-linux-x64-.*-Release\.zip$' members.txt | head -1)
+          echo "native: $NATIVE_ZIP"
+          echo "toolchains: $TOOLCHAIN_ZIP"
+          tar -xzf sdk.tar.gz "$NATIVE_ZIP" "$TOOLCHAIN_ZIP"
+          unzip -qq "$NATIVE_ZIP" -d sdk
+          unzip -qq "$TOOLCHAIN_ZIP" -d sdk
           ls -la sdk/native/llvm/bin/
-          rm -rf ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab ohos-sdk/ sdk.tar.gz
+          rm -rf ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab members.txt ohos-sdk/ sdk.tar.gz
 
       - name: Setup build environment
         run: |
