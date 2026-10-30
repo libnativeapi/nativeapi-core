@@ -1,3 +1,11 @@
+# Objective-C++ tests, on macOS and the iOS clipboard host. The language must be
+# enabled in this directory: enable_language() in src/ is scoped to that sibling,
+# and a target here that compiles .mm or is marked LANGUAGE OBJCXX makes CMake
+# generate fail with a missing CMAKE_OBJCXX_COMPILE_OBJECT.
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 add_executable(url_opener_test url_opener_test.cpp)
 target_link_libraries(url_opener_test PRIVATE nativeapi)
 add_test(NAME url_opener_test COMMAND url_opener_test)
@@ -91,7 +99,6 @@ target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
 add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  enable_language(OBJCXX)
   add_executable(tray_template_macos_test tray_template_macos_test.mm)
   target_compile_options(tray_template_macos_test PRIVATE -fobjc-arc)
   target_link_libraries(tray_template_macos_test PRIVATE nativeapi "-framework Cocoa")

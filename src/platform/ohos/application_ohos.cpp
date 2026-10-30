@@ -291,7 +291,12 @@ bool Application::SetIcon(const std::string& path) {
     auto* source = static_cast<OH_PixelmapNative*>(image->GetNativeObject());
     OH_PixelmapNative* copy = nullptr;
     napi_value pixels = nullptr;
-    if (!source || OH_PixelmapNative_Clone(source, &copy) != IMAGE_SUCCESS || !copy)
+    // OH_PixelmapNative_Clone() is API 22 and the pinned SDK may predate it. A 1:1
+    // scaled pixelmap is a copy of the source (PixelMap::Create + scale(1, 1)), so
+    // the conversion below still gets an independent image to hand to the host.
+    if (!source ||
+        OH_PixelmapNative_CreateScaledPixelMap(source, &copy, 1.0f, 1.0f) != IMAGE_SUCCESS ||
+        !copy)
       return;
     auto converted = OH_PixelmapNative_ConvertPixelmapNativeToNapi(env, copy, &pixels);
     OH_PixelmapNative_Destroy(&copy);

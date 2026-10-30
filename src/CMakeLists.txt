@@ -87,6 +87,10 @@ endif ()
 # Link required frameworks and libraries
 if(ANDROID)
     target_link_libraries(nativeapi PUBLIC log android)
+    # The emulator test hosts are shared objects (clipboard_android_test and
+    # clipboard_android_writer). A static library linked into one has to be
+    # position independent, which the NDK does not default to on x86_64.
+    set_target_properties(nativeapi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(nativeapi PUBLIC "-framework UIKit" "-framework Foundation" "-framework CoreGraphics")
     target_compile_options(nativeapi PRIVATE "-x" "objective-c++")
