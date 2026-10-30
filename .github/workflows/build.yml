@@ -183,17 +183,18 @@ jobs:
           cat ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab > sdk.tar.gz
           echo "Extracting native..."
           mkdir sdk
-          # The archive member names carry the SDK build number, so find them
-          # instead of hardcoding a version that changes with every release.
+          # The archive member names carry the SDK build number and its
+          # release stage (-Release, -Beta), so find them instead of
+          # hardcoding a name that changes with every release.
           tar -tzf sdk.tar.gz > members.txt
-          NATIVE_ZIP=$(grep -E '^ohos-sdk/linux/native-linux-x64-.*-Release\.zip$' members.txt | head -1)
-          TOOLCHAIN_ZIP=$(grep -E '^ohos-sdk/linux/toolchains-linux-x64-.*-Release\.zip$' members.txt | head -1)
+          NATIVE_ZIP=$(grep -E '^ohos-sdk/linux/native-linux-x64-.*\.zip$' members.txt | head -1)
+          TOOLCHAIN_ZIP=$(grep -E '^ohos-sdk/linux/toolchains-linux-x64-.*\.zip$' members.txt | head -1)
           echo "native: $NATIVE_ZIP"
           echo "toolchains: $TOOLCHAIN_ZIP"
           tar -xzf sdk.tar.gz "$NATIVE_ZIP" "$TOOLCHAIN_ZIP"
           unzip -qq "$NATIVE_ZIP" -d sdk
           unzip -qq "$TOOLCHAIN_ZIP" -d sdk
-          ls -la sdk/native/llvm/bin/
+          ls -la sdk
           rm -rf ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab members.txt ohos-sdk/ sdk.tar.gz
 
       - name: Setup build environment
