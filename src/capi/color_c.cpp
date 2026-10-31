@@ -76,3 +76,9 @@ unsigned int native_color_to_argb(native_color_t color) {
   }
 }
 
+void native_color_free(native_color_t* value) {
+  if (!value) {
+    return;
+  }
+}
+

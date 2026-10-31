@@ -42,11 +42,27 @@ typedef struct {
   double left;
 } native_edge_insets_t;
 
+/// Frees everything the struct owns.
+FFI_PLUGIN_EXPORT
+void native_point_free(native_point_t* value);
+
+/// Frees everything the struct owns.
+FFI_PLUGIN_EXPORT
+void native_size_free(native_size_t* value);
+
+/// Frees everything the struct owns.
+FFI_PLUGIN_EXPORT
+void native_rectangle_free(native_rectangle_t* value);
+
 FFI_PLUGIN_EXPORT
 native_edge_insets_t native_edge_insets_all(double value);
 
 FFI_PLUGIN_EXPORT
 native_edge_insets_t native_edge_insets_symmetric(double vertical, double horizontal);
+
+/// Frees everything the struct owns.
+FFI_PLUGIN_EXPORT
+void native_edge_insets_free(native_edge_insets_t* value);
 
 #ifdef __cplusplus
 }
