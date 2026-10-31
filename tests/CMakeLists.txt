@@ -7,6 +7,10 @@ if(APPLE)
 endif()
 
 add_executable(url_opener_test url_opener_test.cpp)
+add_executable(screen_capture_test screen_capture_test.cpp)
+target_link_libraries(screen_capture_test PRIVATE nativeapi)
+add_test(NAME screen_capture_test COMMAND screen_capture_test)
+set_tests_properties(screen_capture_test PROPERTIES TIMEOUT 40)
 target_link_libraries(url_opener_test PRIVATE nativeapi)
 add_test(NAME url_opener_test COMMAND url_opener_test)
 
@@ -30,6 +34,9 @@ add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
 # window_manager#412 / #572 (#75): Maximize() before the first show.
 if(WIN32)
+  # Explicit interactive-desktop integration; never run under session-0 CTest.
+  add_executable(screen_capture_windows_smoke screen_capture_windows_smoke.cpp)
+  target_link_libraries(screen_capture_windows_smoke PRIVATE nativeapi propsys)
   add_executable(tray_template_windows_test tray_template_windows_test.cpp)
   target_link_libraries(tray_template_windows_test PRIVATE nativeapi)
   add_test(NAME tray_template_windows_test COMMAND tray_template_windows_test)
@@ -99,6 +106,9 @@ target_link_libraries(window_shadow_blur_test PRIVATE nativeapi)
 add_test(NAME window_shadow_blur_test COMMAND window_shadow_blur_test)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # Explicit desktop integration: captures only its own colored test window.
+  add_executable(screen_capture_macos_smoke screen_capture_macos_smoke.mm)
+  target_link_libraries(screen_capture_macos_smoke PRIVATE nativeapi)
   add_executable(tray_template_macos_test tray_template_macos_test.mm)
   target_compile_options(tray_template_macos_test PRIVATE -fobjc-arc)
   target_link_libraries(tray_template_macos_test PRIVATE nativeapi "-framework Cocoa")

@@ -64,6 +64,10 @@ unsigned int native_color_to_rgba(native_color_t color);
 FFI_PLUGIN_EXPORT
 unsigned int native_color_to_argb(native_color_t color);
 
+/// Frees everything the struct owns.
+FFI_PLUGIN_EXPORT
+void native_color_free(native_color_t* value);
+
 #ifdef __cplusplus
 }
 #endif
