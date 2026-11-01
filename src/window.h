@@ -1084,12 +1084,17 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    *
    * Controls the visibility of window control buttons (minimize, maximize, close)
    * in the title bar. When hidden, the buttons are not visible but the window
-   * can still be controlled programmatically.
+   * can still be controlled programmatically. Independent minimize, maximize
+   * and close policies survive hiding/showing the group. Changing the title-bar
+   * style resets group visibility to the style's default. A hidden title bar
+   * on Windows or Linux cannot display native buttons; restore Normal first.
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - Hides/shows the traffic light buttons (red, yellow, green)
-   * - Windows: ❌ Not implemented - Returns default value (visible)
-   * - Linux: ❌ Not implemented - Returns default value (visible)
+   * - Windows: ✅ Native caption styles. The close policy disables SC_CLOSE
+   *   independently, preserving minimize/maximize buttons.
+   * - Linux: ⚠️ GTK standard header controls; X11 server-side decoration hints
+   *   depend on the window manager. Application-drawn buttons are unaffected.
    * - Android: ❌ Not applicable - Mobile apps don't have window control buttons
    * - iOS: ❌ Not applicable - Mobile apps don't have window control buttons
    * - OpenHarmony: ⚠️ Uses public SDK title-button visibility on supported decorated
@@ -1107,8 +1112,11 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    *
    * @note Platform availability:
    * - macOS: ✅ Fully supported - Returns actual visibility state
-   * - Windows: ❌ Not implemented - Always returns true
-   * - Linux: ❌ Not implemented - Always returns true
+   * - Windows: ✅ Reads native caption styles; false with a hidden title bar,
+   *   in fullscreen or after native destruction.
+   * - Linux: ⚠️ Reads the GTK header control-group flag; for server-side
+   *   decorations reads the requested policy. False with a hidden title bar,
+   *   in fullscreen or after native destruction.
    * - Android: ❌ Not applicable - Always returns false
    * - iOS: ❌ Not applicable - Always returns false
    * - OpenHarmony: ⚠️ Reads the live SDK title-button area, including controls

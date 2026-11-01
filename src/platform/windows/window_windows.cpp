@@ -29,6 +29,12 @@
 
 namespace nativeapi {
 
+static const wchar_t* kControlPolicyProperty = L"NativeAPIControlButtonPolicy";
+struct ControlButtonPolicy {
+  bool visible = true;
+  bool closable = true;
+};
+
 // Property name for storing window ID in HWND
 static const wchar_t* kWindowIdProperty = L"NativeAPIWindowId";
 // Set while the title bar is hidden. Kept on the HWND, like the style itself, so every
@@ -314,6 +320,63 @@ struct FullScreenState {
   LONG_PTR ex_style;
 };
 static std::unordered_map<HWND, FullScreenState> g_full_screen_windows;
+
+// Caption policies refer to the frame restored after fullscreen, not its
+// temporary WS_POPUP style. MIN/MAX bits stay intact while the group is hidden.
+static LONG_PTR CaptionStyle(HWND hwnd) {
+  const auto full = g_full_screen_windows.find(hwnd);
+  return full == g_full_screen_windows.end() ? GetWindowLongPtrW(hwnd, GWL_STYLE)
+                                             : full->second.style;
+}
+static void SetCaptionStyle(HWND hwnd, LONG_PTR style) {
+  constexpr LONG_PTR buttons = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+  auto full = g_full_screen_windows.find(hwnd);
+  if (full != g_full_screen_windows.end())
+    full->second.style = (full->second.style & ~buttons) | (style & buttons);
+  const auto actual = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  SetWindowLongPtrW(hwnd, GWL_STYLE, (actual & ~buttons) | (style & buttons));
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+static bool NativeClosable(HWND hwnd) {
+  if (g_full_screen_windows.count(hwnd)) {
+    if (auto* policy = static_cast<ControlButtonPolicy*>(GetPropW(hwnd, kControlPolicyProperty)))
+      return policy->closable;
+  }
+  if (!(CaptionStyle(hwnd) & WS_SYSMENU)) return false;
+  HMENU menu = GetSystemMenu(hwnd, FALSE);
+  if (!menu) return g_full_screen_windows.count(hwnd) != 0;
+  const UINT state = GetMenuState(menu, SC_CLOSE, MF_BYCOMMAND);
+  return state != static_cast<UINT>(-1) && !(state & (MF_DISABLED | MF_GRAYED));
+}
+static ControlButtonPolicy* ControlPolicy(HWND hwnd, bool create) {
+  if (!hwnd || !::IsWindow(hwnd)) return nullptr;
+  auto* policy = static_cast<ControlButtonPolicy*>(GetPropW(hwnd, kControlPolicyProperty));
+  if (!policy && create) {
+    policy = new ControlButtonPolicy;
+    policy->closable = NativeClosable(hwnd);
+    policy->visible = (CaptionStyle(hwnd) & WS_SYSMENU) != 0;
+    if (!SetPropW(hwnd, kControlPolicyProperty, policy)) {
+      delete policy;
+      return nullptr;
+    }
+  }
+  return policy;
+}
+static void ApplyControlPolicy(HWND hwnd, const ControlButtonPolicy& policy) {
+  auto style = CaptionStyle(hwnd);
+  // The app-drawn caption still needs the system menu and MIN/MAX styles for
+  // native commands and Windows 11 snap layouts while the title bar is hidden.
+  const bool system_menu = policy.visible || GetPropW(hwnd, kTitleBarHiddenProperty);
+  if (system_menu) style |= WS_SYSMENU;
+  else style &= ~WS_SYSMENU;
+  SetCaptionStyle(hwnd, style);
+  if (HMENU menu = GetSystemMenu(hwnd, FALSE)) {
+    EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND |
+        (policy.closable ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
+    DrawMenuBar(hwnd);
+  }
+}
 
 // Emits the full-screen pair; defined with the rest of the window events in
 // window_manager_windows.cpp.
@@ -717,6 +780,7 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
                                      UINT_PTR subclass_id, DWORD_PTR reference) {
   if (message == WM_NCDESTROY) {
     detail::RemoveDockOnDestroy(hwnd);
+    delete static_cast<ControlButtonPolicy*>(RemovePropW(hwnd, kControlPolicyProperty));
     RemoveWindowSubclass(hwnd, WindowLifetimeProc, subclass_id);
     RemovePropW(hwnd, kWindowIdProperty);
     RemovePropW(hwnd, kTitleBarHiddenProperty);
@@ -1263,6 +1327,16 @@ bool Window::IsMinimized() const {
 }
 
 void Window::SetFullScreen(bool is_full_screen) {
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      window.SetFullScreen(is_full_screen);
+      return true;
+    });
+    return;
+  }
+  detail::WindowPropertyScope property_scope(*this);
   if (!pimpl_->hwnd_)
     return;
 
@@ -1310,10 +1384,18 @@ void Window::SetFullScreen(bool is_full_screen) {
   SetWindowPlacement(hwnd, &state.placement);
   SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  if (auto* policy = ControlPolicy(hwnd, false)) ApplyControlPolicy(hwnd, *policy);
   NotifyWindowFullScreenChanged(hwnd, false);
 }
 
 bool Window::IsFullScreen() const {
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      return window.IsFullScreen();
+    });
+  }
   return pimpl_->hwnd_ && g_full_screen_windows.count(pimpl_->hwnd_) != 0;
 }
 
@@ -1722,47 +1804,63 @@ bool Window::IsMovable() const {
 }
 
 void Window::SetMinimizable(bool is_minimizable) {
-  detail::WindowPropertyScope property_scope(*this);
-  if (pimpl_->hwnd_) {
-    LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-    if (is_minimizable) {
-      style |= WS_MINIMIZEBOX;
-    } else {
-      style &= ~WS_MINIMIZEBOX;
-    }
-    SetWindowLong(pimpl_->hwnd_, GWL_STYLE, style);
-    SetWindowPos(pimpl_->hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      window.SetMinimizable(is_minimizable);
+      return true;
+    });
+    return;
   }
+  detail::WindowPropertyScope property_scope(*this);
+  if (!pimpl_->hwnd_ || !::IsWindow(pimpl_->hwnd_)) return;
+  auto style = CaptionStyle(pimpl_->hwnd_);
+  if (is_minimizable) style |= WS_MINIMIZEBOX;
+  else style &= ~WS_MINIMIZEBOX;
+  SetCaptionStyle(pimpl_->hwnd_, style);
 }
 
 bool Window::IsMinimizable() const {
-  if (!pimpl_->hwnd_)
-    return false;
-  LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-  return (style & WS_MINIMIZEBOX) != 0;
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      return window.IsMinimizable();
+    });
+  }
+  return pimpl_->hwnd_ && ::IsWindow(pimpl_->hwnd_) &&
+         (CaptionStyle(pimpl_->hwnd_) & WS_MINIMIZEBOX) != 0;
 }
 
 void Window::SetMaximizable(bool is_maximizable) {
-  detail::WindowPropertyScope property_scope(*this);
-  if (pimpl_->hwnd_) {
-    LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-    if (is_maximizable) {
-      style |= WS_MAXIMIZEBOX;
-    } else {
-      style &= ~WS_MAXIMIZEBOX;
-    }
-    SetWindowLong(pimpl_->hwnd_, GWL_STYLE, style);
-    SetWindowPos(pimpl_->hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      window.SetMaximizable(is_maximizable);
+      return true;
+    });
+    return;
   }
+  detail::WindowPropertyScope property_scope(*this);
+  if (!pimpl_->hwnd_ || !::IsWindow(pimpl_->hwnd_)) return;
+  auto style = CaptionStyle(pimpl_->hwnd_);
+  if (is_maximizable) style |= WS_MAXIMIZEBOX;
+  else style &= ~WS_MAXIMIZEBOX;
+  SetCaptionStyle(pimpl_->hwnd_, style);
 }
 
 bool Window::IsMaximizable() const {
-  if (!pimpl_->hwnd_)
-    return false;
-  LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-  return (style & WS_MAXIMIZEBOX) != 0;
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      return window.IsMaximizable();
+    });
+  }
+  return pimpl_->hwnd_ && ::IsWindow(pimpl_->hwnd_) &&
+         (CaptionStyle(pimpl_->hwnd_) & WS_MAXIMIZEBOX) != 0;
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
@@ -1776,36 +1874,70 @@ bool Window::IsFullScreenable() const {
 }
 
 void Window::SetClosable(bool is_closable) {
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      window.SetClosable(is_closable);
+      return true;
+    });
+    return;
+  }
   detail::WindowPropertyScope property_scope(*this);
-  if (pimpl_->hwnd_) {
-    LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-    if (is_closable) {
-      style |= WS_SYSMENU;
-    } else {
-      style &= ~WS_SYSMENU;
-    }
-    SetWindowLong(pimpl_->hwnd_, GWL_STYLE, style);
-    SetWindowPos(pimpl_->hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd)) return;
+  if (auto* policy = ControlPolicy(hwnd, true)) {
+    policy->closable = is_closable;
+    ApplyControlPolicy(hwnd, *policy);
   }
 }
 
 bool Window::IsClosable() const {
-  if (!pimpl_->hwnd_)
-    return false;
-  LONG style = GetWindowLong(pimpl_->hwnd_, GWL_STYLE);
-  return (style & WS_SYSMENU) != 0;
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      return window.IsClosable();
+    });
+  }
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd)) return false;
+  const auto* policy = ControlPolicy(hwnd, false);
+  if (policy && (!policy->visible || g_full_screen_windows.count(hwnd))) return policy->closable;
+  return NativeClosable(hwnd);
 }
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      window.SetWindowControlButtonsVisible(is_visible);
+      return true;
+    });
+    return;
+  }
   detail::WindowPropertyScope property_scope(*this);
-  // TODO: Implement for Windows
-  // This would involve custom window chrome or DWM frame manipulation
+  auto* policy = ControlPolicy(hwnd, true);
+  if (!policy) return;
+  if (policy->visible) policy->closable = NativeClosable(hwnd);
+  policy->visible = is_visible;
+  ApplyControlPolicy(hwnd, *policy);
 }
 
 bool Window::IsWindowControlButtonsVisible() const {
-  // TODO: Implement for Windows
-  return true;  // Default to visible
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      return window.IsWindowControlButtonsVisible();
+    });
+  }
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd) || GetPropW(hwnd, kTitleBarHiddenProperty) ||
+      g_full_screen_windows.count(hwnd)) return false;
+  return (GetWindowLongPtrW(hwnd, GWL_STYLE) & (WS_CAPTION | WS_SYSMENU)) ==
+         (WS_CAPTION | WS_SYSMENU);
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
@@ -1991,10 +2123,22 @@ std::string Window::GetTitle() const {
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
+  HWND owner_window = pimpl_->hwnd_;
+  if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(owner_window, GetId(), false, [=] {
+      Window window(owner_window);
+      window.SetTitleBarStyle(style);
+      return true;
+    });
+    return;
+  }
   detail::WindowPropertyScope property_scope(*this);
-  if (!pimpl_->hwnd_)
+  if (!pimpl_->hwnd_ || !::IsWindow(pimpl_->hwnd_))
     return;
 
+  if (auto* controls = ControlPolicy(pimpl_->hwnd_, true)) {
+    if (controls->visible) controls->closable = NativeClosable(pimpl_->hwnd_);
+  }
 #ifdef NATIVEAPI_ENABLE_WINUI3
   if (!SetWinUI3TitleBarStyle(pimpl_->hwnd_, style)) return;
 #else
@@ -2021,6 +2165,11 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
 #endif
   } else {
     RemovePropW(pimpl_->hwnd_, kTitleBarHiddenProperty);
+  }
+
+  if (auto* controls = ControlPolicy(pimpl_->hwnd_, true)) {
+    controls->visible = style == TitleBarStyle::Normal;
+    ApplyControlPolicy(pimpl_->hwnd_, *controls);
   }
 
   // Get current window rect

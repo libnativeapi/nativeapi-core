@@ -482,6 +482,18 @@ static GtkWidget* FindHeaderBar(GtkWidget* widget) {
   return nullptr;
 }
 
+// The toplevel's own title bar, excluding header bars in application content.
+static GtkWidget* WindowHeaderBar(GtkWidget* widget) {
+  if (!widget || !GTK_IS_WINDOW(widget)) return nullptr;
+  struct Search { GtkWidget* content; GtkWidget* header = nullptr; }
+      search{gtk_bin_get_child(GTK_BIN(widget))};
+  gtk_container_forall(GTK_CONTAINER(widget), +[](GtkWidget* child, gpointer data) {
+    auto* search = static_cast<Search*>(data);
+    if (child != search->content && !search->header) search->header = FindHeaderBar(child);
+  }, &search);
+  return search.header;
+}
+
 // Requested WM capabilities belong to the native window, not a temporary wrapper.
 // X11 WMs may ignore the Motif hints; Wayland has no equivalent capabilities mask.
 static const char* kWindowControlsKey = "NativeAPIWindowControls";
@@ -491,6 +503,17 @@ struct WindowControls {
   bool minimizable = true;
   bool maximizable = true;
   bool closable = true;  // Used only for a bare GdkWindow.
+  bool buttons_visible = true;
+  bool buttons_visibility_set = false;
+  bool fullscreen_pending = false;
+  bool requested_fullscreen = false;
+  bool minimize_on_map = false;
+  bool restore_after_fullscreen = false;
+  guint fullscreen_restore_cleanup = 0;
+  gint fullscreen_restore_width = 0;
+  gint fullscreen_restore_height = 0;
+  bool decorations_saved = false;
+  GdkWMDecoration decorations = GDK_DECOR_ALL;
   bool pending_maximize = false;
   bool pending_minimize = false;
 };
@@ -499,6 +522,26 @@ struct HeaderLayout {
   ~HeaderLayout() { g_free(original); }
   gchar* original;
 };
+
+static void ClearFullscreenRestore(WindowControls& controls) {
+  const guint cleanup = controls.fullscreen_restore_cleanup;
+  controls.fullscreen_restore_cleanup = 0;
+  controls.restore_after_fullscreen = false;
+  controls.fullscreen_restore_width = controls.fullscreen_restore_height = 0;
+  if (cleanup) g_source_remove(cleanup);
+}
+
+// GDK Wayland cannot preserve a pre-map fullscreen restore size before its
+// xdg_toplevel exists. Submit after GTK's native map, before the first buffer.
+static void ApplyPendingFullscreen(GtkWidget* widget, WindowControls& controls) {
+  if (!controls.fullscreen_pending || !widget || !GTK_IS_WINDOW(widget)) return;
+  controls.fullscreen_pending = false;
+  if (controls.requested_fullscreen) {
+    gtk_window_fullscreen(GTK_WINDOW(widget));
+  } else {
+    gtk_window_unfullscreen(GTK_WINDOW(widget));
+  }
+}
 
 static void ApplyWindowControls(GtkWidget* widget,
                                 GdkWindow* surface,
@@ -525,20 +568,25 @@ static void ApplyWindowControls(GtkWidget* widget,
 
   // GTK uses decoration-layout for both explicit and automatically created CSD
   // header bars. Filter the original layout, retaining button order and sides.
-  GtkWidget* header = nullptr;
-  if (gtk_window) {
-    struct Search {
-      GtkWidget* content;
-      GtkWidget* header = nullptr;
-    } search{gtk_bin_get_child(GTK_BIN(widget))};
-    // The automatic GTK title bar is an internal child, not get_titlebar().
-    // Exclude application content: it may contain unrelated GtkHeaderBars.
-    gtk_container_forall(GTK_CONTAINER(widget), +[](GtkWidget* child, gpointer data) {
-      auto* search = static_cast<Search*>(data);
-      if (child != search->content && !search->header) search->header = FindHeaderBar(child);
-    }, &search);
-    header = search.header;
+  GtkWidget* header = WindowHeaderBar(widget);
+  if (controls.buttons_visibility_set && header)
+    gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header), controls.buttons_visible);
+#ifdef GDK_WINDOWING_X11
+  if (!header && surface && GDK_IS_X11_WINDOW(surface) && controls.buttons_visibility_set) {
+    const auto stored = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(surface), kTitleBarStyleKey));
+    if (stored != static_cast<int>(TitleBarStyle::Hidden) + 1) {
+      const int all = GDK_DECOR_BORDER | GDK_DECOR_RESIZEH | GDK_DECOR_TITLE |
+                      GDK_DECOR_MENU | GDK_DECOR_MINIMIZE | GDK_DECOR_MAXIMIZE;
+      const int original = static_cast<int>(controls.decorations);
+      const int explicit_mask = original & GDK_DECOR_ALL ? all & ~(original & ~GDK_DECOR_ALL)
+                                                         : original;
+      const auto decorations = controls.buttons_visible ? controls.decorations :
+          static_cast<GdkWMDecoration>(explicit_mask &
+              ~(GDK_DECOR_MENU | GDK_DECOR_MINIMIZE | GDK_DECOR_MAXIMIZE));
+      gdk_window_set_decorations(surface, decorations);
+    }
   }
+#endif
   if (!header)
     return;
   auto* original =
@@ -601,7 +649,13 @@ static WindowControls* GetWindowControls(GtkWidget* widget, GdkWindow* surface, 
       auto update = +[](GtkWidget* widget, gpointer) {
         auto* state =
             static_cast<WindowControls*>(g_object_get_data(G_OBJECT(widget), kWindowControlsKey));
+        ApplyPendingFullscreen(widget, *state);
         ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
+        if (state->minimize_on_map) {
+          state->minimize_on_map = false;
+          Window window(widget);
+          window.Minimize();
+        }
       };
       g_signal_connect_after(widget, "map", G_CALLBACK(update), nullptr);
       g_signal_connect_after(widget, "size-allocate",
@@ -620,6 +674,23 @@ static WindowControls* GetWindowControls(GtkWidget* widget, GdkWindow* surface, 
               state->pending_maximize = false;
             if (event->new_window_state & GDK_WINDOW_STATE_ICONIFIED)
               state->pending_minimize = false;
+            if (!(event->new_window_state & GDK_WINDOW_STATE_FULLSCREEN)) {
+              if (state->restore_after_fullscreen && state->fullscreen_restore_width > 0) {
+                // Mutter may follow its fullscreen exit with an inferred
+                // maximize. Complete the original normal-state restoration.
+                if (event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED)
+                  gtk_window_unmaximize(GTK_WINDOW(widget));
+                gdk_window_resize(gtk_widget_get_window(widget), state->fullscreen_restore_width,
+                                  state->fullscreen_restore_height);
+                gtk_window_resize(GTK_WINDOW(widget), state->fullscreen_restore_width,
+                                  state->fullscreen_restore_height);
+                if ((event->changed_mask & GDK_WINDOW_STATE_MAXIMIZED) &&
+                    !(event->new_window_state & GDK_WINDOW_STATE_MAXIMIZED))
+                  ClearFullscreenRestore(*state);
+              } else if (event->changed_mask & GDK_WINDOW_STATE_FULLSCREEN) {
+                ClearFullscreenRestore(*state);
+              }
+            }
             ApplyWindowControls(widget, gtk_widget_get_window(widget), *state);
             return FALSE;
           }),
@@ -636,6 +707,25 @@ static WindowControls* GetWindowControls(GtkWidget* widget, GdkWindow* surface, 
     }
   }
   return controls;
+}
+
+// Bound a corrective initial-fullscreen restore to this transition. New native
+// API geometry/maximize/fullscreen requests cancel it, and the source owns only
+// its GtkWindow so temporary Window wrappers cannot strand a callback.
+static void ExpireFullscreenRestore(GtkWidget* widget, WindowControls& controls) {
+  if (controls.fullscreen_restore_cleanup) g_source_remove(controls.fullscreen_restore_cleanup);
+  controls.fullscreen_restore_cleanup = g_timeout_add_full(
+      G_PRIORITY_DEFAULT, 1500,
+      +[](gpointer data) -> gboolean {
+        auto* widget = GTK_WIDGET(data);
+        auto* state = GetWindowControls(widget, gtk_widget_get_window(widget), false);
+        if (state) {
+          state->fullscreen_restore_cleanup = 0;
+          ClearFullscreenRestore(*state);
+        }
+        return G_SOURCE_REMOVE;
+      },
+      g_object_ref(widget), g_object_unref);
 }
 
 // Mutter also checks Motif functions for application requests. Permit an
@@ -879,7 +969,8 @@ static bool ObserveWindowProperties(GtkWidget* widget) {
     g_signal_connect(widget, signal, G_CALLBACK(on_notify), nullptr);
   g_signal_connect(widget, "window-state-event",
                          G_CALLBACK(+[](GtkWidget* self, GdkEventWindowState* event, gpointer) {
-                           if (event->changed_mask & (GDK_WINDOW_STATE_ABOVE | GDK_WINDOW_STATE_BELOW))
+                           if (event->changed_mask & (GDK_WINDOW_STATE_ABOVE | GDK_WINDOW_STATE_BELOW |
+                                                      GDK_WINDOW_STATE_FULLSCREEN))
                              RefreshPropertiesOf(self);
                            if (event->changed_mask &
                                (GDK_WINDOW_STATE_ICONIFIED | GDK_WINDOW_STATE_WITHDRAWN))
@@ -1276,6 +1367,8 @@ static void PresentWindow(GtkWidget* widget) {
 }
 
 void Window::Show() {
+  if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false))
+    controls->minimize_on_map = false;
   if (!IsFocusable()) {
     if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_))
       gtk_window_deiconify(GTK_WINDOW(pimpl_->widget_));
@@ -1336,6 +1429,8 @@ bool Window::IsOcclusionStateSupported() {
 }
 
 void Window::Maximize() {
+  if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false))
+    ClearFullscreenRestore(*controls);
   if (pimpl_->gdk_window_) {
     AllowProgrammaticWindowControl(pimpl_->widget_, pimpl_->gdk_window_, true);
     // GTK owns the requested pre-map state of a GtkWindow. Calling GDK
@@ -1367,11 +1462,23 @@ bool Window::IsMaximized() const {
 void Window::Minimize() {
   if (pimpl_->gdk_window_) {
     AllowProgrammaticWindowControl(pimpl_->widget_, pimpl_->gdk_window_, false);
-    gdk_window_iconify(pimpl_->gdk_window_);
+    if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+#ifdef GDK_WINDOWING_WAYLAND
+      // GTK applies iconify_initially before creating the xdg_toplevel, where
+      // GDK Wayland silently drops it. Repeat once after that native map.
+      if (!gtk_widget_get_mapped(pimpl_->widget_) && GDK_IS_WAYLAND_WINDOW(pimpl_->gdk_window_))
+        GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true)->minimize_on_map = true;
+#endif
+      gtk_window_iconify(GTK_WINDOW(pimpl_->widget_));
+    } else {
+      gdk_window_iconify(pimpl_->gdk_window_);
+    }
   }
 }
 
 void Window::Restore() {
+  if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false))
+    controls->minimize_on_map = false;
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     if (IsFocusable())
       PresentWindow(pimpl_->widget_);
@@ -1395,10 +1502,53 @@ bool Window::IsMinimized() const {
 void Window::SetFullScreen(bool is_full_screen) {
   if (!pimpl_->gdk_window_)
     return;
-  if (is_full_screen) {
-    gdk_window_fullscreen(pimpl_->gdk_window_);
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    if (is_full_screen) {
+      if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false))
+        ClearFullscreenRestore(*controls);
+    }
+#ifdef GDK_WINDOWING_WAYLAND
+    if (!gtk_widget_get_mapped(pimpl_->widget_) && GDK_IS_WAYLAND_WINDOW(pimpl_->gdk_window_)) {
+      auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+      controls->fullscreen_pending = true;
+      controls->requested_fullscreen = is_full_screen;
+      if (is_full_screen && !(gdk_window_get_state(pimpl_->gdk_window_) & GDK_WINDOW_STATE_MAXIMIZED))
+        gtk_window_get_size(GTK_WINDOW(pimpl_->widget_), &controls->fullscreen_restore_width,
+                            &controls->fullscreen_restore_height);
+      else
+        controls->fullscreen_restore_width = controls->fullscreen_restore_height = 0;
+      gtk_widget_queue_resize(pimpl_->widget_);
+      return;
+    }
+#endif
+    if (is_full_screen) {
+      gtk_window_fullscreen(GTK_WINDOW(pimpl_->widget_));
+    } else {
+      auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+      if (controls && controls->fullscreen_restore_width > 0 && IsFullScreen()) {
+        controls->restore_after_fullscreen = true;
+        // Initial Wayland configures can replace GDK's saved normal size with
+        // the monitor size. Seed the pre-map request before leaving fullscreen.
+        gtk_window_resize(GTK_WINDOW(pimpl_->widget_), controls->fullscreen_restore_width,
+                          controls->fullscreen_restore_height);
+        gdk_window_resize(pimpl_->gdk_window_, controls->fullscreen_restore_width,
+                          controls->fullscreen_restore_height);
+      }
+      if (controls && !IsFullScreen() && !controls->restore_after_fullscreen) {
+        controls->fullscreen_restore_width = controls->fullscreen_restore_height = 0;
+        controls->restore_after_fullscreen = false;
+      }
+      gtk_window_unfullscreen(GTK_WINDOW(pimpl_->widget_));
+      // Mutter can infer a maximized restore state from the first fullscreen
+      // buffer. Explicitly retain the normal state captured before initial map.
+      if (controls && controls->restore_after_fullscreen) {
+        ExpireFullscreenRestore(pimpl_->widget_, *controls);
+        gtk_window_unmaximize(GTK_WINDOW(pimpl_->widget_));
+      }
+    }
   } else {
-    gdk_window_unfullscreen(pimpl_->gdk_window_);
+    if (is_full_screen) gdk_window_fullscreen(pimpl_->gdk_window_);
+    else gdk_window_unfullscreen(pimpl_->gdk_window_);
   }
 }
 
@@ -1436,8 +1586,17 @@ Size Window::GetSize() const {
 }
 
 void Window::SetContentSize(Size size) {
+  if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+      controls && controls->restore_after_fullscreen)
+    ClearFullscreenRestore(*controls);
   if (pimpl_->widget_ && !gtk_widget_get_mapped(pimpl_->widget_)) {
     pimpl_->requested_content_size_ = size;
+    if (auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, false);
+        controls && controls->fullscreen_pending && controls->requested_fullscreen &&
+        controls->fullscreen_restore_width > 0) {
+      controls->fullscreen_restore_width = static_cast<gint>(size.width);
+      controls->fullscreen_restore_height = static_cast<gint>(size.height);
+    }
   }
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
     size.width += linux_shadow::Gutter(pimpl_->widget_) * 2;
@@ -1635,13 +1794,29 @@ bool Window::IsClosable() const {
 
 void Window::SetWindowControlButtonsVisible(bool is_visible) {
   detail::WindowPropertyScope property_scope(*this);
-  // TODO: Implement for Linux
-  // This would involve manipulating GTK window decorations
+  auto* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  auto* controls = GetWindowControls(pimpl_->widget_, surface, true);
+  if (!controls) return;
+  if (!controls->decorations_saved && surface) {
+    if (!gdk_window_get_decorations(surface, &controls->decorations))
+      controls->decorations = GDK_DECOR_ALL;
+    controls->decorations_saved = true;
+  }
+  controls->buttons_visible = is_visible;
+  controls->buttons_visibility_set = true;
+  ApplyWindowControls(pimpl_->widget_, surface, *controls);
 }
 
 bool Window::IsWindowControlButtonsVisible() const {
-  // TODO: Implement for Linux
-  return true;  // Default to visible
+  auto* surface = pimpl_->widget_ ? gtk_widget_get_window(pimpl_->widget_) : pimpl_->gdk_window_;
+  if (!surface || gdk_window_is_destroyed(surface) ||
+      GetTitleBarStyle() == TitleBarStyle::Hidden ||
+      (gdk_window_get_state(surface) & GDK_WINDOW_STATE_FULLSCREEN)) return false;
+  if (auto* header = WindowHeaderBar(pimpl_->widget_))
+    return gtk_widget_get_visible(header) &&
+           gtk_header_bar_get_show_close_button(GTK_HEADER_BAR(header));
+  const auto* controls = GetWindowControls(pimpl_->widget_, surface, false);
+  return !controls || controls->buttons_visible;
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
@@ -1861,6 +2036,12 @@ std::string Window::GetTitle() const {
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {
   detail::WindowPropertyScope property_scope(*this);
+  auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
+  if (controls && !controls->decorations_saved && pimpl_->gdk_window_) {
+    if (!gdk_window_get_decorations(pimpl_->gdk_window_, &controls->decorations))
+      controls->decorations = GDK_DECOR_ALL;
+    controls->decorations_saved = true;
+  }
   const bool has_shadow = HasShadow();
   pimpl_->title_bar_style_ = style;
   // Wrapping a Flutter controller creates a new Window each time. Keep the
@@ -1880,7 +2061,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   if (show_decorations) linux_shadow::Remove(pimpl_->widget_);
 
   // Try to find and toggle header bar visibility
-  GtkWidget* header_bar = FindHeaderBar(pimpl_->widget_);
+  GtkWidget* header_bar = WindowHeaderBar(pimpl_->widget_);
   if (header_bar) {
     gtk_widget_set_visible(header_bar, show_decorations);
   } else {
@@ -1895,6 +2076,7 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   if (show_decorations) {
     gtk_window_set_decorated(gtk_window, TRUE);
   }
+  SetWindowControlButtonsVisible(show_decorations);
   SetHasShadow(has_shadow);
 }
 
