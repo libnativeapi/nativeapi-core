@@ -54,6 +54,11 @@ struct ShortcutOptions {
    * - Examples: "Ctrl+C", "Cmd+Shift+4", "Alt+F4"
    * - macOS also accepts CapsLock and Fn modifiers. Registration fails on
    *   platforms that cannot represent those modifiers.
+   * - Linux also accepts CapsLock. NativeKey<number> selects a platform keycode
+   *   (Carbon virtual keycode on macOS, Windows virtual key, X11 KeySym on Linux).
+   *   These explicit native keys use native repeat behavior, including automatic
+   *   repetition on Windows; portable named accelerators keep their default policy.
+   *   Native keycodes are not portable across operating systems.
    */
   std::string accelerator;
 

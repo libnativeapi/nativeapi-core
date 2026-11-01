@@ -8,6 +8,7 @@
 #import <Carbon/Carbon.h>
 
 #include "../../shortcut_manager.h"
+#include "../shared/shortcut_native_key.h"
 
 namespace nativeapi {
 namespace {
@@ -78,6 +79,12 @@ bool ParseShortcutAcceleratorTokens(const std::string& accelerator,
 // mirrors soffes/HotKey's Key enum: letters, digits, F1-F20, navigation,
 // punctuation and the keypad.
 bool LookupShortcutKeyCode(const std::string& token, UInt32& keycode) {
+  uint32_t native_key = 0;
+  if (detail::ParseNativeShortcutKey(token, native_key)) {
+    if (native_key > 0x7F) return false;
+    keycode = native_key;
+    return true;
+  }
   static const std::unordered_map<std::string, UInt32> kKeyCodes = {
       // Letters.
       {"a", kVK_ANSI_A}, {"b", kVK_ANSI_B}, {"c", kVK_ANSI_C}, {"d", kVK_ANSI_D},

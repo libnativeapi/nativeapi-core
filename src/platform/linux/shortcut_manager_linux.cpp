@@ -11,9 +11,24 @@
 #include <X11/keysym.h>
 
 #include "../../shortcut_manager.h"
+#include "../shared/shortcut_native_key.h"
 
 namespace nativeapi {
 namespace {
+
+std::mutex g_grab_error_mutex;
+std::atomic<::Display*> g_grab_display{nullptr};
+std::atomic<bool> g_grab_failed{false};
+std::atomic<XErrorHandler> g_previous_error_handler{nullptr};
+
+int HandleGrabError(::Display* display, XErrorEvent* error) {
+  if (display == g_grab_display.load()) {
+    g_grab_failed = true;
+    return 0;
+  }
+  auto previous = g_previous_error_handler.load();
+  return previous ? previous(display, error) : 0;
+}
 
 std::string ToLower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
@@ -55,7 +70,8 @@ bool ParseAcceleratorTokens(const std::string& accelerator,
     std::string token = ToLower(part);
     if (token == "ctrl" || token == "control" || token == "alt" || token == "option" ||
         token == "shift" || token == "cmd" || token == "command" || token == "super" ||
-        token == "meta" || token == "cmdorctrl" || token == "commandorcontrol") {
+        token == "meta" || token == "cmdorctrl" || token == "commandorcontrol" ||
+        token == "capslock") {
       modifiers.push_back(token);
     } else {
       if (!key_token.empty()) {
@@ -74,6 +90,8 @@ bool ParseAcceleratorTokens(const std::string& accelerator,
 // in the macOS/Windows backends, so the same accelerator string means the same
 // key on every platform.
 KeySym KeySymFromToken(const std::string& token) {
+  uint32_t native_key = 0;
+  if (detail::ParseNativeShortcutKey(token, native_key)) return native_key;
   static const std::unordered_map<std::string, KeySym> kKeySyms = {
       // Whitespace and editing.
       {"space", XK_space},
@@ -171,6 +189,8 @@ bool ParseAcceleratorLinux(const std::string& accelerator,
       modifiers |= Mod1Mask;
     } else if (token == "shift") {
       modifiers |= ShiftMask;
+    } else if (token == "capslock") {
+      modifiers |= LockMask;
     } else if (token == "cmd" || token == "command" || token == "super" || token == "meta") {
       modifiers |= Mod4Mask;
     }
@@ -227,10 +247,14 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       return false;
     }
 
-    GrabKeyWithModifiers(keycode, modifiers);
-
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (combo_to_shortcut_.count(ComposeKey(modifiers, keycode))) return false;
+      if (!GrabKeyWithModifiers(keycode, modifiers)) {
+        UngrabKeyWithModifiers(keycode, modifiers);
+        RestoreGrabs(keycode);
+        return false;
+      }
       GrabInfo info{keycode, modifiers};
       grabs_[shortcut->GetId()] = info;
       combo_to_shortcut_[ComposeKey(modifiers, keycode)] = shortcut->GetId();
@@ -255,9 +279,9 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
       info = it->second;
       grabs_.erase(it);
       combo_to_shortcut_.erase(ComposeKey(info.modifiers, info.keycode));
+      UngrabKeyWithModifiers(info.keycode, info.modifiers);
+      RestoreGrabs(info.keycode);
     }
-
-    UngrabKeyWithModifiers(info.keycode, info.modifiers);
     return true;
   }
 
@@ -273,12 +297,31 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     unsigned int modifiers;
   };
 
-  void GrabKeyWithModifiers(KeyCode keycode, unsigned int modifiers) {
+  bool GrabKeyWithModifiers(KeyCode keycode, unsigned int modifiers) {
+    // BadAccess is an expected registration failure, not a fatal Xlib error.
+    // Xlib's handler is process-wide: serialize our traps, and delegate errors
+    // on other connections to the previously installed handler.
+    std::lock_guard<std::mutex> error_lock(g_grab_error_mutex);
+    XLockDisplay(display_);
+    XSync(display_, False);
+    g_grab_display = display_;
+    g_grab_failed = false;
+    g_previous_error_handler = XSetErrorHandler(HandleGrabError);
     const unsigned int extra_masks[] = {0, LockMask, Mod2Mask, LockMask | Mod2Mask};
     for (unsigned int mask : extra_masks) {
       XGrabKey(display_, keycode, modifiers | mask, root_, True, GrabModeAsync, GrabModeAsync);
     }
     XSync(display_, False);
+    XSetErrorHandler(g_previous_error_handler.load());
+    g_grab_display = nullptr;
+    XUnlockDisplay(display_);
+    return !g_grab_failed;
+  }
+
+  void RestoreGrabs(KeyCode keycode) {
+    for (const auto& [id, grab] : grabs_) {
+      if (grab.keycode == keycode) GrabKeyWithModifiers(grab.keycode, grab.modifiers);
+    }
   }
 
   void UngrabKeyWithModifiers(KeyCode keycode, unsigned int modifiers) {
@@ -353,13 +396,17 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
         continue;
       }
 
-      unsigned int normalized_mods = event.xkey.state & ~(LockMask | Mod2Mask);
+      unsigned int normalized_mods = event.xkey.state & ~Mod2Mask;
       uint32_t combo = ComposeKey(normalized_mods, event.xkey.keycode);
 
       ShortcutId shortcut_id = 0;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = combo_to_shortcut_.find(combo);
+        if (it == combo_to_shortcut_.end()) {
+          combo = ComposeKey(normalized_mods & ~LockMask, event.xkey.keycode);
+          it = combo_to_shortcut_.find(combo);
+        }
         if (it == combo_to_shortcut_.end()) {
           continue;
         }

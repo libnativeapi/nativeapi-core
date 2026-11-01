@@ -544,3 +544,10 @@ if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NA
   add_executable(window_migration_test window_migration_test.cpp)
   target_link_libraries(window_migration_test PRIVATE nativeapi)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(shortcut_native_linux_test shortcut_native_linux_test.cpp)
+  target_link_libraries(shortcut_native_linux_test PRIVATE nativeapi X11 Threads::Threads)
+  add_test(NAME shortcut_native_linux_test COMMAND shortcut_native_linux_test)
+  set_tests_properties(shortcut_native_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+endif()

@@ -118,6 +118,15 @@ void TestKeypadKeys() {
 // ---------------------------------------------------------------------------
 
 void TestMalformedAccelerators() {
+  ExpectValid("Ctrl+Shift+NativeKey0");
+  ExpectValid("Alt+NativeKey175");
+  ExpectValid("Ctrl+NativeKey269025043");
+  ExpectValid("NativeKey4294967295");
+  ExpectInvalid("NativeKey4294967296");
+  ExpectInvalid("NativeKey999999999999999999999999");
+  ExpectInvalid("NativeKey-1");
+  ExpectInvalid("NativeKey");
+  ExpectInvalid("NativeKey1x");
   ExpectInvalid("");
   ExpectInvalid("Ctrl+");        // modifier with no key
   ExpectInvalid("Ctrl++");       // '+' is spelled "Plus"

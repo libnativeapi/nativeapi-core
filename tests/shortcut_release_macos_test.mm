@@ -41,6 +41,11 @@ int main() {
   @autoreleasepool {
     [NSApplication sharedApplication];
     auto& manager = nativeapi::ShortcutManager::GetInstance();
+    for (int key : {81, 71, 10, 72, 73, 74}) {
+      auto native = manager.Register("Ctrl+Shift+NativeKey" + std::to_string(key), [] {});
+      Check(native != nullptr, "register a legacy native Carbon keycode");
+      if (native) Check(manager.Unregister(native->GetId()), "release native keycode");
+    }
     int invocations = 0;
     auto shortcut = manager.Register("Ctrl+Shift+F19", [&] { ++invocations; });
     Check(shortcut != nullptr, "register a real Carbon hotkey");

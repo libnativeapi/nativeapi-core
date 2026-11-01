@@ -12,6 +12,7 @@
 
 #include "../../foundation/dispatcher.h"
 #include "../../shortcut_manager.h"
+#include "../shared/shortcut_native_key.h"
 
 namespace nativeapi {
 namespace {
@@ -76,6 +77,12 @@ bool ParseAcceleratorTokens(const std::string& accelerator,
 // in the macOS/Linux backends, so the same accelerator string means the same
 // key on every platform.
 bool LookupWindowsKeyCode(const std::string& token, UINT& vk) {
+  uint32_t native_key = 0;
+  if (detail::ParseNativeShortcutKey(token, native_key)) {
+    if (native_key == 0 || native_key > 0xFF) return false;
+    vk = native_key;
+    return true;
+  }
   static const std::unordered_map<std::string, UINT> kKeyCodes = {
       // Whitespace and editing.
       {"space", VK_SPACE},
@@ -184,7 +191,9 @@ bool ParseAcceleratorWindows(const std::string& accelerator, UINT& modifiers, UI
     }
   }
 
-  modifiers |= MOD_NOREPEAT;
+  // Explicit native keycodes use RegisterHotKey's native repeat behavior.
+  // Portable accelerators retain the existing no-repeat policy.
+  if (key_token.compare(0, 9, "nativekey") != 0) modifiers |= MOD_NOREPEAT;
 
   return LookupWindowsKeyCode(key_token, vk);
 }

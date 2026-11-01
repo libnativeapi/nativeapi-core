@@ -1,6 +1,10 @@
 #include "shortcut_manager.h"
 
 #include <regex>
+#include <algorithm>
+#include <cctype>
+
+#include "platform/shared/shortcut_native_key.h"
 
 namespace nativeapi {
 
@@ -228,11 +232,19 @@ bool ShortcutManager::IsValidAccelerator(const std::string& accelerator) {
       R"(|Space|Tab|Enter|Return|Escape|Esc|Backspace|ForwardDelete|Delete|Insert|Help)"
       R"(|Home|End|PageUp|PageDown|Up|Down|Left|Right)"
       R"(|Plus|Minus|Equal|Comma|Period|Slash|Backslash|Semicolon|Quote)"
-      R"(|LeftBracket|RightBracket|Grave|Backquote)"
+      R"(|LeftBracket|RightBracket|Grave|Backquote|NativeKey[0-9]{1,10})"
       R"(|[A-Za-z0-9]|[,./\\;'\[\]`=\-])$)",
       std::regex::icase);
 
-  return std::regex_match(accelerator, accelerator_regex);
+  if (!std::regex_match(accelerator, accelerator_regex)) return false;
+  auto key = accelerator.substr(accelerator.find_last_of('+') + 1);
+  std::transform(key.begin(), key.end(), key.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if (key.compare(0, 9, "nativekey") == 0) {
+    uint32_t keycode = 0;
+    return detail::ParseNativeShortcutKey(key, keycode);
+  }
+  return true;
 }
 
 // Enable or disable shortcut processing
