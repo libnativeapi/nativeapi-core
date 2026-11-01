@@ -52,6 +52,43 @@ native_shortcut_t native_shortcut_manager_register_with_options(native_shortcut_
   }
 }
 
+native_shortcut_id_t native_shortcut_manager_request_registration(native_shortcut_options_t options, const char* registration_key) {
+  try {
+    auto options_cpp = to_cpp_shortcut_options(options);
+    return nativeapi::ShortcutManager::GetInstance().RequestRegistration(options_cpp, std::string(registration_key ? registration_key : ""));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_manager_request_registration");
+    return 0;
+  }
+}
+
+bool native_shortcut_manager_cancel_registration(native_shortcut_id_t request_id) {
+  try {
+    return nativeapi::ShortcutManager::GetInstance().CancelRegistration(request_id);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_manager_cancel_registration");
+    return false;
+  }
+}
+
+unsigned long native_shortcut_manager_cancel_pending_registrations(const char* registration_key_prefix) {
+  try {
+    return nativeapi::ShortcutManager::GetInstance().CancelPendingRegistrations(std::string(registration_key_prefix ? registration_key_prefix : ""));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_manager_cancel_pending_registrations");
+    return 0;
+  }
+}
+
+bool native_shortcut_manager_is_registration_pending(native_shortcut_id_t request_id) {
+  try {
+    return nativeapi::ShortcutManager::GetInstance().IsRegistrationPending(request_id);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_manager_is_registration_pending");
+    return false;
+  }
+}
+
 bool native_shortcut_manager_unregister_with_id(native_shortcut_id_t id) {
   try {
     return nativeapi::ShortcutManager::GetInstance().Unregister(id);

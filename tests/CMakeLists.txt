@@ -524,6 +524,13 @@ target_link_libraries(shortcut_unregister_failure_test PRIVATE Threads::Threads)
 add_test(NAME shortcut_unregister_failure_test COMMAND shortcut_unregister_failure_test)
 set_tests_properties(shortcut_unregister_failure_test PROPERTIES TIMEOUT 10)
 
+add_executable(shortcut_registration_request_test
+  shortcut_registration_request_test.cpp ../src/shortcut_manager.cpp ../src/shortcut.cpp)
+target_compile_features(shortcut_registration_request_test PRIVATE cxx_std_17)
+target_link_libraries(shortcut_registration_request_test PRIVATE Threads::Threads)
+add_test(NAME shortcut_registration_request_test COMMAND shortcut_registration_request_test)
+set_tests_properties(shortcut_registration_request_test PROPERTIES TIMEOUT 10)
+
 # Shared value/ABI contract suite; also executed inside both OHOS guest types.
 add_executable(foundation_values_test foundation_values_test.cpp)
 target_link_libraries(foundation_values_test PRIVATE nativeapi Threads::Threads)
@@ -550,6 +557,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(shortcut_native_linux_test PRIVATE nativeapi X11 Threads::Threads)
   add_test(NAME shortcut_native_linux_test COMMAND shortcut_native_linux_test)
   set_tests_properties(shortcut_native_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+  add_executable(shortcut_portal_linux_test shortcut_portal_linux_test.cpp)
+  target_compile_definitions(shortcut_portal_linux_test PRIVATE NATIVEAPI_PORTAL_MANAGER_TEST=1)
+  target_link_libraries(shortcut_portal_linux_test PRIVATE nativeapi Threads::Threads)
+  add_test(NAME shortcut_portal_linux_test COMMAND shortcut_portal_linux_test)
+  set_tests_properties(shortcut_portal_linux_test PROPERTIES TIMEOUT 30)
+  add_executable(shortcut_portal_live_linux_probe shortcut_portal_live_linux_probe.cpp)
+  target_link_libraries(shortcut_portal_live_linux_probe PRIVATE nativeapi Threads::Threads)
 endif()
 
 # Manual no-input caption group/policy checks; requires a desktop compositor.

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -9,9 +10,11 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <gdk/gdkx.h>
 
 #include "../../shortcut_manager.h"
 #include "../shared/shortcut_native_key.h"
+#include "shortcut_portal_linux.h"
 
 namespace nativeapi {
 namespace {
@@ -232,9 +235,51 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     }
   }
 
-  bool IsSupported() override { return display_ != nullptr; }
+  bool IsSupported() override {
+    return UsesPortal() ? detail::ShortcutPortalLinux::IsSupported() : display_ != nullptr;
+  }
 
-  void Shutdown() { StopThread(); }
+  void Shutdown() { StopThread(); if (portal_) portal_->Shutdown(); }
+
+  bool ShouldDeferRegistration(const std::shared_ptr<Shortcut>& shortcut) override {
+    return shortcut->GetScope() == ShortcutScope::Global && UsesPortal();
+  }
+
+  void RequestShortcutRegistration(const std::shared_ptr<Shortcut>& shortcut,
+                                   std::shared_ptr<std::atomic<bool>> cancelled,
+                                   RegistrationCompletion completion) override {
+    std::vector<std::string> modifiers;
+    std::string key;
+    if (!ParseAcceleratorTokens(shortcut->GetAccelerator(), modifiers, key)) {
+      completion(false, "Invalid desktop shortcut trigger"); return;
+    }
+    std::string trigger;
+    for (const auto& modifier : modifiers) {
+      if (modifier == "capslock") {
+        completion(false, "CapsLock is not a portable desktop shortcut modifier"); return;
+      }
+      if (modifier == "ctrl" || modifier == "control" || modifier == "cmdorctrl" || modifier == "commandorcontrol") trigger += "CTRL+";
+      else if (modifier == "alt" || modifier == "option") trigger += "ALT+";
+      else if (modifier == "shift") trigger += "SHIFT+";
+      else trigger += "LOGO+";
+    }
+    const auto symbol = KeySymFromToken(key);
+    const char* name = symbol == NoSymbol ? nullptr : XKeysymToString(symbol);
+    if (!name) { completion(false, "No desktop shortcut name exists for this key"); return; }
+    std::string name_string = name;
+    if (name_string.size() == 1) name_string = ToLower(name_string);
+    trigger += name_string;
+    Portal().Request(shortcut, std::move(trigger), std::move(cancelled), std::move(completion));
+  }
+  void CancelShortcutRegistration(ShortcutId id) override {
+    std::lock_guard<std::mutex> lock(portal_mutex_);
+    if (portal_) portal_->Cancel(id);
+  }
+  std::optional<std::string> GetShortcutTriggerDescription(ShortcutId id) override {
+    std::lock_guard<std::mutex> lock(portal_mutex_);
+    if (portal_) return portal_->TriggerDescription(id);
+    return std::nullopt;
+  }
 
   bool RegisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
     if (!display_) {
@@ -265,6 +310,10 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
   bool UnregisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
+    {
+      std::lock_guard<std::mutex> lock(portal_mutex_);
+      if (portal_ && portal_->Unregister(shortcut->GetId())) return true;
+    }
     if (!display_) {
       return false;
     }
@@ -292,6 +341,39 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
  private:
+  static bool UsesPortal() {
+    // A Wayland desktop can still run an explicitly X11 application. Preserve
+    // its existing X11 registration path instead of inferring its backend only
+    // from the inherited session environment.
+    if (auto* display = gdk_display_get_default(); display && GDK_IS_X11_DISPLAY(display)) return false;
+    const char* backend = std::getenv("GDK_BACKEND");
+    if (backend && std::string(backend) == "x11") return false;
+    const char* display = std::getenv("WAYLAND_DISPLAY");
+    return display && *display;
+  }
+  detail::ShortcutPortalLinux& Portal() {
+    std::lock_guard<std::mutex> lock(portal_mutex_);
+    if (!portal_) {
+      using Signal = detail::ShortcutPortalLinux::Signal;
+      using Delivery = std::function<void(ShortcutId, Signal, std::string)>;
+      auto delivery = manager_->CreateGuardedCallback<ShortcutId, Signal, std::string>(
+          Delivery([manager = manager_](ShortcutId id, Signal signal, std::string description) {
+        if (signal == Signal::Closed) { manager->Unregister(id); return; }
+        if (signal == Signal::BindingChanged) { manager->UpdateTriggerDescription(id, description); return; }
+        auto shortcut = manager->Get(id);
+        if (!shortcut || !manager->IsEnabled() || !shortcut->IsEnabled()) return;
+        if (signal == Signal::Released) manager->EmitShortcutReleased(id, shortcut->GetAccelerator());
+        else { manager->EmitShortcutActivated(id, shortcut->GetAccelerator()); shortcut->Invoke(); }
+      }));
+      portal_ = std::make_unique<detail::ShortcutPortalLinux>(
+          [delivery](ShortcutId id, Signal signal, const std::string& description) {
+        RunOnMainThread([delivery, id, signal, description] { delivery(id, signal, description); });
+      });
+    }
+    return *portal_;
+  }
+  std::mutex portal_mutex_;
+  std::unique_ptr<detail::ShortcutPortalLinux> portal_;
   struct GrabInfo {
     KeyCode keycode;
     unsigned int modifiers;
@@ -447,10 +529,11 @@ ShortcutManager::ShortcutManager()
     : pimpl_(std::make_unique<ShortcutManagerImpl>(this)), next_shortcut_id_(1), enabled_(true) {}
 
 ShortcutManager::~ShortcutManager() {
+  ShutdownEmitter();
+  UnregisterAll();
   // Join while the registry/mutex/enable flag the worker reads still exist.
   // Waiting for pimpl_'s destructor would be too late: it is destroyed last.
   static_cast<ShortcutManagerImpl*>(pimpl_.get())->Shutdown();
-  UnregisterAll();
 }
 
 }  // namespace nativeapi

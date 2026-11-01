@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "foundation/event.h"
@@ -188,6 +189,23 @@ class Shortcut {
   std::string GetAccelerator() const;
 
   /**
+   * @brief Gets the stable application-defined registration key.
+   * @return The key passed to RequestRegistration, or an empty string for a
+   * synchronously registered shortcut. This is separate from the runtime ID.
+   */
+  std::string GetRegistrationKey() const;
+
+  /**
+   * @brief Gets the desktop's current human-readable shortcut binding.
+   * @return The desktop-reported trigger description, or the requested
+   * accelerator on platforms that bind that exact accelerator, or an empty
+   * string when a desktop portal provides no binding label. With a Wayland
+   * portal the user may choose a different combination; GetAccelerator remains
+   * the original preference. This getter is safe during desktop binding updates.
+   */
+  std::string GetTriggerDescription() const;
+
+  /**
    * @brief Get the human-readable description of this shortcut.
    *
    * Returns the description provided when the shortcut was created,
@@ -294,6 +312,10 @@ class Shortcut {
   std::function<void()> GetCallback() const;
 
  private:
+  friend class ShortcutManager;
+  std::string registration_key_;
+  mutable std::mutex binding_mutex_;
+  std::optional<std::string> trigger_description_;
   /**
    * @brief Unique identifier for this shortcut.
    */

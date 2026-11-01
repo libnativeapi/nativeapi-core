@@ -78,6 +78,32 @@ char* native_shortcut_get_accelerator(native_shortcut_t shortcut) {
   }
 }
 
+char* native_shortcut_get_registration_key(native_shortcut_t shortcut) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Shortcut>(shortcut);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    return to_c_str(self->GetRegistrationKey());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_get_registration_key");
+    return nullptr;
+  }
+}
+
+char* native_shortcut_get_trigger_description(native_shortcut_t shortcut) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Shortcut>(shortcut);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    return to_c_str(self->GetTriggerDescription());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_shortcut_get_trigger_description");
+    return nullptr;
+  }
+}
+
 char* native_shortcut_get_description(native_shortcut_t shortcut) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Shortcut>(shortcut);
   if (!self) {

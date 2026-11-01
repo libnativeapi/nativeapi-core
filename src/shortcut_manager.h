@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -33,7 +34,9 @@ typedef IdAllocator::IdType ShortcutId;
  * @note Platform availability:
  * - macOS: ✅ Carbon global hotkeys, including activation/release events.
  * - Windows: ✅ Win32 global hotkeys; activation events only.
- * - Linux: ⚠️ X11 hotkeys when an X display is available.
+ * - Linux: ⚠️ X11 registration, or asynchronous Wayland GlobalShortcuts Portal
+ *   registration through RequestRegistration. Portal support requires a desktop
+ *   provider and valid application identity; the user controls the final binding.
  * - Android: ❌ Native shortcut registration is not implemented.
  * - iOS: ❌ Native shortcut registration is not implemented.
  * - OpenHarmony: ⚠️ API 14+ public NDK global hotkeys, with Ctrl/Alt/Shift
@@ -145,6 +148,69 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
   std::shared_ptr<Shortcut> Register(const ShortcutOptions& options);
 
   /**
+   * @brief Requests registration without waiting for interactive approval.
+   *
+   * Subscribe before requesting. A nonzero return value identifies this request
+   * and its eventual ShortcutRegisteredEvent or ShortcutRegistrationFailedEvent.
+   * The shortcut is available through Get only after successful registration.
+   * Completion may occur before this method returns; listeners must retain the
+   * event's ID rather than assume the caller has already stored the return value.
+   *
+   * @param options The requested shortcut configuration.
+   * @param registration_key Stable, nonempty application-defined action key.
+   * Reuse it across launches; description remains human-readable display text.
+   * @return A nonzero request/shortcut ID if accepted, or 0 for invalid options,
+   * an unsupported immediate global backend, or an accelerator/key already pending
+   * or active. Deferred providers report unavailable services through the failure
+   * event, without synchronously contacting the desktop in this call.
+   * Rejected requests emit no completion event. Accepted requests complete once,
+   * including cancellation, and failure events always carry this request's ID.
+   * @note Platform availability:
+   * - macOS: ✅ Carbon registration; completion uses shortcut events.
+   * - Windows: ✅ Win32 registration; completion uses shortcut events.
+   * - Linux: ⚠️ X11 registration or asynchronous Wayland Portal approval. Requires
+   *   a GlobalShortcuts desktop provider. A portal accelerator is a preference;
+   *   GetTriggerDescription reports the desktop's binding label. Unregister stops
+   *   the session but does not erase the desktop's saved binding configuration.
+   * - Android: ❌ Global requests return 0; application registration is unsupported.
+   * - iOS: ❌ Global requests return 0; application registration is unsupported.
+   * - OpenHarmony: ⚠️ Same host and scope requirements as Register.
+   */
+  ShortcutId RequestRegistration(const ShortcutOptions& options,
+                                 const std::string& registration_key);
+
+  /**
+   * @brief Cancels a pending registration request.
+   * @param request_id The nonzero ID returned by RequestRegistration.
+   * @return true if the request was pending and is now cancelled, false if it
+   * already completed or does not exist. Use Unregister for active shortcuts.
+   * Cancellation produces one ShortcutRegistrationFailedEvent with this ID.
+   */
+  bool CancelRegistration(ShortcutId request_id);
+
+  /**
+   * @brief Cancels pending requests belonging to an application-defined key namespace.
+   *
+   * Useful after an interpreter or Flutter isolate restarts while the native
+   * manager survives. Active shortcuts present before this call are unaffected.
+   * A matching pending request approved during cancellation is unregistered.
+   * Completion callbacks and resource cleanup run outside the registry lock.
+   * @param registration_key_prefix Nonempty prefix of registration keys to reclaim.
+   * An empty prefix does nothing, protecting other modules in the same process.
+   * @return Number of matching pending requests cancelled or concurrently approved
+   * shortcuts unregistered. Returns 0 if none match or the prefix is empty.
+   * @see RequestRegistration for platform availability.
+   */
+  size_t CancelPendingRegistrations(const std::string& registration_key_prefix);
+
+  /**
+   * @brief Checks if a registration request is still pending.
+   * @param request_id The ID returned by RequestRegistration.
+   * @return true until completion or cancellation, false for unknown IDs.
+   */
+  bool IsRegistrationPending(ShortcutId request_id) const;
+
+  /**
    * @brief Unregister a keyboard shortcut by its ID.
    *
    * Removes a previously registered shortcut from the system and
@@ -185,7 +251,7 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
    * Removes all currently registered shortcuts from the system.
    * This is useful for cleanup or when switching shortcut profiles.
    *
-   * @return Number of shortcuts that were unregistered
+   * @return Number of shortcuts unregistered and pending requests cancelled
    * @thread_safety This method is thread-safe
    *
    * @example
@@ -367,6 +433,20 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
     // checks canonical aliases and probes actual SDK reservations.
     virtual bool CanRegister(const std::string& /*accelerator*/) { return true; }
     virtual bool RegisterShortcut(const std::shared_ptr<Shortcut>& shortcut) = 0;
+    // Interactive providers must return without waiting for user interaction.
+    // Legacy providers use the existing atomic, synchronous registry path.
+    using RegistrationCompletion = std::function<void(bool, const std::string&)>;
+    virtual bool ShouldDeferRegistration(const std::shared_ptr<Shortcut>&) { return false; }
+    virtual void RequestShortcutRegistration(const std::shared_ptr<Shortcut>& /*shortcut*/,
+                                             std::shared_ptr<std::atomic<bool>> /*cancelled*/,
+                                             RegistrationCompletion completion) {
+      completion(false, "Interactive registration is unsupported");
+    }
+    // May arrive before RequestShortcutRegistration. Providers must check the
+    // shared cancellation flag before starting and serialize start/cancel in
+    // their own event context. No manager lock is held across either call.
+    virtual void CancelShortcutRegistration(ShortcutId /*request_id*/) {}
+    virtual std::optional<std::string> GetShortcutTriggerDescription(ShortcutId /*id*/) { return std::nullopt; }
     virtual bool UnregisterShortcut(const std::shared_ptr<Shortcut>& shortcut) = 0;
     virtual void SetupEventMonitoring() = 0;
     virtual void CleanupEventMonitoring() = 0;
@@ -394,6 +474,7 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
 
   // Platform entry point; release delivery is not part of the public API.
   void EmitShortcutReleased(ShortcutId id, const std::string& accelerator);
+  void UpdateTriggerDescription(ShortcutId id, const std::string& description);
 
   /**
    * @brief Private constructor to enforce singleton pattern.
@@ -422,6 +503,17 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
    * for efficient lookup by keyboard combination.
    */
   std::unordered_map<std::string, std::shared_ptr<Shortcut>> shortcuts_by_accelerator_;
+
+  struct PendingRegistration {
+    explicit PendingRegistration(std::shared_ptr<Shortcut> value) : shortcut(std::move(value)) {}
+    std::shared_ptr<Shortcut> shortcut;
+    std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool> completed{false};
+  };
+  std::unordered_map<ShortcutId, std::shared_ptr<PendingRegistration>> pending_registrations_;
+  bool HasPendingAcceleratorUnlocked(const std::string& accelerator) const;
+  void CompleteRegistration(const std::shared_ptr<PendingRegistration>& request,
+                            bool success, const std::string& reason);
 
   /**
    * @brief ID generator for creating unique shortcut identifiers.

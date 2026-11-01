@@ -39,6 +39,15 @@ std::string Shortcut::GetAccelerator() const {
   return accelerator_;
 }
 
+std::string Shortcut::GetRegistrationKey() const {
+  return registration_key_;
+}
+
+std::string Shortcut::GetTriggerDescription() const {
+  std::lock_guard<std::mutex> lock(binding_mutex_);
+  return trigger_description_.value_or(accelerator_);
+}
+
 std::string Shortcut::GetDescription() const {
   return description_;
 }

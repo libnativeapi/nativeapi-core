@@ -35,6 +35,18 @@ FFI_PLUGIN_EXPORT
 native_shortcut_t native_shortcut_manager_register_with_options(native_shortcut_options_t options);
 
 FFI_PLUGIN_EXPORT
+native_shortcut_id_t native_shortcut_manager_request_registration(native_shortcut_options_t options, const char* registration_key);
+
+FFI_PLUGIN_EXPORT
+bool native_shortcut_manager_cancel_registration(native_shortcut_id_t request_id);
+
+FFI_PLUGIN_EXPORT
+unsigned long native_shortcut_manager_cancel_pending_registrations(const char* registration_key_prefix);
+
+FFI_PLUGIN_EXPORT
+bool native_shortcut_manager_is_registration_pending(native_shortcut_id_t request_id);
+
+FFI_PLUGIN_EXPORT
 bool native_shortcut_manager_unregister_with_id(native_shortcut_id_t id);
 
 FFI_PLUGIN_EXPORT

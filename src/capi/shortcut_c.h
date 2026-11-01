@@ -106,6 +106,14 @@ char* native_shortcut_get_accelerator(native_shortcut_t shortcut);
 
 /// Caller owns the returned string; free it with free_c_str().
 FFI_PLUGIN_EXPORT
+char* native_shortcut_get_registration_key(native_shortcut_t shortcut);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_shortcut_get_trigger_description(native_shortcut_t shortcut);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
 char* native_shortcut_get_description(native_shortcut_t shortcut);
 
 FFI_PLUGIN_EXPORT

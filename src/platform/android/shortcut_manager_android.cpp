@@ -21,6 +21,7 @@ ShortcutManager::ShortcutManager()
     : pimpl_(std::make_unique<ShortcutManagerImpl>(this)), next_shortcut_id_(1), enabled_(true) {}
 
 ShortcutManager::~ShortcutManager() {
+  ShutdownEmitter();
   UnregisterAll();
 }
 

@@ -92,5 +92,21 @@ int main() {
     XCloseDisplay(probe);
   }
   manager.UnregisterAll();
+  // An X11 application can inherit WAYLAND_DISPLAY from its desktop session.
+  // The asynchronous API must still complete immediately through X11 when the
+  // application explicitly selected that backend.
+  setenv("GDK_BACKEND", "x11", 1);
+  setenv("WAYLAND_DISPLAY", "nativeapi-x11-regression", 1);
+  nativeapi::ShortcutOptions options;
+  options.accelerator = "Ctrl+Alt+Shift+F11";
+  options.description = "X11 request verification";
+  const auto request = manager.RequestRegistration(options, "nativeapi-x11-probe");
+  auto registered = manager.Get(request);
+  Check(request && registered && !manager.IsRegistrationPending(request),
+        "X11 request completes without a Portal despite inherited Wayland environment");
+  Check(registered && registered->GetRegistrationKey() == "nativeapi-x11-probe" &&
+            registered->GetTriggerDescription() == options.accelerator,
+        "immediate provider preserves registration metadata");
+  if (registered) Check(manager.Unregister(request), "unregister requested X11 shortcut");
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

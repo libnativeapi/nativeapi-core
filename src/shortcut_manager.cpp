@@ -45,6 +45,7 @@ std::shared_ptr<Shortcut> ShortcutManager::Register(const ShortcutOptions& optio
   // not probe or reserve the global chord: another app may own that chord.
   // The platform registration still validates scope, aliases and local support.
   if (shortcuts_by_accelerator_.find(options.accelerator) != shortcuts_by_accelerator_.end() ||
+      HasPendingAcceleratorUnlocked(options.accelerator) ||
       (options.scope == ShortcutScope::Global && !pimpl_->CanRegister(options.accelerator))) {
     lock.unlock();
     // Emit failure event
@@ -76,6 +77,153 @@ std::shared_ptr<Shortcut> ShortcutManager::Register(const ShortcutOptions& optio
   EmitAsync<ShortcutRegisteredEvent>(id, options.accelerator);
 
   return shortcut;
+}
+
+bool ShortcutManager::HasPendingAcceleratorUnlocked(const std::string& accelerator) const {
+  return std::any_of(pending_registrations_.begin(), pending_registrations_.end(),
+                     [&](const auto& item) {
+                       return item.second->shortcut->GetAccelerator() == accelerator;
+                     });
+}
+
+ShortcutId ShortcutManager::RequestRegistration(const ShortcutOptions& options,
+                                                const std::string& registration_key) {
+  if (registration_key.empty() || !IsValidAccelerator(options.accelerator)) return 0;
+
+  auto shortcut = std::make_shared<Shortcut>(0, options);
+  const bool deferred = pimpl_->ShouldDeferRegistration(shortcut);
+  // A deferred provider checks capability on its own event context. Even a
+  // stalled or absent desktop service must not block the caller's UI isolate.
+  if (!deferred && options.scope == ShortcutScope::Global && !pimpl_->IsSupported()) return 0;
+
+  std::shared_ptr<PendingRegistration> request;
+  bool immediate_success = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (next_shortcut_id_ == 0 || shortcuts_by_accelerator_.count(options.accelerator) ||
+        HasPendingAcceleratorUnlocked(options.accelerator)) return 0;
+    for (const auto& item : pending_registrations_) {
+      if (item.second->shortcut->GetRegistrationKey() == registration_key) return 0;
+    }
+    for (const auto& item : shortcuts_by_id_) {
+      if (item.second->GetRegistrationKey() == registration_key) return 0;
+    }
+    shortcut->id_ = next_shortcut_id_++;
+    shortcut->registration_key_ = registration_key;
+    request = std::make_shared<PendingRegistration>(std::move(shortcut));
+    pending_registrations_.emplace(request->shortcut->GetId(), request);
+    if (!deferred) {
+      // Keep legacy platform maps serialized with Register/Unregister. No
+      // completion or user callback runs under this registry lock.
+      immediate_success =
+          (options.scope != ShortcutScope::Global || pimpl_->CanRegister(options.accelerator)) &&
+          pimpl_->RegisterShortcut(request->shortcut);
+      request->completed.store(true);
+      pending_registrations_.erase(request->shortcut->GetId());
+      if (immediate_success) {
+        shortcuts_by_id_.emplace(request->shortcut->GetId(), request->shortcut);
+        shortcuts_by_accelerator_.emplace(options.accelerator, request->shortcut);
+      }
+    }
+  }
+
+  if (!deferred) {
+    if (immediate_success) {
+      EmitAsync<ShortcutRegisteredEvent>(request->shortcut->GetId(), options.accelerator);
+    } else {
+      request->shortcut->SetCallback(nullptr);
+      EmitAsync<ShortcutRegistrationFailedEvent>(request->shortcut->GetId(), options.accelerator,
+                                                "Platform registration failed");
+    }
+    return request->shortcut->GetId();
+  }
+  auto completion = CreateGuardedCallback<bool, const std::string&>(
+      Impl::RegistrationCompletion([this, request](bool success, const std::string& reason) {
+        CompleteRegistration(request, success, reason);
+      }));
+  pimpl_->RequestShortcutRegistration(request->shortcut, request->cancelled, std::move(completion));
+  return request->shortcut->GetId();
+}
+
+void ShortcutManager::CompleteRegistration(const std::shared_ptr<PendingRegistration>& request,
+                                           bool success, const std::string& reason) {
+  if (request->completed.exchange(true)) return;
+  const auto& shortcut = request->shortcut;
+  const auto trigger = success ? pimpl_->GetShortcutTriggerDescription(shortcut->GetId()) : std::nullopt;
+  bool discarded = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = pending_registrations_.find(shortcut->GetId());
+    discarded = it == pending_registrations_.end() || it->second != request;
+    if (!discarded) {
+      pending_registrations_.erase(it);
+      if (success) {
+        shortcut->trigger_description_ = trigger; // Not publicly visible until insertion.
+        shortcuts_by_id_.emplace(shortcut->GetId(), shortcut);
+        shortcuts_by_accelerator_.emplace(shortcut->GetAccelerator(), shortcut);
+      }
+    }
+  }
+  // A provider can finish after cancellation. Release that exact registration,
+  // never a newer request for the same accelerator or application key.
+  if (discarded) {
+    if (success) pimpl_->UnregisterShortcut(shortcut);
+    return;
+  }
+  if (success) {
+    EmitAsync<ShortcutRegisteredEvent>(shortcut->GetId(), shortcut->GetAccelerator());
+  } else {
+    shortcut->SetCallback(nullptr);
+    EmitAsync<ShortcutRegistrationFailedEvent>(shortcut->GetId(), shortcut->GetAccelerator(), reason);
+  }
+}
+
+bool ShortcutManager::CancelRegistration(ShortcutId request_id) {
+  std::shared_ptr<PendingRegistration> request;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = pending_registrations_.find(request_id);
+    if (it == pending_registrations_.end()) return false;
+    request = it->second;
+    request->cancelled->store(true);
+    pending_registrations_.erase(it);
+  }
+  pimpl_->CancelShortcutRegistration(request_id);
+  request->shortcut->SetCallback(nullptr);
+  EmitAsync<ShortcutRegistrationFailedEvent>(request_id, request->shortcut->GetAccelerator(),
+                                            "Registration cancelled");
+  return true;
+}
+
+bool ShortcutManager::IsRegistrationPending(ShortcutId request_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return pending_registrations_.count(request_id) != 0;
+}
+
+size_t ShortcutManager::CancelPendingRegistrations(const std::string& registration_key_prefix) {
+  if (registration_key_prefix.empty()) return 0;
+  std::vector<ShortcutId> requests;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& item : pending_registrations_) {
+      if (item.second->shortcut->GetRegistrationKey().compare(
+              0, registration_key_prefix.size(), registration_key_prefix) == 0) {
+        requests.push_back(item.first);
+      }
+    }
+  }
+  size_t count = 0;
+  for (const auto id : requests) {
+    if (CancelRegistration(id) || Unregister(id)) ++count;
+  }
+  return count;
+}
+
+void ShortcutManager::UpdateTriggerDescription(ShortcutId id, const std::string& description) {
+  auto shortcut = Get(id);
+  if (!shortcut) return;
+  std::lock_guard<std::mutex> lock(shortcut->binding_mutex_);
+  shortcut->trigger_description_ = description;
 }
 
 // Unregister a shortcut by ID
@@ -138,8 +286,16 @@ int ShortcutManager::UnregisterAll() {
   for (const auto& [id, shortcut] : shortcuts_by_id_) {
     ids.push_back(id);
   }
+  std::vector<ShortcutId> requests;
+  requests.reserve(pending_registrations_.size());
+  for (const auto& item : pending_registrations_) requests.push_back(item.first);
 
   lock.unlock();
+  for (auto id : requests) {
+    // Approval may race with this snapshot. If it already became active,
+    // unregister the same ID instead of leaving the newly approved grab alive.
+    if (CancelRegistration(id) || Unregister(id)) ++count;
+  }
   for (ShortcutId id : ids) {
     if (Unregister(id)) {
       count++;
@@ -204,6 +360,7 @@ bool ShortcutManager::IsAvailable(const std::string& accelerator) {
 // Availability check for callers that already hold mutex_.
 bool ShortcutManager::IsAvailableUnlocked(const std::string& accelerator) const {
   return shortcuts_by_accelerator_.find(accelerator) == shortcuts_by_accelerator_.end() &&
+         !HasPendingAcceleratorUnlocked(accelerator) &&
          pimpl_->CanRegister(accelerator);
 }
 
