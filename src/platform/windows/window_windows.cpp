@@ -46,6 +46,7 @@ static const wchar_t* kNoShadowProperty = L"NativeAPINoShadow";
 // Set while a window with a hidden title bar has no compositor-drawn frame: its client
 // area then covers the whole window (WM_NCCALCSIZE), because the sizing frame left
 // without the compositor is painted in the classic theme.
+static const wchar_t* kExplicitFramelessProperty = L"NativeAPIExplicitFrameless";
 static const wchar_t* kFramelessClientProperty = L"NativeAPIFramelessClient";
 // Set while a shape applied with SetShape is in force. The window region alone does not
 // tell: without the compositor's frame the visual style puts a region of its own on a
@@ -678,7 +679,8 @@ static void UpdateFrameRendering(HWND hwnd, bool keep_content) {
   // WinUI 3 owns the frame of a window whose title bar it hides.
   const bool compositor = shadow && !hidden;
 #else
-  const bool compositor = shadow && !(hidden && (GetPropW(hwnd, kShapedProperty) ||
+  const bool compositor = shadow && !(hidden && (GetPropW(hwnd, kExplicitFramelessProperty) ||
+                                                 GetPropW(hwnd, kShapedProperty) ||
                                                  GetPropW(hwnd, shape_shadow::kConfig)));
 #endif
   DWMNCRENDERINGPOLICY policy = compositor ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
@@ -786,6 +788,7 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     RemovePropW(hwnd, kTitleBarHiddenProperty);
     RemovePropW(hwnd, kNoShadowProperty);
     RemovePropW(hwnd, kFramelessClientProperty);
+    RemovePropW(hwnd, kExplicitFramelessProperty);
     RemovePropW(hwnd, kShapedProperty);
     delete static_cast<WindowShadow*>(RemovePropW(hwnd, shape_shadow::kConfig));
     RemovePropW(hwnd, kHiddenFromTaskbarProperty);
@@ -2122,6 +2125,33 @@ std::string Window::GetTitle() const {
   return WStringToString(wtitle);
 }
 
+bool Window::SetFrameless(bool is_frameless) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd)) return false;
+  if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      return window.SetFrameless(is_frameless);
+    });
+  }
+  if (is_frameless == IsFrameless()) return true;
+  detail::WindowPropertyScope property_scope(*this);
+  SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
+#ifdef NATIVEAPI_ENABLE_WINUI3
+  if (is_frameless && !SetWinUI3Frameless(hwnd)) return false;
+#endif
+  if (is_frameless) SetPropW(hwnd, kExplicitFramelessProperty, reinterpret_cast<HANDLE>(1));
+  UpdateFrameRendering(hwnd, false);
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  return IsFrameless() == is_frameless;
+}
+
+bool Window::IsFrameless() const {
+  HWND hwnd = pimpl_->hwnd_;
+  return hwnd && ::IsWindow(hwnd) && GetPropW(hwnd, kExplicitFramelessProperty);
+}
+
 void Window::SetTitleBarStyle(TitleBarStyle style) {
   HWND owner_window = pimpl_->hwnd_;
   if (owner_window && GetWindowThreadProcessId(owner_window, nullptr) != GetCurrentThreadId()) {
@@ -2135,6 +2165,8 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   detail::WindowPropertyScope property_scope(*this);
   if (!pimpl_->hwnd_ || !::IsWindow(pimpl_->hwnd_))
     return;
+
+  RemovePropW(pimpl_->hwnd_, kExplicitFramelessProperty);
 
   if (auto* controls = ControlPolicy(pimpl_->hwnd_, true)) {
     if (controls->visible) controls->closable = NativeClosable(pimpl_->hwnd_);
@@ -2714,12 +2746,34 @@ bool Window::PerformTitleBarDoubleClick() {
 }
 
 void Window::StartDragging() {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd)) return;
+  if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      window.StartDragging();
+      return true;
+    });
+    return;
+  }
+  if (IsFullScreen()) return;
   if (pimpl_->hwnd_) {
     StartSystemFrameDrag(pimpl_->hwnd_, HTCAPTION);
   }
 }
 
 void Window::StartResizing(ResizeEdge edge) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (!hwnd || !::IsWindow(hwnd)) return;
+  if (GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    (void)detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      window.StartResizing(edge);
+      return true;
+    });
+    return;
+  }
+  if (IsFullScreen()) return;
   if (!pimpl_->hwnd_) {
     return;
   }
@@ -2752,6 +2806,10 @@ void Window::StartResizing(ResizeEdge edge) {
       break;
   }
   StartSystemFrameDrag(pimpl_->hwnd_, hit_test);
+}
+
+WindowNumber Window::GetNativeNumber() const {
+  return 0;
 }
 
 WindowId Window::GetId() const {

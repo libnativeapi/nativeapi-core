@@ -1119,6 +1119,10 @@ Window::~Window() {
   ShutdownEmitter();
 }
 
+WindowNumber Window::GetNativeNumber() const {
+  return 0;
+}
+
 WindowId Window::GetId() const {
   // Prefer reading ID stored on the native objects
   if (pimpl_->gdk_window_) {
@@ -2034,8 +2038,32 @@ std::string Window::GetTitle() const {
   return std::string();
 }
 
+static const char* kFramelessKey = "NativeAPIFrameless";
+
+bool Window::SetFrameless(bool is_frameless) {
+  auto* widget = pimpl_->widget_;
+  if (!widget || !GTK_IS_WINDOW(widget) || gtk_widget_in_destruction(widget) ||
+      !gtk_widget_get_window(widget) || gdk_window_is_destroyed(gtk_widget_get_window(widget))) return false;
+  if (is_frameless == IsFrameless()) return true;
+  detail::WindowPropertyScope property_scope(*this);
+  SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
+  if (is_frameless) {
+    g_object_set_data(G_OBJECT(widget), kFramelessKey, GINT_TO_POINTER(1));
+    gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
+    SetHasShadow(HasShadow());
+  }
+  return true;
+}
+
+bool Window::IsFrameless() const {
+  auto* object = pimpl_->widget_ ? G_OBJECT(pimpl_->widget_) :
+                 (pimpl_->gdk_window_ ? G_OBJECT(pimpl_->gdk_window_) : nullptr);
+  return object && g_object_get_data(object, kFramelessKey);
+}
+
 void Window::SetTitleBarStyle(TitleBarStyle style) {
   detail::WindowPropertyScope property_scope(*this);
+  if (pimpl_->widget_) g_object_set_data(G_OBJECT(pimpl_->widget_), kFramelessKey, nullptr);
   auto* controls = GetWindowControls(pimpl_->widget_, pimpl_->gdk_window_, true);
   if (controls && !controls->decorations_saved && pimpl_->gdk_window_) {
     if (!gdk_window_get_decorations(pimpl_->gdk_window_, &controls->decorations))
@@ -2072,8 +2100,9 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
     }
   }
 
-  // When restoring to normal, ensure decorations are shown
-  if (show_decorations) {
+  // An owned CSD header remains hidden in Hidden mode, but GTK must regain
+  // its normal frame after an explicit frameless mode.
+  if (show_decorations || header_bar) {
     gtk_window_set_decorated(gtk_window, TRUE);
   }
   SetWindowControlButtonsVisible(show_decorations);

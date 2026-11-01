@@ -146,6 +146,9 @@ enum class WindowCornerPreference {
   RoundSmall
 };
 
+/** Native window-server number; distinct from nativeapi's WindowId. */
+using WindowNumber = int64_t;
+
 /**
  * @brief A window property reported by WindowPropertyChangedEvent.
  *
@@ -173,7 +176,9 @@ enum class WindowProperty {
   /** Window::IsAlwaysOnBottom() */
   AlwaysOnBottom,
   /** Window::GetTitleBarStyle() */
-  TitleBarStyle
+  TitleBarStyle,
+  /** Window::IsFrameless() */
+  Frameless
 };
 
 /**
@@ -389,6 +394,25 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * @return WindowId The unique identifier assigned to this window
    */
   WindowId GetId() const;
+
+  /**
+   * @brief Gets the native window-server number for platform interoperability.
+   *
+   * This number is assigned by the OS and can change with the native window's
+   * lifetime. Continue using GetId() for nativeapi lookups and events.
+   * Native pointers/handles are exposed through GetNativeObject().
+   *
+   * @return The native number, or 0 when unsupported. On macOS -1 indicates
+   *         that AppKit has not assigned a window-server number.
+   * @note Platform availability:
+   * - macOS: ✅ NSWindow windowNumber (CGWindowID when assigned).
+   * - Windows: ❌ Returns 0; use GetNativeObject() for the HWND.
+   * - Linux: ❌ Returns 0.
+   * - Android: ❌ Returns 0.
+   * - iOS: ❌ Returns 0.
+   * - OpenHarmony: ❌ Returns 0.
+   */
+  WindowNumber GetNativeNumber() const;
 
   // === Content view ===
 
@@ -978,7 +1002,8 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * title bar and system menu. Programmatic maximizing is still possible.
    *
    * @note Platform availability:
-   * - macOS: ✅ Native caption policy
+   * - macOS: ✅ Independent zoom policy; does not change resizability or fullscreen.
+   *   Native zoom actions obey it; explicit Maximize()/Unmaximize() remain available.
    * - Windows: ✅ Native caption policy
    * - Linux: ⚠️ GTK controls and window-manager policy hints
    * - Android: ❌ Setter ignored
@@ -1314,6 +1339,37 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    */
   bool SetTitleBarColors(const Color& background, const Color& foreground);
   bool ResetTitleBarColors();
+
+  /**
+   * @brief Removes the native title bar and frame around the content.
+   *
+   * Enabling this mode also selects Hidden title-bar style and hides native
+   * caption buttons. Unlike Hidden alone, it gives the entire frame area to
+   * the content. Shadows and independent button policies are preserved.
+   * Disabling restores Normal title-bar style. Explicitly setting either
+   * title-bar style exits frameless mode; shapes remain independent.
+   *
+   * @param is_frameless true for a frameless window, false for a normal frame
+   * @return true when accepted (including an unchanged policy); false for an
+   *         unsupported backend, invalid native window or native refusal.
+   * @note Platform availability:
+   * - macOS: ✅ Hides the native title-bar container with full-size content.
+   * - Windows: ✅ Full client frame with resize hit testing and core shadows.
+   * - Linux: ⚠️ Removes GTK decorations; server-side hints depend on the WM.
+   * - Android: ❌ No-op.
+   * - iOS: ❌ No-op.
+   * - OpenHarmony: ❌ No distinct frameless policy; no-op.
+   */
+  bool SetFrameless(bool is_frameless);
+
+  /**
+   * @brief Gets the explicit frameless policy set through SetFrameless().
+   *
+   * This does not infer the policy from host-side decoration or shape changes.
+   * @return true when frameless mode is requested, false otherwise
+   * @see SetFrameless() for platform availability and reset semantics.
+   */
+  bool IsFrameless() const;
 
   /**
    * @brief Sets the style of the window's title bar.

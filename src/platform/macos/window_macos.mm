@@ -26,6 +26,10 @@ static const void* kWindowFocusableKey = &kWindowFocusableKey;
 static const void* kWindowOriginalClassKey = &kWindowOriginalClassKey;
 // Window::SetTitleBarStyle() / SetMovable() state, kept on the NSWindow for the same reason.
 static const void* kWindowTitleBarHiddenKey = &kWindowTitleBarHiddenKey;
+static const void* kWindowMaximizableKey = &kWindowMaximizableKey;
+static const void* kWindowZoomBypassKey = &kWindowZoomBypassKey;
+static const void* kWindowFramelessKey = &kWindowFramelessKey;
+static const void* kWindowFramelessTitleViewKey = &kWindowFramelessTitleViewKey;
 static const void* kWindowMovableKey = &kWindowMovableKey;
 // A shaped window must not inherit AppKit's rounded titled frame. Keep this
 // choice after clearing its polygon so the restored rectangle has square corners.
@@ -157,10 +161,42 @@ static void NativeApiApplyTitleBarAppearance(NSWindow* window) {
   NativeApiApplyAspectRatio(window);
 }
 
+// Zoom and resize are independent policies. Do not remove Resizable merely to
+// reject a native zoom; the green button also hosts fullscreen controls.
+static BOOL NativeApiWindowIsMaximizable(NSWindow* window) {
+  NSNumber* value = objc_getAssociatedObject(window, kWindowMaximizableKey);
+  return value ? value.boolValue : YES;
+}
+
+static void NativeApiInstallZoomPolicy(NSWindow* window) {
+  static const void* installed_key = &installed_key;
+  Class cls = object_getClass(window);
+  if (objc_getAssociatedObject(cls, installed_key)) return;
+  SEL selector = @selector(zoom:);
+  Method method = class_getInstanceMethod(cls, selector);
+  auto original = reinterpret_cast<void (*)(id, SEL, id)>(method_getImplementation(method));
+  IMP replacement = imp_implementationWithBlock(^(NSWindow* instance, id sender) {
+    if (!NativeApiWindowIsMaximizable(instance) &&
+        ![objc_getAssociatedObject(instance, kWindowZoomBypassKey) boolValue]) return;
+    original(instance, selector, sender);
+  });
+  if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)))
+    class_replaceMethod(cls, selector, replacement, method_getTypeEncoding(method));
+  objc_setAssociatedObject(cls, installed_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 // Whether the window control buttons were last asked for; a window starts with them.
 static void NativeApiApplyWindowControlButtons(NSWindow* window) {
+  if (objc_getAssociatedObject(window, kWindowMaximizableKey)) NativeApiInstallZoomPolicy(window);
+  if ([objc_getAssociatedObject(window, kWindowFramelessKey) boolValue]) {
+    NSView* title = [[window standardWindowButton:NSWindowCloseButton] superview].superview;
+    title.hidden = YES;
+    if (title) objc_setAssociatedObject(window, kWindowFramelessTitleViewKey, title,
+                                       OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
   NSNumber* value = objc_getAssociatedObject(window, kWindowButtonsVisibleKey);
-  const BOOL hidden = value ? ![value boolValue] : NO;
+  if (!value) return;
+  const BOOL hidden = ![value boolValue];
   for (NSWindowButton button :
        {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
     [[window standardWindowButton:button] setHidden:hidden];
@@ -196,6 +232,7 @@ static bool NativeApiPerformTitleBarDoubleClick(NSWindow* window) {
     [window miniaturize:nil];
     return true;
   }
+  if (!NativeApiWindowIsMaximizable(window)) return false;
   if ([action isEqualToString:@"Fill"]) {
     if (!(window.styleMask & NSWindowStyleMaskResizable)) return false;
     // AppKit exposes no public Fill action. Ask for the native action only
@@ -262,8 +299,9 @@ static void NativeApiInstallTitleBarDoubleClick(NSWindow* window) {
   if (implementation != class_getMethodImplementation([NSWindow class], selector) &&
       implementation != class_getMethodImplementation([NSPanel class], selector)) return;
   IMP replacement = imp_implementationWithBlock(^(NSWindow* instance, NSEvent* event) {
-    if (NativeApiIsEmptyTitleBarBackground(instance, event) &&
-        NativeApiPerformTitleBarDoubleClick(instance)) return;
+    if (NativeApiIsEmptyTitleBarBackground(instance, event)) {
+      if (NativeApiPerformTitleBarDoubleClick(instance) || !NativeApiWindowIsMaximizable(instance)) return;
+    }
     original(instance, selector, event);
   });
   if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method)))
@@ -346,6 +384,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
     panel.hidesOnDeactivate = NO;
     panel.becomesKeyOnlyIfNeeded = NO;
     nativeapi::detail::RefreshNativeWindowCloseHooks((__bridge void*)window);
+    if (objc_getAssociatedObject(window, kWindowMaximizableKey)) NativeApiInstallZoomPolicy(window);
     if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
     return;
   }
@@ -359,6 +398,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
   }
   if (NativeApiWindowIsTitleBarHidden(window)) NativeApiInstallTitleBarDoubleClick(window);
   nativeapi::detail::RefreshNativeWindowCloseHooks((__bridge void*)window);
+  if (objc_getAssociatedObject(window, kWindowMaximizableKey)) NativeApiInstallZoomPolicy(window);
 }
 
 #include "window_shadow_macos.h"
@@ -377,6 +417,7 @@ static void NativeApiUpdateWindowClass(NSWindow* window, bool non_activating) {
                         change:(NSDictionary*)change
                        context:(void*)context {
   if (![object isKindOfClass:[NSWindow class]]) return;
+  NativeApiApplyWindowControlButtons((NSWindow*)object);
   nativeapi::Window window((__bridge void*)object);
   nativeapi::detail::WindowPropertyDispatch::Refresh(window);
 }
@@ -517,16 +558,22 @@ bool Window::IsOcclusionStateSupported() {
   return true;
 }
 
-void Window::Maximize() {
-  if (!IsMaximized()) {
-    [pimpl_->ns_window_ zoom:nil];
+static void NativeApiProgrammaticZoom(NSWindow* window) {
+  NSNumber* previous = objc_getAssociatedObject(window, kWindowZoomBypassKey);
+  objc_setAssociatedObject(window, kWindowZoomBypassKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  @try { [window zoom:nil]; }
+  @finally {
+    objc_setAssociatedObject(window, kWindowZoomBypassKey, previous,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
 }
 
+void Window::Maximize() {
+  if (!IsMaximized()) NativeApiProgrammaticZoom(pimpl_->ns_window_);
+}
+
 void Window::Unmaximize() {
-  if (IsMaximized()) {
-    [pimpl_->ns_window_ zoom:nil];
-  }
+  if (IsMaximized()) NativeApiProgrammaticZoom(pimpl_->ns_window_);
 }
 
 bool Window::IsMaximized() const {
@@ -711,17 +758,15 @@ bool Window::IsMinimizable() const {
 
 void Window::SetMaximizable(bool is_maximizable) {
   detail::WindowPropertyScope property_scope(*this);
-  NSUInteger style_mask = [pimpl_->ns_window_ styleMask];
-  if (is_maximizable) {
-    style_mask |= NSWindowStyleMaskResizable;
-  } else {
-    style_mask &= ~NSWindowStyleMaskResizable;
-  }
-  [pimpl_->ns_window_ setStyleMask:style_mask];
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
+  objc_setAssociatedObject(window, kWindowMaximizableKey, @(is_maximizable),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  NativeApiInstallZoomPolicy(window);
 }
 
 bool Window::IsMaximizable() const {
-  return [pimpl_->ns_window_ styleMask] & NSWindowStyleMaskResizable;
+  return pimpl_->ns_window_ && NativeApiWindowIsMaximizable(pimpl_->ns_window_);
 }
 
 void Window::SetFullScreenable(bool is_full_screenable) {
@@ -756,11 +801,13 @@ void Window::SetWindowControlButtonsVisible(bool is_visible) {
 }
 
 bool Window::IsWindowControlButtonsVisible() const {
-  NSButton* closeButton = [pimpl_->ns_window_ standardWindowButton:NSWindowCloseButton];
-  if (closeButton) {
-    return ![closeButton isHidden];
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window || IsFrameless()) return false;
+  for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+    NSButton* button = [window standardWindowButton:kind];
+    if (button && ![button isHiddenOrHasHiddenAncestor]) return true;
   }
-  return true;  // Default to visible if button not found
+  return false;
 }
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
@@ -867,11 +914,39 @@ std::string Window::GetTitle() const {
   return title ? std::string([title UTF8String]) : std::string();
 }
 
+bool Window::SetFrameless(bool is_frameless) {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return false;
+  if (is_frameless == IsFrameless()) return true;
+  detail::WindowPropertyScope property_scope(*this);
+  SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
+  if (is_frameless) {
+    objc_setAssociatedObject(window, kWindowFramelessKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSView* title_view = [[window standardWindowButton:NSWindowCloseButton] superview].superview;
+    if (title_view) {
+      objc_setAssociatedObject(window, kWindowFramelessTitleViewKey, title_view,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      title_view.hidden = YES;
+    }
+  }
+  return true;
+}
+
+bool Window::IsFrameless() const {
+  return [objc_getAssociatedObject(pimpl_->ns_window_, kWindowFramelessKey) boolValue];
+}
+
 void Window::SetTitleBarStyle(TitleBarStyle style) {
   detail::WindowPropertyScope property_scope(*this);
   if (!pimpl_->ns_window_) {
     return;
   }
+  NSView* frameless_title = objc_getAssociatedObject(pimpl_->ns_window_, kWindowFramelessTitleViewKey);
+  frameless_title.hidden = NO;
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowFramelessTitleViewKey, nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(pimpl_->ns_window_, kWindowFramelessKey, nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   const BOOL hidden = style == TitleBarStyle::Hidden;
   const BOOL has_shadow = HasShadow();
   // Record the movable preference before the hidden flag starts to affect -isMovable.
@@ -1383,6 +1458,10 @@ void Window::StartResizing(ResizeEdge edge) {
     }
     [window setFrame:frame display:YES];
   }
+}
+
+WindowNumber Window::GetNativeNumber() const {
+  return static_cast<WindowNumber>([pimpl_->ns_window_ windowNumber]);
 }
 
 WindowId Window::GetId() const {

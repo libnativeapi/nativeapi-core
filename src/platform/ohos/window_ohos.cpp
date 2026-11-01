@@ -36,6 +36,10 @@ Window::Window(void* token) : pimpl_(std::make_unique<Impl>(token)) {}
 Window::~Window() {
   ShutdownEmitter();
 }
+WindowNumber Window::GetNativeNumber() const {
+  return 0;
+}
+
 WindowId Window::GetId() const {
   return pimpl_->state_ ? pimpl_->state_->id : IdAllocator::kInvalidId;
 }
@@ -625,6 +629,12 @@ std::string Window::GetTitle() const {
   std::string title;
   ohos::UseWindow(pimpl_->state_, [&] { title = pimpl_->state_->title; });
   return title;
+}
+
+bool Window::SetFrameless(bool /*is_frameless*/) { return false; }
+
+bool Window::IsFrameless() const {
+  return false;
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {

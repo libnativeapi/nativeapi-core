@@ -74,6 +74,11 @@ int main(int argc, char** argv) {
     changes.push_back(event.GetProperty());
   });
   Pump(400);
+#ifdef __APPLE__
+  Check(window.GetNativeNumber() == [(__bridge NSWindow*)window.GetNativeObject() windowNumber] &&
+        native_window_get_native_number(ffi_window) == window.GetNativeNumber(),
+        "C ABI reports the native AppKit window-server number");
+#endif
   const bool minimize = window.IsMinimizable();
   const bool maximize = window.IsMaximizable();
   const bool close = window.IsClosable();
@@ -148,6 +153,81 @@ int main(int argc, char** argv) {
   window.SetTitleBarStyle(TitleBarStyle::Normal);
   Pump();
   Check(alias.IsWindowControlButtonsVisible(), "normal title-bar style resets group visibility");
+  const bool shadow = window.HasShadow();
+  changes.clear();
+  Check(native_window_set_frameless(ffi_window, true), "C ABI accepts frameless mode");
+  Pump();
+  Check(alias.IsFrameless() && native_window_is_frameless(ffi_window) &&
+        window.GetTitleBarStyle() == TitleBarStyle::Hidden && !window.IsWindowControlButtonsVisible(),
+        "C ABI frameless policy is shared and hides the native caption");
+  Check(std::count(changes.begin(), changes.end(), WindowProperty::Frameless) == 1,
+        "frameless entry emits exactly one property change");
+#if defined(_WIN32)
+  auto full_client = [&] {
+    RECT outer{}, client{};
+    GetWindowRect(hwnd, &outer);
+    GetClientRect(hwnd, &client);
+    POINT origin{};
+    ClientToScreen(hwnd, &origin);
+    return origin.x == outer.left && origin.y == outer.top &&
+           client.right == outer.right - outer.left && client.bottom == outer.bottom - outer.top;
+  };
+  Check(full_client(), "frameless content fills the entire Win32 frame");
+  RECT frame_rect{};
+  GetWindowRect(hwnd, &frame_rect);
+  Check(SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(frame_rect.left + 1,
+            (frame_rect.top + frame_rect.bottom) / 2)) == HTLEFT,
+        "frameless Win32 content retains native edge resize hit testing");
+#elif !defined(__APPLE__)
+  Check(!gtk_window_get_decorated(GTK_WINDOW(host)) && gtk_widget_get_visible(content_header),
+        "frameless GTK removes decorations without hiding application content");
+#else
+  NSWindow* ns_window = (__bridge NSWindow*)window.GetNativeObject();
+  NSView* title_view = [[ns_window standardWindowButton:NSWindowCloseButton] superview].superview;
+  Check(title_view && title_view.hidden, "frameless AppKit hides the native title-bar container");
+#endif
+  window.SetHasShadow(false);
+  window.SetHasShadow(true);
+  Pump();
+  Check(alias.IsFrameless() && window.HasShadow(), "shadows do not restore a frameless window's frame");
+  window.SetWindowControlButtonsVisible(true);
+  Check(!window.IsWindowControlButtonsVisible(), "frameless mode cannot reveal native caption controls");
+  window.SetWindowControlButtonsVisible(false);
+#if defined(_WIN32)
+  Check(full_client(), "re-enabling Win32 shadows leaves the client frame intact");
+#endif
+  alias.SetTitleBarStyle(TitleBarStyle::Hidden);
+  Pump();
+  Check(!window.IsFrameless() && window.GetTitleBarStyle() == TitleBarStyle::Hidden,
+        "explicit hidden title-bar style exits frameless mode");
+  window.SetFrameless(true);
+  alias.SetFrameless(false);
+  Pump();
+  Check(!window.IsFrameless() && window.GetTitleBarStyle() == TitleBarStyle::Normal,
+        "disabling frameless restores a normal title bar");
+  window.SetHasShadow(shadow);
+#ifdef __APPLE__
+  window.SetResizable(true);
+  alias.SetMaximizable(false);
+  Pump();
+  Check(window.IsResizable() && !window.IsMaximizable(),
+        "macOS zoom policy is independent of edge resizing");
+  const auto before_zoom = window.GetBounds();
+  [ns_window zoom:nil];
+  Pump();
+  Check(!window.IsMaximized() && window.GetBounds().width == before_zoom.width,
+        "disabled native zoom leaves the window unchanged");
+  window.Maximize();
+  Pump();
+  Check(window.IsMaximized(), "explicit maximize remains available with native zoom disabled");
+  window.Unmaximize();
+  Pump();
+  window.SetResizable(false);
+  alias.SetMaximizable(true);
+  Check(!window.IsResizable() && window.IsMaximizable(),
+        "enabling macOS zoom does not re-enable edge resizing");
+  window.SetResizable(true);
+#endif
 #if !defined(__APPLE__)
   window.SetClosable(false);
   changes.clear();

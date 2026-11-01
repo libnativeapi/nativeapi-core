@@ -27,6 +27,10 @@ Window::~Window() {
   ShutdownEmitter();
 }
 
+WindowNumber Window::GetNativeNumber() const {
+  return 0;
+}
+
 WindowId Window::GetId() const {
   if (!pimpl_->native_window_) {
     return IdAllocator::kInvalidId;
@@ -342,6 +346,12 @@ void Window::SetTitle(std::string title) {
 
 std::string Window::GetTitle() const {
   return "";
+}
+
+bool Window::SetFrameless(bool /*is_frameless*/) { return false; }
+
+bool Window::IsFrameless() const {
+  return false;
 }
 
 void Window::SetTitleBarStyle(TitleBarStyle style) {

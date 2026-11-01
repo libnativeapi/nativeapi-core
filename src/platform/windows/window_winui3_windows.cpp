@@ -16,6 +16,14 @@ W::AppWindow GetAppWindow(HWND window) {
   return W::AppWindow::GetFromWindowId(winrt::Microsoft::UI::GetWindowIdFromWindow(window));
 }
 }
+bool SetWinUI3Frameless(HWND window) {
+  try {
+    auto presenter = GetAppWindow(window).Presenter().try_as<W::OverlappedPresenter>();
+    if (!presenter) return false;
+    presenter.SetBorderAndTitleBar(false, false);
+    return true;
+  } catch (const winrt::hresult_error&) { return false; }
+}
 bool SetWinUI3TitleBarStyle(HWND window, TitleBarStyle style) {
   try {
     auto presenter = GetAppWindow(window).Presenter().try_as<W::OverlappedPresenter>();

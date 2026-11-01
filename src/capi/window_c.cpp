@@ -84,6 +84,19 @@ native_window_id_t native_window_get_id(native_window_t window) {
   }
 }
 
+native_window_number_t native_window_get_native_number(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return self->GetNativeNumber();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_native_number");
+    return 0;
+  }
+}
+
 native_view_t native_window_get_content_view(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -1036,6 +1049,32 @@ bool native_window_reset_title_bar_colors(native_window_t window) {
     return self->ResetTitleBarColors();
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_reset_title_bar_colors");
+    return false;
+  }
+}
+
+bool native_window_set_frameless(native_window_t window, bool is_frameless) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->SetFrameless(is_frameless);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_frameless");
+    return false;
+  }
+}
+
+bool native_window_is_frameless(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsFrameless();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_frameless");
     return false;
   }
 }

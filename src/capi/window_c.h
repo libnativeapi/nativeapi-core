@@ -31,6 +31,8 @@ extern "C" {
 
 typedef unsigned int native_window_id_t;
 
+typedef long long native_window_number_t;
+
 typedef enum {
   NATIVE_TITLE_BAR_STYLE_NORMAL = 0,
   NATIVE_TITLE_BAR_STYLE_HIDDEN = 1,
@@ -61,6 +63,7 @@ typedef enum {
   NATIVE_WINDOW_PROPERTY_ALWAYS_ON_TOP = 8,
   NATIVE_WINDOW_PROPERTY_ALWAYS_ON_BOTTOM = 9,
   NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE = 10,
+  NATIVE_WINDOW_PROPERTY_FRAMELESS = 11,
 } native_window_property_t;
 
 typedef enum {
@@ -176,6 +179,9 @@ bool native_window_close(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 native_window_id_t native_window_get_id(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+native_window_number_t native_window_get_native_number(native_window_t window);
 
 /// Caller owns the returned handle; release it with native_view_free().
 FFI_PLUGIN_EXPORT
@@ -389,6 +395,12 @@ bool native_window_set_title_bar_colors(native_window_t window, native_color_t b
 
 FFI_PLUGIN_EXPORT
 bool native_window_reset_title_bar_colors(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_set_frameless(native_window_t window, bool is_frameless);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_frameless(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 void native_window_set_title_bar_style(native_window_t window, native_title_bar_style_t style);
@@ -723,6 +735,8 @@ inline native_window_property_t to_c_window_property(nativeapi::WindowProperty v
       return NATIVE_WINDOW_PROPERTY_ALWAYS_ON_BOTTOM;
     case nativeapi::WindowProperty::TitleBarStyle:
       return NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE;
+    case nativeapi::WindowProperty::Frameless:
+      return NATIVE_WINDOW_PROPERTY_FRAMELESS;
     default:
       return NATIVE_WINDOW_PROPERTY_TITLE;
   }
@@ -752,6 +766,8 @@ inline nativeapi::WindowProperty to_cpp_window_property(native_window_property_t
       return nativeapi::WindowProperty::AlwaysOnBottom;
     case NATIVE_WINDOW_PROPERTY_TITLE_BAR_STYLE:
       return nativeapi::WindowProperty::TitleBarStyle;
+    case NATIVE_WINDOW_PROPERTY_FRAMELESS:
+      return nativeapi::WindowProperty::Frameless;
     default:
       return static_cast<nativeapi::WindowProperty>(value);
   }

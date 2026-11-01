@@ -11,6 +11,7 @@ namespace {
 
 struct Readings {
   std::string title;
+  bool frameless = false;
   bool resizable = false;
   bool movable = false;
   bool minimizable = false;
@@ -26,6 +27,7 @@ struct Readings {
 Readings Read(const Window& window) {
   Readings r;
   r.title = window.GetTitle();
+  r.frameless = window.IsFrameless();
   r.resizable = window.IsResizable();
   r.movable = window.IsMovable();
   r.minimizable = window.IsMinimizable();
@@ -41,6 +43,7 @@ Readings Read(const Window& window) {
 
 std::vector<WindowProperty> Changes(const Readings& a, const Readings& b) {
   std::vector<WindowProperty> changed;
+  if (a.frameless != b.frameless) changed.push_back(WindowProperty::Frameless);
   if (a.title != b.title) changed.push_back(WindowProperty::Title);
   if (a.resizable != b.resizable) changed.push_back(WindowProperty::Resizable);
   if (a.movable != b.movable) changed.push_back(WindowProperty::Movable);
