@@ -32,7 +32,12 @@ typedef IdAllocator::IdType ShortcutId;
  * - Support for both global and application-local shortcuts
  *
  * @note Platform availability:
- * - macOS: ✅ Carbon global hotkeys, including activation/release events.
+ * - macOS: ✅ Carbon ordinary global hotkeys, with activation/release events.
+ *   Media keys use a Quartz event tap for global scope and AppKit monitoring for
+ *   application scope. Global taps require OS authorization and may be restricted
+ *   by sandbox policy; permission loss unregisters affected global shortcuts.
+ *   Application media monitoring requires AppKit dispatch but no global tap;
+ *   app deactivation releases held application media keys.
  * - Windows: ✅ Win32 global hotkeys; activation events only.
  * - Linux: ⚠️ X11 registration, or asynchronous Wayland GlobalShortcuts Portal
  *   registration through RequestRegistration. Portal support requires a desktop
@@ -108,6 +113,13 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
    * @note Accelerator format follows Electron-style conventions:
    *       - Modifiers: Ctrl, Alt, Shift, Cmd (macOS), Super (Linux), Meta
    *       - Keys: A-Z, 0-9, F1-F12, Space, Tab, Enter, Escape, etc.
+   *       - macOS media: MediaPlayPause, MediaNextTrack, MediaPreviousTrack,
+   *         MediaFastForward, MediaRewind, VolumeUp, VolumeDown, VolumeMute,
+   *         BrightnessUp, BrightnessDown, Eject. NativeMediaKey<N> denotes an
+   *         explicit macOS NX auxiliary-control code, distinct from Carbon
+   *         NativeKey<N>. Apple FAST/REWIND and NEXT/PREVIOUS are canonical aliases.
+   *         One accelerator string identifies one registration; distinct named
+   *         and numeric aliases can be used to register global and app scopes.
    *       - Examples: "Ctrl+C", "Cmd+Shift+4", "Alt+F4", "Ctrl+Alt+Delete"
    *
    * @example
@@ -166,7 +178,8 @@ class ShortcutManager : public EventEmitter<ShortcutEvent> {
    * Rejected requests emit no completion event. Accepted requests complete once,
    * including cancellation, and failure events always carry this request's ID.
    * @note Platform availability:
-   * - macOS: ✅ Carbon registration; completion uses shortcut events.
+   * - macOS: ✅ Immediate Carbon/media registration; same permission and scope
+   *   requirements as Register. Completion uses shortcut events.
    * - Windows: ✅ Win32 registration; completion uses shortcut events.
    * - Linux: ⚠️ X11 registration or asynchronous Wayland Portal approval. Requires
    *   a GlobalShortcuts desktop provider. A portal accelerator is a preference;

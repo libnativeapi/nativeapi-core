@@ -389,7 +389,9 @@ bool ShortcutManager::IsValidAccelerator(const std::string& accelerator) {
       R"(|Space|Tab|Enter|Return|Escape|Esc|Backspace|ForwardDelete|Delete|Insert|Help)"
       R"(|Home|End|PageUp|PageDown|Up|Down|Left|Right)"
       R"(|Plus|Minus|Equal|Comma|Period|Slash|Backslash|Semicolon|Quote)"
-      R"(|LeftBracket|RightBracket|Grave|Backquote|NativeKey[0-9]{1,10})"
+      R"(|LeftBracket|RightBracket|Grave|Backquote|NativeKey[0-9]{1,10}|NativeMediaKey[0-9]{1,10})"
+      R"(|MediaPlayPause|MediaNextTrack|MediaPreviousTrack|MediaFastForward|MediaRewind)"
+      R"(|VolumeUp|VolumeDown|VolumeMute|BrightnessUp|BrightnessDown|Eject)"
       R"(|[A-Za-z0-9]|[,./\\;'\[\]`=\-])$)",
       std::regex::icase);
 

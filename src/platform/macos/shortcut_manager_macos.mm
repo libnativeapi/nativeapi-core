@@ -9,6 +9,7 @@
 
 #include "../../shortcut_manager.h"
 #include "../shared/shortcut_native_key.h"
+#include "shortcut_media_macos.h"
 
 namespace nativeapi {
 namespace {
@@ -167,7 +168,8 @@ bool LookupShortcutKeyCode(const std::string& token, UInt32& keycode) {
 
 bool ParseMacShortcutAccelerator(const std::string& accelerator,
                                  UInt32& modifiers,
-                                 UInt32& keycode) {
+                                 UInt32& keycode,
+                                 bool& media) {
   modifiers = 0;
   keycode = 0;
 
@@ -194,7 +196,8 @@ bool ParseMacShortcutAccelerator(const std::string& accelerator,
     }
   }
 
-  return LookupShortcutKeyCode(key_token, keycode);
+  media = detail::LookupMacMediaKey(key_token, keycode);
+  return media || LookupShortcutKeyCode(key_token, keycode);
 }
 
 }  // namespace
@@ -218,7 +221,24 @@ bool ParseMacShortcutAccelerator(const std::string& accelerator,
  */
 class ShortcutManagerImpl final : public ShortcutManager::Impl {
  public:
-  explicit ShortcutManagerImpl(ShortcutManager* manager) : manager_(manager) {}
+  explicit ShortcutManagerImpl(ShortcutManager* manager)
+      : manager_(manager), media_([guard = manager->CreateGuardedCallback<ShortcutId, int, bool*>(
+          std::function<void(ShortcutId, int, bool*)>([manager](ShortcutId id, int phase, bool* handled) {
+            auto shortcut = manager->Get(id);
+            if (!shortcut) return;
+            if (phase == 3) { manager->Unregister(id); return; }
+            if (!manager->IsEnabled() || !shortcut->IsEnabled()) return;
+            *handled = true;
+            if (phase == 0) manager->EmitShortcutReleased(id, shortcut->GetAccelerator());
+            else if (phase == 1) {
+              manager->EmitShortcutActivated(id, shortcut->GetAccelerator());
+              shortcut->Invoke();
+            }
+          }))](ShortcutId id, int phase) {
+            bool handled = false;
+            guard(id, phase, &handled);
+            return handled;
+          }) {}
 
   ~ShortcutManagerImpl() override {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -238,9 +258,12 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   bool RegisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
     UInt32 modifiers = 0;
     UInt32 keycode = 0;
-    if (!ParseMacShortcutAccelerator(shortcut->GetAccelerator(), modifiers, keycode)) {
+    bool media = false;
+    if (!ParseMacShortcutAccelerator(shortcut->GetAccelerator(), modifiers, keycode, media)) {
       return false;
     }
+
+    if (media) return media_.Add(shortcut->GetId(), keycode, modifiers, shortcut->GetScope());
 
     EnsureHandler();
 
@@ -266,6 +289,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
   bool UnregisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
+    if (media_.Remove(shortcut->GetId())) return true;
     EventHotKeyRef hotkey_ref = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -345,6 +369,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
   ShortcutManager* manager_;
+  detail::MacMediaShortcuts media_;
 
   std::mutex mutex_;
   std::unordered_map<ShortcutId, EventHotKeyRef> hotkeys_;
