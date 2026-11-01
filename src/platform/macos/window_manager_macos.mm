@@ -315,6 +315,18 @@ void WindowManager::Impl::StartEventListening() {
     // Windows already on screen were not created under our eyes: they emit no
     // WindowCreatedEvent, only the WindowClosedEvent.
     for (NSWindow* window in [[NSApplication sharedApplication] windows]) {
+      // Observation may have been stopped while windows changed. Seed live
+      // state on every subscription, otherwise the next unzoom compares with
+      // a stale false and its restored event disappears.
+      if (!NativeApiWindowIsClosed(window)) {
+        const auto id = ResolveWindowId(window);
+        if (id != IdAllocator::kInvalidId) {
+          maximized_[id] = [window isZoomed] && ![window isMiniaturized] &&
+                          !([window styleMask] & NSWindowStyleMaskFullScreen);
+          const auto top_left = NSRectExt::topLeft([window frame]);
+          positions_[id] = {top_left.x, top_left.y};
+        }
+      }
       if ([window isVisible]) {
         WindowId window_id = ResolveWindowId(window);
         if (window_id != IdAllocator::kInvalidId) {

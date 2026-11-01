@@ -510,4 +510,23 @@ bool Window::ResetTitleBarColors() { return false; }
 namespace nativeapi {
 bool Window::SetCustomShadow(std::shared_ptr<WindowShadow> shadow) { return false; }
 std::shared_ptr<WindowShadow> Window::GetCustomShadow() const { return nullptr; }
+
+// Optional desktop window capabilities.
+bool Window::SetMaximizedVertically(bool) { return false; }
+bool Window::IsMaximizedVertically() const { return false; }
+bool Window::IsVerticalMaximizeSupported() { return false; }
+bool Window::Dock(WindowDockSide, double) { return false; }
+bool Window::Undock() { return false; }
+WindowDockSide Window::GetDockSide() const { return WindowDockSide::None; }
+bool Window::IsDockingSupported() { return false; }
+bool Window::AnimateBounds(Rectangle) { return false; }
+bool Window::IsBoundsAnimationSupported() { return false; }
+bool Window::SetVisibleOnFullScreen(bool) { return false; }
+bool Window::IsVisibleOnFullScreen() const { return false; }
+bool Window::IsVisibleOnFullScreenSupported() { return false; }
+bool Window::GrabKeyboard() { return false; }
+bool Window::UngrabKeyboard() { return false; }
+bool Window::IsKeyboardGrabbed() const { return false; }
+bool Window::IsKeyboardGrabSupported() { return false; }
+
 }  // namespace nativeapi

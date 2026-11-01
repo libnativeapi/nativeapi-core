@@ -534,3 +534,13 @@ set_tests_properties(foundation_values_test PROPERTIES TIMEOUT 20)
 add_executable(ohos_shadow_raster_test ohos_shadow_raster_test.cpp)
 target_link_libraries(ohos_shadow_raster_test PRIVATE nativeapi)
 add_test(NAME ohos_shadow_raster_test COMMAND ohos_shadow_raster_test)
+
+# Migrated appbar, keyboard-grab and macOS frame/space capabilities. Manual:
+# creates windows and briefly reserves desktop space; sends no synthetic input.
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  if(APPLE)
+    set_source_files_properties(window_migration_test.cpp PROPERTIES LANGUAGE OBJCXX)
+  endif()
+  add_executable(window_migration_test window_migration_test.cpp)
+  target_link_libraries(window_migration_test PRIVATE nativeapi)
+endif()

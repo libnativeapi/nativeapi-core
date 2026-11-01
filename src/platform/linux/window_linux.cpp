@@ -81,6 +81,59 @@ static MouseInputPolicy* GetMouseInputPolicy(GtkWidget* widget, GdkWindow* surfa
   return policy;
 }
 
+// The grab is owned by the native surface, independently of Window wrappers.
+// A weak reference prevents a destroyed surface from keeping a stale owner.
+struct KeyboardGrab {
+  GWeakRef owner;
+  KeyboardGrab() { g_weak_ref_init(&owner, nullptr); }
+  ~KeyboardGrab() { g_weak_ref_clear(&owner); }
+};
+static KeyboardGrab* KeyboardGrabFor(GdkSeat* seat, bool create) {
+  if (!seat) return nullptr;
+  static const char* key = "NativeAPIKeyboardGrab";
+  auto* grab = static_cast<KeyboardGrab*>(g_object_get_data(G_OBJECT(seat), key));
+  if (!grab && create) {
+    grab = new KeyboardGrab;
+    g_object_set_data_full(G_OBJECT(seat), key, grab,
+                          +[](gpointer data) { delete static_cast<KeyboardGrab*>(data); });
+  }
+  return grab;
+}
+
+static bool HoldsKeyboardGrab(GdkSeat* seat, GdkWindow* surface) {
+  auto* grab = KeyboardGrabFor(seat, false);
+  if (!grab || !surface || gdk_window_is_destroyed(surface)) return false;
+  auto* owner = static_cast<GdkWindow*>(g_weak_ref_get(&grab->owner));
+  auto* keyboard = gdk_seat_get_keyboard(seat);
+  const bool held = owner == surface && gdk_window_is_viewable(surface) && keyboard &&
+      gdk_display_device_is_grabbed(gdk_seat_get_display(seat), keyboard);
+  if (owner) g_object_unref(owner);
+  return held;
+}
+
+static void ForgetKeyboardGrab(GdkSeat* seat, GdkWindow* surface) {
+  auto* grab = KeyboardGrabFor(seat, false);
+  if (!grab) return;
+  auto* owner = static_cast<GdkWindow*>(g_weak_ref_get(&grab->owner));
+  if (owner == surface) g_weak_ref_set(&grab->owner, nullptr);
+  if (owner) g_object_unref(owner);
+}
+
+static void ObserveKeyboardGrab(GtkWidget* widget, GdkSeat* seat) {
+  if (!widget || g_object_get_data(G_OBJECT(widget), "NativeAPIKeyboardGrabObserved")) return;
+  g_object_set_data(G_OBJECT(widget), "NativeAPIKeyboardGrabObserved", GINT_TO_POINTER(1));
+  g_signal_connect_object(widget, "unmap", G_CALLBACK(+[](GtkWidget* target, GdkSeat* seat) {
+    ForgetKeyboardGrab(seat, gtk_widget_get_window(target));
+  }), seat, static_cast<GConnectFlags>(0));
+  g_signal_connect_object(widget, "grab-broken-event",
+      G_CALLBACK(+[](GtkWidget* target, GdkEventGrabBroken* event, GdkSeat* seat) -> gboolean {
+        if (event->keyboard && !event->implicit &&
+            event->grab_window != gtk_widget_get_window(target))
+          ForgetKeyboardGrab(seat, gtk_widget_get_window(target));
+        return FALSE;
+      }), seat, static_cast<GConnectFlags>(0));
+}
+
 // Follow native content surfaces without consulting the pointer's actual hit
 // target: the empty input region deliberately makes that target another app.
 static GdkWindow* MouseContentAt(GdkWindow* window, double* x, double* y) {
@@ -1285,13 +1338,22 @@ bool Window::IsOcclusionStateSupported() {
 void Window::Maximize() {
   if (pimpl_->gdk_window_) {
     AllowProgrammaticWindowControl(pimpl_->widget_, pimpl_->gdk_window_, true);
-    gdk_window_maximize(pimpl_->gdk_window_);
+    // GTK owns the requested pre-map state of a GtkWindow. Calling GDK
+    // directly makes the first map overwrite a maximize requested by a host
+    // such as Flutter before its first native frame is presented.
+    if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_))
+      gtk_window_maximize(GTK_WINDOW(pimpl_->widget_));
+    else
+      gdk_window_maximize(pimpl_->gdk_window_);
   }
 }
 
 void Window::Unmaximize() {
   if (pimpl_->gdk_window_) {
-    gdk_window_unmaximize(pimpl_->gdk_window_);
+    if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_))
+      gtk_window_unmaximize(GTK_WINDOW(pimpl_->widget_));
+    else
+      gdk_window_unmaximize(pimpl_->gdk_window_);
   }
 }
 
@@ -2492,6 +2554,77 @@ bool Window::IsInputShaped() const {
 bool Window::IsShaped() const {
   return pimpl_->gdk_window_ && !gdk_window_is_destroyed(pimpl_->gdk_window_) &&
          gdk_window_is_shaped(pimpl_->gdk_window_);
+}
+
+
+// Optional desktop window capabilities.
+bool Window::SetMaximizedVertically(bool) { return false; }
+bool Window::IsMaximizedVertically() const { return false; }
+bool Window::IsVerticalMaximizeSupported() { return false; }
+bool Window::Dock(WindowDockSide, double) { return false; }
+bool Window::Undock() { return false; }
+WindowDockSide Window::GetDockSide() const { return WindowDockSide::None; }
+bool Window::IsDockingSupported() { return false; }
+bool Window::AnimateBounds(Rectangle) { return false; }
+bool Window::IsBoundsAnimationSupported() { return false; }
+bool Window::SetVisibleOnFullScreen(bool) { return false; }
+bool Window::IsVisibleOnFullScreen() const { return false; }
+bool Window::IsVisibleOnFullScreenSupported() { return false; }
+
+bool Window::IsKeyboardGrabSupported() {
+#ifdef GDK_WINDOWING_X11
+  auto* display = gdk_display_get_default();
+  return display && GDK_IS_X11_DISPLAY(display);
+#else
+  return false;
+#endif
+}
+
+bool Window::GrabKeyboard() {
+  auto* surface = pimpl_->gdk_window_;
+  if (!IsKeyboardGrabSupported() || !surface || gdk_window_is_destroyed(surface) ||
+      !gdk_window_is_viewable(surface)) return false;
+  auto* seat = gdk_display_get_default_seat(gdk_window_get_display(surface));
+  auto* keyboard = seat ? gdk_seat_get_keyboard(seat) : nullptr;
+  if (!keyboard) return false;
+  if (HoldsKeyboardGrab(seat, surface)) return true;
+  // GDK's device_is_grabbed can retain a released grab until its queued
+  // events are processed. Inspect our recorded owner instead, so an immediate
+  // ungrab/regrab works without nesting GTK's event loop. The X server rejects
+  // grabs held by another client; do not replace another nativeapi window's.
+  if (auto* grab = KeyboardGrabFor(seat, false)) {
+    auto* owner = static_cast<GdkWindow*>(g_weak_ref_get(&grab->owner));
+    const bool occupied = owner && owner != surface && HoldsKeyboardGrab(seat, owner);
+    if (owner) g_object_unref(owner);
+    if (occupied) return false;
+  }
+  if (gdk_seat_grab(seat, surface, GDK_SEAT_CAPABILITY_KEYBOARD, FALSE,
+                    nullptr, nullptr, nullptr, nullptr) != GDK_GRAB_SUCCESS) return false;
+  g_weak_ref_set(&KeyboardGrabFor(seat, true)->owner, G_OBJECT(surface));
+  ObserveKeyboardGrab(pimpl_->widget_, seat);
+  return true;
+}
+
+bool Window::UngrabKeyboard() {
+  auto* surface = pimpl_->gdk_window_;
+  if (!IsKeyboardGrabSupported() || !surface || gdk_window_is_destroyed(surface)) return false;
+  auto* seat = gdk_display_get_default_seat(gdk_window_get_display(surface));
+  if (!seat) return false;
+  if (HoldsKeyboardGrab(seat, surface)) {
+    gdk_seat_ungrab(seat);
+    // GDK's grab bookkeeping follows X11 request serials. Complete the
+    // release before an immediate GrabKeyboard() checks for another owner.
+    gdk_display_sync(gdk_seat_get_display(seat));
+    g_weak_ref_set(&KeyboardGrabFor(seat, false)->owner, nullptr);
+  }
+  return true;
+}
+
+bool Window::IsKeyboardGrabbed() const {
+  auto* surface = pimpl_->gdk_window_;
+  if (!IsKeyboardGrabSupported() || !surface || gdk_window_is_destroyed(surface)) return false;
+  return HoldsKeyboardGrab(
+      gdk_display_get_default_seat(gdk_window_get_display(surface)), surface);
 }
 
 }  // namespace nativeapi

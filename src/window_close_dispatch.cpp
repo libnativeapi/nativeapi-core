@@ -123,8 +123,20 @@ bool WindowCloseState::Request(std::function<void()> action, std::function<void(
       std::lock_guard<std::mutex> lock(mutex_);
       previous = attempt_;
     }
-    if (previous && !previous->dispatch_failed.load())
+    if (previous && !previous->dispatch_failed.load()) {
+      if (previous->request->IsCancelled() && !previous->request->IsPending()) {
+        // The veto has finished but its native rejection continuation is still
+        // queued. Preserve that reply and queue the next request behind it.
+        // Otherwise a close/destroy from an async close callback is silently
+        // coalesced into a request that can no longer be approved.
+        std::weak_ptr<WindowCloseState> weak = shared_from_this();
+        return post_([weak, action = std::move(action), rejected = std::move(rejected)]() mutable {
+          if (auto state = weak.lock())
+            state->Request(std::move(action), std::move(rejected));
+        });
+      }
       return true;
+    }
     Invalidate(false);
   }
   auto attempt = std::make_shared<Attempt>();

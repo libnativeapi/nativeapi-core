@@ -1,3 +1,4 @@
+#include <cmath>
 #include "../../window_close_dispatch.h"
 #include <iostream>
 #include <string>
@@ -1151,10 +1152,36 @@ Color Window::GetBackgroundColor() const {
   );
 }
 
+// AppKit rejects conflicting flags in a collection-behavior group. Keep the
+// displaced flags on the NSWindow so another wrapper can reverse the policy.
+static const void* kAllSpacesBaselineKey = &kAllSpacesBaselineKey;
+static const void* kFullScreenVisibilityBaselineKey = &kFullScreenVisibilityBaselineKey;
+static bool SetCollectionFlag(NSWindow* window, bool enabled,
+                               NSWindowCollectionBehavior flag,
+                               NSWindowCollectionBehavior conflicts, const void* key) {
+  if (!window) return false;
+  auto behavior = window.collectionBehavior;
+  NSNumber* baseline = objc_getAssociatedObject(window, key);
+  if (enabled) {
+    if (!(behavior & flag)) baseline = @(behavior & conflicts);
+    behavior = (behavior & ~conflicts) | flag;
+  } else if (behavior & flag) {
+    behavior = (behavior & ~flag) | (baseline ? baseline.unsignedLongLongValue : 0);
+  }
+  @try {
+    window.collectionBehavior = behavior;
+  } @catch (NSException*) {
+    return false;
+  }
+  objc_setAssociatedObject(window, key, enabled ? baseline : nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  return ((window.collectionBehavior & flag) != 0) == enabled;
+}
+
 void Window::SetVisibleOnAllWorkspaces(bool is_visible_on_all_workspaces) {
-  [pimpl_->ns_window_ setCollectionBehavior:is_visible_on_all_workspaces
-                                                ? NSWindowCollectionBehaviorCanJoinAllSpaces
-                                                : NSWindowCollectionBehaviorDefault];
+  SetCollectionFlag(pimpl_->ns_window_, is_visible_on_all_workspaces,
+                    NSWindowCollectionBehaviorCanJoinAllSpaces,
+                    NSWindowCollectionBehaviorMoveToActiveSpace, kAllSpacesBaselineKey);
 }
 
 bool Window::IsVisibleOnAllWorkspaces() const {
@@ -1418,6 +1445,46 @@ bool Window::IsShapeSupported() { return true; }
 bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) { return false; }
 bool Window::IsInputShaped() const { return false; }
 bool Window::IsInputShapeSupported() { return false; }
+
+// Optional desktop window capabilities.
+bool Window::SetMaximizedVertically(bool) { return false; }
+bool Window::IsMaximizedVertically() const { return false; }
+bool Window::IsVerticalMaximizeSupported() { return false; }
+bool Window::Dock(WindowDockSide, double) { return false; }
+bool Window::Undock() { return false; }
+WindowDockSide Window::GetDockSide() const { return WindowDockSide::None; }
+bool Window::IsDockingSupported() { return false; }
+bool Window::GrabKeyboard() { return false; }
+bool Window::UngrabKeyboard() { return false; }
+bool Window::IsKeyboardGrabbed() const { return false; }
+bool Window::IsKeyboardGrabSupported() { return false; }
+
+bool Window::AnimateBounds(Rectangle bounds) {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window || IsFullScreen() || !std::isfinite(bounds.x) || !std::isfinite(bounds.y) ||
+      !std::isfinite(bounds.width) || !std::isfinite(bounds.height) ||
+      bounds.width <= 0 || bounds.height <= 0) return false;
+  const NSRect frame = NSRectExt::bottomLeft(
+      NSMakeRect(bounds.x, bounds.y, bounds.width, bounds.height));
+  [[window animator] setFrame:frame display:YES animate:YES];
+  return true;
+}
+
+bool Window::IsBoundsAnimationSupported() { return true; }
+
+bool Window::SetVisibleOnFullScreen(bool is_visible_on_full_screen) {
+  return SetCollectionFlag(pimpl_->ns_window_, is_visible_on_full_screen,
+      NSWindowCollectionBehaviorFullScreenAuxiliary,
+      NSWindowCollectionBehaviorFullScreenPrimary | NSWindowCollectionBehaviorFullScreenNone,
+      kFullScreenVisibilityBaselineKey);
+}
+
+bool Window::IsVisibleOnFullScreen() const {
+  return pimpl_->ns_window_ &&
+         (pimpl_->ns_window_.collectionBehavior & NSWindowCollectionBehaviorFullScreenAuxiliary);
+}
+
+bool Window::IsVisibleOnFullScreenSupported() { return true; }
 
 }  // namespace nativeapi
 

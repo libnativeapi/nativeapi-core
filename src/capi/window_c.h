@@ -37,6 +37,12 @@ typedef enum {
 } native_title_bar_style_t;
 
 typedef enum {
+  NATIVE_WINDOW_DOCK_SIDE_NONE = 0,
+  NATIVE_WINDOW_DOCK_SIDE_LEFT = 1,
+  NATIVE_WINDOW_DOCK_SIDE_RIGHT = 2,
+} native_window_dock_side_t;
+
+typedef enum {
   NATIVE_WINDOW_CORNER_PREFERENCE_DEFAULT = 0,
   NATIVE_WINDOW_CORNER_PREFERENCE_DO_NOT_ROUND = 1,
   NATIVE_WINDOW_CORNER_PREFERENCE_ROUND = 2,
@@ -118,6 +124,8 @@ typedef enum {
   NATIVE_WINDOW_EVENT_TYPE_CLOSE_REQUESTED = 11,
   NATIVE_WINDOW_EVENT_TYPE_PROPERTY_CHANGED = 12,
   NATIVE_WINDOW_EVENT_TYPE_OCCLUSION_CHANGED = 13,
+  NATIVE_WINDOW_EVENT_TYPE_DOCKED = 14,
+  NATIVE_WINDOW_EVENT_TYPE_UNDOCKED = 15,
 } native_window_event_type_t;
 
 /// One WindowEvent, tagged by its concrete type.
@@ -143,6 +151,9 @@ typedef struct {
     struct {
       native_window_occlusion_state_t occlusion_state;
     } occlusion_changed;
+    struct {
+      native_window_dock_side_t side;
+    } docked;
   } data;
 } native_window_event_t;
 
@@ -201,6 +212,27 @@ FFI_PLUGIN_EXPORT
 void native_window_maximize(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_maximized_vertically(native_window_t window, bool is_maximized_vertically);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_maximized_vertically(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_vertical_maximize_supported(void);
+
+FFI_PLUGIN_EXPORT
+bool native_window_dock(native_window_t window, native_window_dock_side_t side, double width);
+
+FFI_PLUGIN_EXPORT
+bool native_window_undock(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+native_window_dock_side_t native_window_get_dock_side(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_docking_supported(void);
+
+FFI_PLUGIN_EXPORT
 void native_window_unmaximize(native_window_t window);
 
 FFI_PLUGIN_EXPORT
@@ -223,6 +255,12 @@ bool native_window_is_full_screen(native_window_t window);
 
 FFI_PLUGIN_EXPORT
 void native_window_set_bounds(native_window_t window, native_rectangle_t bounds);
+
+FFI_PLUGIN_EXPORT
+bool native_window_animate_bounds(native_window_t window, native_rectangle_t bounds);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_bounds_animation_supported(void);
 
 FFI_PLUGIN_EXPORT
 native_rectangle_t native_window_get_bounds(native_window_t window);
@@ -444,6 +482,27 @@ FFI_PLUGIN_EXPORT
 bool native_window_is_visible_on_all_workspaces(native_window_t window);
 
 FFI_PLUGIN_EXPORT
+bool native_window_set_visible_on_full_screen(native_window_t window, bool is_visible_on_full_screen);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_visible_on_full_screen(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_visible_on_full_screen_supported(void);
+
+FFI_PLUGIN_EXPORT
+bool native_window_grab_keyboard(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_ungrab_keyboard(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_keyboard_grabbed(native_window_t window);
+
+FFI_PLUGIN_EXPORT
+bool native_window_is_keyboard_grab_supported(void);
+
+FFI_PLUGIN_EXPORT
 void native_window_set_visible_in_taskbar(native_window_t window, bool is_visible_in_taskbar);
 
 FFI_PLUGIN_EXPORT
@@ -549,6 +608,8 @@ void free_c_window_event(native_window_event_t* value);
 
 inline native_title_bar_style_t to_c_title_bar_style(nativeapi::TitleBarStyle value);
 inline nativeapi::TitleBarStyle to_cpp_title_bar_style(native_title_bar_style_t value);
+inline native_window_dock_side_t to_c_window_dock_side(nativeapi::WindowDockSide value);
+inline nativeapi::WindowDockSide to_cpp_window_dock_side(native_window_dock_side_t value);
 inline native_window_corner_preference_t to_c_window_corner_preference(nativeapi::WindowCornerPreference value);
 inline nativeapi::WindowCornerPreference to_cpp_window_corner_preference(native_window_corner_preference_t value);
 inline native_window_property_t to_c_window_property(nativeapi::WindowProperty value);
@@ -579,6 +640,32 @@ inline nativeapi::TitleBarStyle to_cpp_title_bar_style(native_title_bar_style_t 
       return nativeapi::TitleBarStyle::Hidden;
     default:
       return static_cast<nativeapi::TitleBarStyle>(value);
+  }
+}
+
+inline native_window_dock_side_t to_c_window_dock_side(nativeapi::WindowDockSide value) {
+  switch (value) {
+    case nativeapi::WindowDockSide::None:
+      return NATIVE_WINDOW_DOCK_SIDE_NONE;
+    case nativeapi::WindowDockSide::Left:
+      return NATIVE_WINDOW_DOCK_SIDE_LEFT;
+    case nativeapi::WindowDockSide::Right:
+      return NATIVE_WINDOW_DOCK_SIDE_RIGHT;
+    default:
+      return NATIVE_WINDOW_DOCK_SIDE_NONE;
+  }
+}
+
+inline nativeapi::WindowDockSide to_cpp_window_dock_side(native_window_dock_side_t value) {
+  switch (value) {
+    case NATIVE_WINDOW_DOCK_SIDE_NONE:
+      return nativeapi::WindowDockSide::None;
+    case NATIVE_WINDOW_DOCK_SIDE_LEFT:
+      return nativeapi::WindowDockSide::Left;
+    case NATIVE_WINDOW_DOCK_SIDE_RIGHT:
+      return nativeapi::WindowDockSide::Right;
+    default:
+      return static_cast<nativeapi::WindowDockSide>(value);
   }
 }
 

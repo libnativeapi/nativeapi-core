@@ -25,6 +25,8 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
 
+#include "window_docking_windows.h"
+
 namespace nativeapi {
 
 // Property name for storing window ID in HWND
@@ -703,6 +705,8 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
   const bool property_change = message == WM_SETTEXT || message == WM_STYLECHANGED ||
                                (pos && !(pos->flags & SWP_NOZORDER));
   const LRESULT result = WindowLifetimeMessage(hwnd, message, wp, lp, subclass_id, reference);
+  if (message == WM_DPICHANGED && IsWindow(hwnd))
+    detail::HandleDockMessage(hwnd, message, wp, lp);
   if (property_change && IsWindow(hwnd)) {
     Window window(hwnd);
     detail::WindowPropertyDispatch::Refresh(window);
@@ -712,6 +716,7 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
 static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
                                      UINT_PTR subclass_id, DWORD_PTR reference) {
   if (message == WM_NCDESTROY) {
+    detail::RemoveDockOnDestroy(hwnd);
     RemoveWindowSubclass(hwnd, WindowLifetimeProc, subclass_id);
     RemovePropW(hwnd, kWindowIdProperty);
     RemovePropW(hwnd, kTitleBarHiddenProperty);
@@ -735,6 +740,7 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     WindowRegistry::GetInstance().Remove(static_cast<WindowId>(reference));
     return result;
   }
+  detail::HandleDockMessage(hwnd, message, wp, lp);
   if (message == WM_MOUSEACTIVATE &&
       (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE)) {
     // Keep delivering the click (MA_NOACTIVATEANDEAT would swallow it).
@@ -2676,6 +2682,187 @@ bool Window::IsShapeSupported() { return true; }
 bool Window::SetInputShape(std::shared_ptr<WindowShape> shape) { return false; }
 bool Window::IsInputShaped() const { return false; }
 bool Window::IsInputShapeSupported() { return false; }
+
+
+// Optional desktop window capabilities.
+bool Window::AnimateBounds(Rectangle) { return false; }
+bool Window::IsBoundsAnimationSupported() { return false; }
+bool Window::SetVisibleOnFullScreen(bool) { return false; }
+bool Window::IsVisibleOnFullScreen() const { return false; }
+bool Window::IsVisibleOnFullScreenSupported() { return false; }
+bool Window::GrabKeyboard() { return false; }
+bool Window::UngrabKeyboard() { return false; }
+bool Window::IsKeyboardGrabbed() const { return false; }
+bool Window::IsKeyboardGrabSupported() { return false; }
+
+bool Window::SetMaximizedVertically(bool is_maximized_vertically) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      return window.SetMaximizedVertically(is_maximized_vertically);
+    });
+  }
+  if (!hwnd || !::IsWindow(hwnd)) return false;
+  auto* previous = static_cast<detail::VerticalMaximize*>(
+      GetPropW(hwnd, detail::kVerticalMaximizeProperty));
+  if (!is_maximized_vertically) {
+    if (!previous) return true;
+    const bool active = IsMaximizedVertically();
+    const RECT original = previous->original;
+    RECT current = {};
+    GetWindowRect(hwnd, &current);
+    if (active && !SetWindowPos(hwnd, nullptr, current.left, original.top,
+        current.right - current.left, original.bottom - original.top,
+        SWP_NOACTIVATE | SWP_NOZORDER)) return false;
+    delete static_cast<detail::VerticalMaximize*>(
+        RemovePropW(hwnd, detail::kVerticalMaximizeProperty));
+    return true;
+  }
+  if (IsMinimized() || IsMaximized() || IsFullScreen() || detail::DockFor(hwnd)) return false;
+  if (IsMaximizedVertically()) return true;
+  MONITORINFO monitor = {sizeof(monitor)};
+  RECT current = {};
+  if (!GetWindowRect(hwnd, &current) ||
+      !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+  detail::VerticalMaximize state{current, current};
+  state.applied.top = monitor.rcWork.top;
+  state.applied.bottom = monitor.rcWork.bottom;
+  if (!SetWindowPos(hwnd, nullptr, current.left, state.applied.top,
+      current.right - current.left, state.applied.bottom - state.applied.top,
+      SWP_NOACTIVATE | SWP_NOZORDER)) return false;
+  // Constraints may reject the requested height; do not claim a maximize then.
+  RECT actual = {};
+  if (!GetWindowRect(hwnd, &actual) || actual.top != state.applied.top ||
+      actual.bottom != state.applied.bottom) {
+    SetWindowPos(hwnd, nullptr, current.left, current.top,
+        current.right - current.left, current.bottom - current.top,
+        SWP_NOACTIVATE | SWP_NOZORDER);
+    return false;
+  }
+  auto* record = new detail::VerticalMaximize(state);
+  if (!SetPropW(hwnd, detail::kVerticalMaximizeProperty, record)) {
+    delete record;
+    SetWindowPos(hwnd, nullptr, current.left, current.top,
+        current.right - current.left, current.bottom - current.top,
+        SWP_NOACTIVATE | SWP_NOZORDER);
+    return false;
+  }
+  delete previous;
+  return true;
+}
+
+bool Window::IsMaximizedVertically() const {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      return window.IsMaximizedVertically();
+    });
+  }
+  if (!hwnd || !::IsWindow(hwnd) || IsMinimized() || IsMaximized() || IsFullScreen()) return false;
+  const auto* state = static_cast<detail::VerticalMaximize*>(
+      GetPropW(hwnd, detail::kVerticalMaximizeProperty));
+  RECT actual = {};
+  return state && GetWindowRect(hwnd, &actual) &&
+      actual.top == state->applied.top && actual.bottom == state->applied.bottom;
+}
+
+bool Window::IsVerticalMaximizeSupported() { return true; }
+
+bool Window::Dock(WindowDockSide side, double width) {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      return window.Dock(side, width);
+    });
+  }
+  if (!hwnd || !::IsWindow(hwnd) || !IsDockingSupported() || !std::isfinite(width) || width <= 0 ||
+      (side != WindowDockSide::Left && side != WindowDockSide::Right) ||
+      IsMinimized() || IsMaximized() || IsFullScreen() || IsMaximizedVertically()) return false;
+  MONITORINFO monitor = {sizeof(monitor)};
+  if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor) ||
+      width * GetDpiForWindow(hwnd) / 96.0 >= monitor.rcMonitor.right - monitor.rcMonitor.left)
+    return false;
+  auto state = detail::DockFor(hwnd);
+  if (state && state->side == side && state->width == width) return true;
+  const bool fresh = state == nullptr;
+  detail::DesktopDock before;
+  if (fresh) {
+    state = std::make_shared<detail::DesktopDock>();
+    state->side = side;
+    state->width = width;
+    if (!GetWindowRect(hwnd, &state->original) ||
+        !detail::StoreDock(hwnd, state)) {
+      return false;
+    }
+    auto data = detail::DockData(hwnd);
+    if (!SHAppBarMessage(ABM_NEW, &data)) {
+      detail::TakeDock(hwnd);
+      return false;
+    }
+  } else before = *state;
+  state->side = side;
+  state->width = width;
+  if (!detail::PositionDock(hwnd, *state)) {
+    if (fresh) {
+      const RECT original = state->original;
+      detail::TakeDock(hwnd);
+      auto data = detail::DockData(hwnd);
+      SHAppBarMessage(ABM_REMOVE, &data);
+      SetWindowPos(hwnd, nullptr, original.left, original.top,
+          original.right - original.left, original.bottom - original.top,
+          SWP_NOACTIVATE | SWP_NOZORDER);
+    } else {
+      *state = before;
+      detail::PositionDock(hwnd, *state);
+    }
+    return false;
+  }
+  detail::WindowDockDispatch::Emit(WindowDockedEvent(GetId(), side));
+  return true;
+}
+
+bool Window::Undock() {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), false, [=] {
+      Window window(hwnd);
+      return window.Undock();
+    });
+  }
+  if (!hwnd || !::IsWindow(hwnd) || !IsDockingSupported()) return false;
+  auto state = detail::DockFor(hwnd);
+  if (!state) return true;
+  auto data = detail::DockData(hwnd);
+  // Remove the property before notifying the shell, which can call us back.
+  detail::TakeDock(hwnd);
+  if (!SHAppBarMessage(ABM_REMOVE, &data)) {
+    detail::StoreDock(hwnd, state);
+    return false;
+  }
+  const RECT original = state->original;
+  SetWindowPos(hwnd, nullptr, original.left, original.top,
+      original.right - original.left, original.bottom - original.top,
+      SWP_NOACTIVATE | SWP_NOZORDER);
+  detail::WindowDockDispatch::Emit(WindowUndockedEvent(GetId()));
+  return true;
+}
+
+WindowDockSide Window::GetDockSide() const {
+  HWND hwnd = pimpl_->hwnd_;
+  if (hwnd && GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) {
+    return detail::OnWindowThread(hwnd, GetId(), WindowDockSide::None, [=] {
+      Window window(hwnd);
+      return window.GetDockSide();
+    });
+  }
+  const auto state = hwnd && ::IsWindow(hwnd) ? detail::DockFor(hwnd) : nullptr;
+  return state ? state->side : WindowDockSide::None;
+}
+
+bool Window::IsDockingSupported() { return GetShellWindow() != nullptr; }
 
 }  // namespace nativeapi
 

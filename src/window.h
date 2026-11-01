@@ -119,6 +119,19 @@ enum class TitleBarStyle {
 };
 
 /**
+ * @brief Screen edge reserved by a window docked as a desktop toolbar.
+ * @see Window::Dock() for platform availability.
+ */
+enum class WindowDockSide {
+  /** No desktop space is reserved. */
+  None,
+  /** Reserve space at the left edge of the window's monitor. */
+  Left,
+  /** Reserve space at the right edge of the window's monitor. */
+  Right
+};
+
+/**
  * @brief Preferred rounding of the corners drawn by the window compositor.
  * @see Window::SetCornerPreference() for platform availability.
  */
@@ -548,6 +561,87 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
   void Maximize();
 
   /**
+   * @brief Sets whether the window fills its monitor's work area vertically.
+   * @param is_maximized_vertically true to stretch vertically, false to restore.
+   * @return true if applied; false if unsupported, invalid, minimized, fully
+   *         maximized, full screen, docked, or rejected by the window system.
+   *
+   * Preserves horizontal position and width. Disabling restores the vertical
+   * position and height saved by the first successful enable. Native resizing
+   * away from that geometry ends this state. The state belongs to the native
+   * window and is shared by wrappers. This is not full maximization and emits
+   * ordinary move/resize events, not WindowMaximizedEvent.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Not supported - Returns false
+   * - Windows: ✅ Supported - Uses the nearest monitor's work area
+   * - Linux: ❌ Not supported - Returns false
+   * - Android: ❌ Not applicable - Returns false
+   * - iOS: ❌ Not applicable - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
+   */
+  bool SetMaximizedVertically(bool is_maximized_vertically);
+
+  /**
+   * @brief Checks if this window is vertically maximized by this library.
+   * @return true while the applied geometry remains; false otherwise.
+   * @see SetMaximizedVertically() for platform availability.
+   */
+  bool IsMaximizedVertically() const;
+
+  /**
+   * @brief Checks if vertical maximization is available on this platform.
+   * @return true on Windows, false elsewhere.
+   */
+  static bool IsVerticalMaximizeSupported();
+
+  /**
+   * @brief Docks the window as a desktop toolbar, reserving screen space.
+   * @param side Left or Right; None is invalid (use Undock()).
+   * @param width Desired outer width in logical pixels, finite and positive.
+   * @return true if registered and positioned; false if unsupported, invalid,
+   *         minimized, maximized, full screen, too wide, or rejected by the shell.
+   *
+   * Uses the nearest monitor and the space left by other desktop toolbars.
+   * Repeated calls update the same reservation. Changes to other toolbars or
+   * display geometry reposition it. Undock() restores the original bounds;
+   * native destruction releases the reservation. All wrappers share the state.
+   * Successful changes emit WindowDockedEvent; Undock() emits WindowUndockedEvent.
+   * This is a desktop toolbar reservation, not Windows Snap Layouts.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Not supported - Returns false
+   * - Windows: ✅ Supported - Shell application desktop toolbar (appbar)
+   * - Linux: ❌ Not supported - Returns false
+   * - Android: ❌ Not applicable - Returns false
+   * - iOS: ❌ Not applicable - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
+   */
+  bool Dock(WindowDockSide side, double width);
+
+  /**
+   * @brief Removes this window's desktop space reservation and restores its bounds.
+   * @return true if undocked or already undocked on a supported platform;
+   *         false if unsupported, invalid, or the shell rejects removal.
+   * @see Dock() for platform availability.
+   */
+  bool Undock();
+
+  /**
+   * @brief Gets the screen edge this window reserves through Dock().
+   * @return The reserved edge, or None when undocked, unsupported or invalid.
+   * @see Dock() for platform availability.
+   */
+  WindowDockSide GetDockSide() const;
+
+  /**
+   * @brief Checks if desktop toolbar docking is available on this platform.
+   * @return true on Windows with a running shell, false elsewhere.
+   */
+  static bool IsDockingSupported();
+
+
+  /**
    * @brief Restores the window from maximized state to its previous size.
    *
    * Returns the window to the size and position it had before being maximized.
@@ -634,6 +728,32 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
    * which can be more efficient than separate calls to SetPosition() and SetSize().
    */
   void SetBounds(Rectangle bounds);
+
+  /**
+   * @brief Animates the window to the supplied outer bounds.
+   * @param bounds Outer bounds in logical screen coordinates, with a top-left
+   *        origin and finite positive width and height.
+   * @return true if the native animation was submitted; false if unsupported,
+   *         invalid or full screen. False leaves the window unchanged.
+   *
+   * Completion is asynchronous. Observe move/resize events or GetBounds() for
+   * the result. For an immediate fallback after false, call SetBounds().
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - Uses the NSWindow frame animator
+   * - Windows: ❌ Not supported - Returns false
+   * - Linux: ❌ Not supported - Returns false
+   * - Android: ❌ Not applicable - Returns false
+   * - iOS: ❌ Not applicable - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
+   */
+  bool AnimateBounds(Rectangle bounds);
+
+  /**
+   * @brief Checks if native window frame animations are available.
+   * @return true on macOS, false elsewhere.
+   */
+  static bool IsBoundsAnimationSupported();
 
   /**
    * @brief Gets the window's current position and size.
@@ -1635,6 +1755,80 @@ class Window : public EventEmitter<WindowEvent>, public NativeObjectProvider,
   bool IsVisibleOnAllWorkspaces() const;
 
   /**
+   * @brief Sets whether this window may join another window's full-screen space.
+   * @param is_visible_on_full_screen true to allow joining, false to disable.
+   * @return true if applied; false if unsupported or the window is invalid.
+   *
+   * Independent of SetVisibleOnAllWorkspaces() and this window's own full-screen
+   * state. Both setters preserve unrelated native collection-behavior flags.
+   * On macOS, conflicting flags in the same collection-behavior group are
+   * displaced while enabled and restored when disabled by any wrapper.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - NSWindowCollectionBehaviorFullScreenAuxiliary
+   * - Windows: ❌ Not supported - Returns false
+   * - Linux: ❌ Not supported - Returns false
+   * - Android: ❌ Not applicable - Returns false
+   * - iOS: ❌ Not applicable - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
+   */
+  bool SetVisibleOnFullScreen(bool is_visible_on_full_screen);
+
+  /**
+   * @brief Checks if this window may join full-screen spaces.
+   * @return true if enabled; false if unset, unsupported or invalid.
+   * @see SetVisibleOnFullScreen() for platform availability.
+   */
+  bool IsVisibleOnFullScreen() const;
+
+  /**
+   * @brief Checks if joining full-screen spaces is available.
+   * @return true on macOS, false elsewhere.
+   */
+  static bool IsVisibleOnFullScreenSupported();
+
+  /**
+   * @brief Grabs the keyboard exclusively for this window until released or hidden.
+   * @return true if acquired or already held by this window; false if unsupported,
+   *         not viewable, invalid, or another client/window holds a grab.
+   *
+   * Grabs only the keyboard, leaving pointer input unchanged. The native window
+   * owns the grab; wrappers share it. Hiding or destroying the native surface
+   * releases it. UngrabKeyboard() never releases another window's grab.
+   *
+   * @note Platform availability:
+   * - macOS: ❌ Not supported - Returns false
+   * - Windows: ❌ Not supported - Returns false
+   * - Linux: ⚠️ X11 only - Uses the GDK seat keyboard grab; Wayland returns false
+   * - Android: ❌ Not applicable - Returns false
+   * - iOS: ❌ Not applicable - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
+   */
+  bool GrabKeyboard();
+
+  /**
+   * @brief Releases the keyboard grab belonging to this native window.
+   * @return true if released or already released on a supported platform;
+   *         false if unsupported or invalid.
+   * @see GrabKeyboard() for platform availability.
+   */
+  bool UngrabKeyboard();
+
+  /**
+   * @brief Checks if this native window still holds its keyboard grab.
+   * @return true if held; false if released, hidden, destroyed or unsupported.
+   * @see GrabKeyboard() for platform availability.
+   */
+  bool IsKeyboardGrabbed() const;
+
+  /**
+   * @brief Checks if the current display supports exclusive keyboard grabs.
+   * @return true on Linux X11, false on Wayland and other platforms.
+   */
+  static bool IsKeyboardGrabSupported();
+
+
+  /**
    * @brief Sets whether the window is listed in the taskbar.
    *
    * @param is_visible_in_taskbar true to list the window, false to hide it from the
@@ -2333,6 +2527,32 @@ class WindowOcclusionChangedEvent : public WindowEvent {
 
  private:
   WindowOcclusionState occlusion_state_;
+};
+
+/**
+ * @brief Emitted after a desktop toolbar reservation is created or changed.
+ * @see Window::Dock() for platform availability.
+ */
+class WindowDockedEvent : public WindowEvent {
+ public:
+  WindowDockedEvent(WindowId window_id, WindowDockSide side)
+      : WindowEvent(window_id), side_(side) {}
+  /** @brief Gets the reserved screen edge. @return Left or Right. */
+  WindowDockSide GetSide() const { return side_; }
+  std::string GetTypeName() const override { return "WindowDockedEvent"; }
+
+ private:
+  WindowDockSide side_;
+};
+
+/**
+ * @brief Emitted after this window's desktop toolbar reservation is removed.
+ * @see Window::Undock() for platform availability.
+ */
+class WindowUndockedEvent : public WindowEvent {
+ public:
+  explicit WindowUndockedEvent(WindowId window_id) : WindowEvent(window_id) {}
+  std::string GetTypeName() const override { return "WindowUndockedEvent"; }
 };
 
 }  // namespace nativeapi

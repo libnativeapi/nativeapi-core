@@ -229,6 +229,89 @@ void native_window_maximize(native_window_t window) {
   }
 }
 
+bool native_window_set_maximized_vertically(native_window_t window, bool is_maximized_vertically) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->SetMaximizedVertically(is_maximized_vertically);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_maximized_vertically");
+    return false;
+  }
+}
+
+bool native_window_is_maximized_vertically(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsMaximizedVertically();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_maximized_vertically");
+    return false;
+  }
+}
+
+bool native_window_is_vertical_maximize_supported(void) {
+  try {
+    return nativeapi::Window::IsVerticalMaximizeSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_vertical_maximize_supported");
+    return false;
+  }
+}
+
+bool native_window_dock(native_window_t window, native_window_dock_side_t side, double width) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->Dock(to_cpp_window_dock_side(side), width);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_dock");
+    return false;
+  }
+}
+
+bool native_window_undock(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->Undock();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_undock");
+    return false;
+  }
+}
+
+native_window_dock_side_t native_window_get_dock_side(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return (native_window_dock_side_t)NATIVE_WINDOW_DOCK_SIDE_NONE;
+  }
+  try {
+    return to_c_window_dock_side(self->GetDockSide());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_get_dock_side");
+    return (native_window_dock_side_t)NATIVE_WINDOW_DOCK_SIDE_NONE;
+  }
+}
+
+bool native_window_is_docking_supported(void) {
+  try {
+    return nativeapi::Window::IsDockingSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_docking_supported");
+    return false;
+  }
+}
+
 void native_window_unmaximize(native_window_t window) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -336,6 +419,29 @@ void native_window_set_bounds(native_window_t window, native_rectangle_t bounds)
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_bounds");
     return;
+  }
+}
+
+bool native_window_animate_bounds(native_window_t window, native_rectangle_t bounds) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    auto bounds_cpp = to_cpp_rectangle(bounds);
+    return self->AnimateBounds(bounds_cpp);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_animate_bounds");
+    return false;
+  }
+}
+
+bool native_window_is_bounds_animation_supported(void) {
+  try {
+    return nativeapi::Window::IsBoundsAnimationSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_bounds_animation_supported");
+    return false;
   }
 }
 
@@ -1312,6 +1418,89 @@ bool native_window_is_visible_on_all_workspaces(native_window_t window) {
   }
 }
 
+bool native_window_set_visible_on_full_screen(native_window_t window, bool is_visible_on_full_screen) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->SetVisibleOnFullScreen(is_visible_on_full_screen);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_set_visible_on_full_screen");
+    return false;
+  }
+}
+
+bool native_window_is_visible_on_full_screen(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsVisibleOnFullScreen();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_visible_on_full_screen");
+    return false;
+  }
+}
+
+bool native_window_is_visible_on_full_screen_supported(void) {
+  try {
+    return nativeapi::Window::IsVisibleOnFullScreenSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_visible_on_full_screen_supported");
+    return false;
+  }
+}
+
+bool native_window_grab_keyboard(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->GrabKeyboard();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_grab_keyboard");
+    return false;
+  }
+}
+
+bool native_window_ungrab_keyboard(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->UngrabKeyboard();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_ungrab_keyboard");
+    return false;
+  }
+}
+
+bool native_window_is_keyboard_grabbed(native_window_t window) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsKeyboardGrabbed();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_keyboard_grabbed");
+    return false;
+  }
+}
+
+bool native_window_is_keyboard_grab_supported(void) {
+  try {
+    return nativeapi::Window::IsKeyboardGrabSupported();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_window_is_keyboard_grab_supported");
+    return false;
+  }
+}
+
 void native_window_set_visible_in_taskbar(native_window_t window, bool is_visible_in_taskbar) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Window>(window);
   if (!self) {
@@ -1696,6 +1885,16 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
   if (const auto* typed = dynamic_cast<const nativeapi::WindowOcclusionChangedEvent*>(&event)) {
     out->type = NATIVE_WINDOW_EVENT_TYPE_OCCLUSION_CHANGED;
     out->data.occlusion_changed.occlusion_state = to_c_window_occlusion_state(typed->GetOcclusionState());
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowDockedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_DOCKED;
+    out->data.docked.side = to_c_window_dock_side(typed->GetSide());
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowUndockedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_UNDOCKED;
+    (void)typed;
     return true;
   }
   return false;

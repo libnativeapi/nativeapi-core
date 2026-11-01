@@ -14,6 +14,8 @@
 
 namespace nativeapi {
 
+namespace detail { struct WindowDockDispatch; }
+
 /**
  * @brief WindowManager is a singleton that manages all windows in the application
  *
@@ -39,6 +41,7 @@ namespace nativeapi {
 class WindowManager : public EventEmitter<WindowEvent> {
   friend struct detail::WindowEventSubscription;
   friend struct detail::WindowPropertyDispatch;
+  friend struct detail::WindowDockDispatch;
  public:
   /**
    * @brief Get the singleton instance of WindowManager

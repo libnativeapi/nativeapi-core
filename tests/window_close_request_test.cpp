@@ -68,9 +68,19 @@ int main() {
   a->Accept();
   b->Cancel();
   Check(rejections == 0, "a native rejection reply waits for target UI dispatch");
+  const auto vetoed = request;
+  const int before_retry = events;
+  Check(state->Request([&] { actions += 100; }) && events == before_retry,
+        "retry after a finished veto queues behind its native rejection reply");
+  drain();
+  Check(actions == 1 && rejections == 1 && state->IsPending() &&
+        events == before_retry + 1 && request != vetoed && vetoed->IsCancelled(),
+        "a completed veto permits a fresh request without losing its rejection reply");
+  a->Accept();
+  b->Cancel();
   drain();
   Check(actions == 1 && rejections == 1 && !state->IsPending(),
-        "one veto stops every alias and releases the native rejection reply once");
+        "the fresh request has independent votes and the old reply runs only once");
   state->Request([&] { ++actions; });
   auto old_a = a, old_b = b;
   second.reset();
