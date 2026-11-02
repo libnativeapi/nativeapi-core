@@ -418,6 +418,7 @@ struct ShortcutPortalLinux::State : std::enable_shared_from_this<State> {
             } else {
               item->connection = connection;
               g_dbus_connection_set_exit_on_close(connection, false);
+              // G_CONNECT_DEFAULT (0) is GLib 2.74+; older distributions have no name for it.
               g_signal_connect_data(connection, "closed",
                   G_CALLBACK(+[](GDBusConnection*, gboolean, GError*, gpointer data) {
                     auto* weak = static_cast<std::weak_ptr<Entry>*>(data);
@@ -426,7 +427,7 @@ struct ShortcutPortalLinux::State : std::enable_shared_from_this<State> {
                     }
                   }), new std::weak_ptr<Entry>(item),
                   +[](gpointer data, GClosure*) { delete static_cast<std::weak_ptr<Entry>*>(data); },
-                  G_CONNECT_DEFAULT);
+                  static_cast<GConnectFlags>(0));
               self->Subscribe(item);
               self->RegisterHost(item);
             }
