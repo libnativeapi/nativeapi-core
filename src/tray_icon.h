@@ -29,6 +29,7 @@ enum class ContextMenuTrigger {
    *
    * The application must call OpenContextMenu() explicitly to display the menu.
    * Use this when you want full control over when the menu appears.
+   * On Linux this requires X11; native Wayland apps must use Clicked or RightClicked.
    */
   None,
 
@@ -53,6 +54,7 @@ enum class ContextMenuTrigger {
    *
    * Automatically opens the context menu when the tray icon is double-clicked.
    * Less common but useful for applications that use single-click for another action.
+   * On Linux this requires X11 and a host that delivers activation events.
    */
   DoubleClicked
 };
@@ -542,6 +544,11 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * context menu. By default, the trigger is set to None, requiring
    * explicit control via OpenContextMenu() or by setting a trigger mode.
    *
+   * On Linux, Clicked and RightClicked export a menu for the tray host to render.
+   * None and DoubleClicked use a local popup and require X11. Native Wayland
+   * applications must use Clicked or RightClicked. GNOME AppIndicators reserves
+   * single clicks for host menus and sends activation only on a double click.
+   *
    * @param trigger The desired trigger behavior
    *
    * @note When set to ContextMenuTrigger::None (default), the context menu
@@ -636,7 +643,16 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * @note The exact positioning behavior may vary by platform:
    *       - macOS: Menu appears below the status item
    *       - Windows: Menu appears near the notification area
-   *       - Linux: Menu appears at cursor position or near tray area
+   *       - Linux: X11 menus appear at the cursor. Native Wayland returns false
+   *         with a warning; use Clicked or RightClicked for a host-rendered menu.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Supported - Appears below the status item
+   * - Windows: ✅ Supported - Appears near the notification area
+   * - Linux: ⚠️ X11 only - No parent surface/input serial is available on Wayland
+   * - Android: ❌ Not supported - Returns false
+   * - iOS: ❌ Not supported - Returns false
+   * - OpenHarmony: ❌ Not supported - Returns false
    *
    * @example
    * ```cpp
@@ -651,6 +667,8 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    *
    * Closes the tray icon's context menu if it is currently visible.
    * This allows for programmatic dismissal of the menu.
+   * On Linux, only a local X11 popup can be dismissed; returns false while a
+   * host-rendered dbusmenu is reported open because SNI has no close operation.
    *
    * @return true if the menu was successfully closed or wasn't visible, false
    * on error

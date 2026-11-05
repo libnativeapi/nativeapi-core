@@ -26,6 +26,8 @@
 #include "../../menu.h"
 #include "../../tray_icon.h"
 #include "../../view.h"
+#include <gdk/gdkx.h>
+#undef None
 
 namespace nativeapi {
 
@@ -272,6 +274,8 @@ class TrayIcon::Impl {
   std::optional<std::string> title_;
   std::optional<std::string> tooltip_;
   std::shared_ptr<Menu> context_menu_;
+  std::weak_ptr<Menu> local_popup_;
+  std::shared_ptr<int> lifetime_ = std::make_shared<int>(0);
   bool visible_;
   ContextMenuTrigger context_menu_trigger_;
 
@@ -554,10 +558,14 @@ class TrayIcon::Impl {
   }
 
   void Cleanup() {
-    StopWatchingAppearance();
-    // Nullify the back-pointer first so any in-flight GLib callbacks that
-    // haven't been dispatched yet will see a null owner and skip event emission.
+    lifetime_.reset();
     owner_ = nullptr;
+    auto popup = local_popup_.lock();
+    local_popup_.reset();
+    if (popup) {
+      gtk_menu_popdown(GTK_MENU(popup->GetNativeObject()));
+    }
+    StopWatchingAppearance();
 
     if (name_owner_id_ != 0) {
       g_bus_unown_name(name_owner_id_);
@@ -706,10 +714,19 @@ class TrayIcon::Impl {
   // click of a double click, so from gnome-shell it is one. From any other host a
   // second Activate within the desktop's double-click time is one, reported instead
   // of a second click, as NSEvent.clickCount does.
+  void OnDoubleClicked() {
+    // Event listeners may destroy the tray or replace its menu/trigger.
+    std::weak_ptr<int> lifetime = lifetime_;
+    owner_->Emit<TrayIconDoubleClickedEvent>(id_);
+    if (!lifetime.expired() && context_menu_trigger_ == ContextMenuTrigger::DoubleClicked) {
+      owner_->OpenContextMenu();
+    }
+  }
+
   void OnActivate(const std::string& sender) {
     if (!owner_) return;
     if (IsGnomeShell(sender)) {
-      owner_->Emit<TrayIconDoubleClickedEvent>(id_);
+      OnDoubleClicked();
       return;
     }
     gint double_click_ms = 400;
@@ -722,7 +739,7 @@ class TrayIcon::Impl {
     // A double click ends the pair: a third click starts a new one.
     last_activate_us_ = is_double ? 0 : now;
     if (is_double) {
-      owner_->Emit<TrayIconDoubleClickedEvent>(id_);
+      OnDoubleClicked();
     } else {
       owner_->Emit<TrayIconClickedEvent>(id_);
     }
@@ -1273,6 +1290,8 @@ std::optional<std::string> TrayIcon::GetTooltip() {
 }
 
 void TrayIcon::SetContextMenu(std::shared_ptr<Menu> menu) {
+  auto popup = pimpl_->local_popup_.lock();
+  pimpl_->local_popup_.reset();
   pimpl_->context_menu_ = menu;
   ++pimpl_->menu_revision_;
   pimpl_->open_dbusmenus_.clear();
@@ -1284,6 +1303,7 @@ void TrayIcon::SetContextMenu(std::shared_ptr<Menu> menu) {
                                   "com.canonical.dbusmenu", "LayoutUpdated",
                                   g_variant_new("(ui)", pimpl_->menu_revision_, 0), nullptr);
   }
+  if (popup) gtk_menu_popdown(GTK_MENU(popup->GetNativeObject()));
 }
 
 std::shared_ptr<Menu> TrayIcon::GetContextMenu() {
@@ -1307,11 +1327,43 @@ bool TrayIcon::IsVisible() {
 }
 
 bool TrayIcon::OpenContextMenu() {
-  return false;
+  // GTK operations, like the other tray setters, belong on the UI thread.
+  auto menu = pimpl_->context_menu_;
+  if (!menu) return false;
+  GdkDisplay* display = gdk_display_get_default();
+  if (!display || !GDK_IS_X11_DISPLAY(display)) {
+    g_warning("TrayIcon::OpenContextMenu requires X11; on Wayland use "
+              "ContextMenuTrigger::Clicked or RightClicked so the tray host displays the menu");
+    return false;
+  }
+  auto* widget = static_cast<GtkWidget*>(menu->GetNativeObject());
+  if (!widget || !GTK_IS_MENU(widget)) return false;
+  if (gtk_widget_get_mapped(widget)) return true;
+  GdkSeat* seat = gdk_display_get_default_seat(display);
+  GdkDevice* pointer = seat ? gdk_seat_get_pointer(seat) : nullptr;
+  if (!pointer) return false;
+  pimpl_->local_popup_ = menu;
+  gtk_widget_show_all(widget);
+  // SNI activation is a D-Bus call, not a GdkEvent. The newer popup_at_*
+  // functions require an event/parent; this X11 path supports neither being present.
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+  gtk_menu_popup_for_device(GTK_MENU(widget), pointer, nullptr, nullptr, nullptr,
+                            nullptr, nullptr, 0, gtk_get_current_event_time());
+  G_GNUC_END_IGNORE_DEPRECATIONS
+  // Menu's existing map/unmap handlers deliver opened/closed exactly once.
+  return gtk_widget_get_mapped(widget);
 }
 
 bool TrayIcon::CloseContextMenu() {
-  return true;
+  auto popup = pimpl_->local_popup_.lock();
+  pimpl_->local_popup_.reset();
+  if (popup) {
+    auto* widget = static_cast<GtkWidget*>(popup->GetNativeObject());
+    gtk_menu_popdown(GTK_MENU(widget));
+    return !gtk_widget_get_mapped(widget);
+  }
+  // Host-rendered dbusmenus have no SNI close operation.
+  return pimpl_->open_dbusmenus_.empty();
 }
 
 void TrayIcon::SetContextMenuTrigger(ContextMenuTrigger trigger) {

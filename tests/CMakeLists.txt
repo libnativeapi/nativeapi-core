@@ -585,3 +585,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_controls_x11_test window_controls_x11_test.cpp)
   target_link_libraries(window_controls_x11_test PRIVATE nativeapi)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Private display integration; never sends synthetic input. Skip without GTK.
+  add_executable(tray_context_menu_linux_test tray_context_menu_linux_test.cpp)
+  target_link_libraries(tray_context_menu_linux_test PRIVATE nativeapi)
+  add_test(NAME tray_context_menu_linux_test COMMAND tray_context_menu_linux_test)
+  set_tests_properties(tray_context_menu_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+endif()
