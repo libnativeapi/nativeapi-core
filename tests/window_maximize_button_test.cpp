@@ -34,11 +34,16 @@ struct Received {
   int x, y;
 };
 std::vector<Received> received;
+bool capture_on_press = false;
 
 LRESULT CALLBACK ContentProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
   if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
       message == WM_MOUSELEAVE)
     received.push_back({message, wp, static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))});
+  // Flutter captures on a left press and releases on up. Its pointer must
+  // survive leaving the non-client maximize area during that drag.
+  if (capture_on_press && message == WM_LBUTTONDOWN) SetCapture(hwnd);
+  if (capture_on_press && message == WM_LBUTTONUP && GetCapture() == hwnd) ReleaseCapture();
   return DefWindowProcW(hwnd, message, wp, lp);
 }
 
@@ -200,6 +205,79 @@ int main(int argc, char** argv) {
   SendMessageW(root, WM_NCMOUSELEAVE, 0, 0);
   Check(received.size() == 1 && received[0].message == WM_MOUSELEAVE,
         "leaving the button reaches the content as WM_MOUSELEAVE");
+
+  capture_on_press = true;
+  SendMessageW(root, WM_NCMOUSEMOVE, HTMAXBUTTON, inside);
+  SendMessageW(root, WM_NCLBUTTONDOWN, HTMAXBUTTON, inside);
+  Check(GetCapture() == content, "the content captures the forwarded press");
+  received.clear();
+  SendMessageW(root, WM_NCMOUSELEAVE, 0, 0);
+  Check(received.empty(), "leaving the button during capture does not remove the content pointer");
+  // With capture, Windows delivers client move/up directly to the content,
+  // even beyond the maximize button and the window's client bounds.
+  SendMessageW(content, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-20, 100));
+  SendMessageW(content, WM_LBUTTONUP, 0, MAKELPARAM(-20, 100));
+  Check(received.size() == 2 && received[0].message == WM_MOUSEMOVE &&
+            received[1].message == WM_LBUTTONUP && GetCapture() != content,
+        "the captured drag completes with a move and release, without a premature leave");
+  SendMessageW(content, WM_MOUSELEAVE, 0, 0);
+  Check(received.size() == 3 && received[2].message == WM_MOUSELEAVE,
+        "the content's own leave still arrives after release");
+  capture_on_press = false;
+  SendMessageW(root, WM_NCMOUSEMOVE, HTMAXBUTTON, inside);
+  received.clear();
+  SendMessageW(root, WM_NCMOUSELEAVE, 0, 0);
+  Check(received.size() == 1 && received[0].message == WM_MOUSELEAVE,
+        "hover-only leave forwarding resumes after the drag");
+
+  // A separate background window both owns unrelated capture and exercises
+  // applications whose content lives directly in the root HWND.
+  HWND standalone = CreateWindowExW(WS_EX_TOOLWINDOW, cls.lpszClassName, L"", WS_POPUP,
+                                    100, 100, 640, 400, nullptr, nullptr, cls.hInstance, nullptr);
+  Check(standalone != nullptr, "a standalone content window is created");
+  if (standalone) {
+    ShowWindow(standalone, SW_SHOWNOACTIVATE);
+    SetWindowPos(standalone, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    SendMessageW(root, WM_NCMOUSEMOVE, HTMAXBUTTON, inside);
+    SetCapture(standalone);
+    Check(GetCapture() == standalone, "a different window owns capture");
+    received.clear();
+    SendMessageW(root, WM_NCMOUSELEAVE, 0, 0);
+    Check(received.size() == 1 && received[0].message == WM_MOUSELEAVE,
+          "capture by another window does not suppress the content's leave");
+    Check(GetCapture() == standalone, "leave forwarding preserves the other window's capture");
+    if (GetCapture() == standalone) ReleaseCapture();
+
+    Window standalone_window(standalone);
+    Check(standalone_window.SetMaximizeButtonBounds({10, 0, 46, 32}),
+          "maximize bounds work without a content child");
+    const double standalone_scale = GetDpiForWindow(standalone) / 96.0;
+    const LPARAM standalone_inside = ScreenPoint(standalone, standalone_scale, 30, 16);
+    capture_on_press = true;
+    SendMessageW(standalone, WM_NCMOUSEMOVE, HTMAXBUTTON, standalone_inside);
+    received.clear();
+    SendMessageW(standalone, WM_NCLBUTTONDOWN, HTMAXBUTTON, standalone_inside);
+    Check(received.size() == 1 && received[0].message == WM_LBUTTONDOWN &&
+              GetCapture() == standalone,
+          "the root content captures its forwarded press");
+    received.clear();
+    SendMessageW(standalone, WM_NCMOUSELEAVE, 0, 0);
+    Check(received.empty(), "non-client leave preserves the captured root content pointer");
+    SendMessageW(standalone, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(-20, 100));
+    SendMessageW(standalone, WM_LBUTTONUP, 0, MAKELPARAM(-20, 100));
+    Check(received.size() == 2 && received[0].message == WM_MOUSEMOVE &&
+              received[1].message == WM_LBUTTONUP && GetCapture() != standalone,
+          "a root content drag completes without a premature leave");
+    capture_on_press = false;
+    SendMessageW(standalone, WM_NCMOUSEMOVE, HTMAXBUTTON, standalone_inside);
+    received.clear();
+    SendMessageW(standalone, WM_NCMOUSELEAVE, 0, 0);
+    Check(received.size() == 1 && received[0].message == WM_MOUSELEAVE,
+          "root content receives hover leave again after release");
+    DestroyWindow(standalone);
+  }
 
   const double nan = std::numeric_limits<double>::quiet_NaN();
   Check(!window.SetMaximizeButtonBounds({nan, 0, 46, 32}), "a rectangle that is not finite is refused");

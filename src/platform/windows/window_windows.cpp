@@ -533,7 +533,12 @@ static std::optional<LRESULT> HandleMaximizeButtonArea(HWND hwnd, UINT message, 
       return 0;
     case WM_NCMOUSELEAVE:
       area->tracking_leave = false;
-      if (area->hovered && IsWindow(area->hovered)) SendMessageW(area->hovered, WM_MOUSELEAVE, 0, 0);
+      // A forwarded press lets the content capture the mouse. Leaving this
+      // non-client button then does not mean leaving the content: it still
+      // owns the drag and receives client move/up messages. A synthetic leave
+      // here would remove Flutter's pressed pointer before its release.
+      if (area->hovered && IsWindow(area->hovered) && GetCapture() != area->hovered)
+        SendMessageW(area->hovered, WM_MOUSELEAVE, 0, 0);
       area->hovered = nullptr;
       break;  // DefWindowProc has its own bookkeeping for it.
     case WM_NCLBUTTONDOWN:
