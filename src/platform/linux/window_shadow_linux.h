@@ -7,6 +7,7 @@
 
 namespace nativeapi {
 static void RefreshShadowInput(GtkWidget* widget);
+static void ClearShadowInput(GtkWidget* widget);
 }
 
 namespace nativeapi::linux_shadow {
@@ -271,6 +272,7 @@ inline void Remove(GtkWidget* widget) {
   const int width = child ? gtk_widget_get_allocated_width(child) : 0;
   const int height = child ? gtk_widget_get_allocated_height(child) : 0;
   g_signal_handlers_disconnect_by_data(widget, state);
+  ClearShadowInput(widget);
   gtk_style_context_remove_class(gtk_widget_get_style_context(widget), kGutterStyleClass);
   if (state->overlay && child == state->overlay) {
     auto* content = gtk_bin_get_child(GTK_BIN(state->overlay));
