@@ -40,6 +40,7 @@ static const char* kMouseInputPolicyKey = "NativeAPIMouseInputPolicy";
 struct MouseInputPolicy {
   bool ignored = false;
   bool forward = false;
+  bool shadow_rectangle = false;
   guint source = 0;
   GtkWidget* widget = nullptr;  // The owner, or nullptr for a bare GdkWindow.
   GdkWindow* surface = nullptr;
@@ -238,6 +239,17 @@ static void ApplyMouseInputPolicy(GtkWidget* widget, GdkWindow* surface,
   if (widget) gtk_widget_input_shape_combine_region(widget, region);
   else gdk_window_input_shape_combine_region(surface, region, 0, 0);
   if (empty) cairo_region_destroy(empty);
+}
+
+static void ClearShadowInput(GtkWidget* widget) {
+  auto* surface = gtk_widget_get_window(widget);
+  auto* policy = GetMouseInputPolicy(widget, surface, false);
+  // Ownership survives surface recreation; explicit input/visual shapes stay intact.
+  if (!policy || !policy->shadow_rectangle) return;
+  cairo_region_destroy(policy->region);
+  policy->region = nullptr;
+  policy->shadow_rectangle = false;
+  ApplyMouseInputPolicy(widget, surface, *policy);
 }
 static const char* kTitleBarStyleKey = "NativeAPITitleBarStyle";
 static const char* kFocusableKey = "NativeAPIFocusable";
@@ -2678,12 +2690,14 @@ static cairo_region_t* RasterizeShape(GtkWidget* widget, GdkWindow* window,
   return region;
 }
 
-static void ApplyInputRegion(GtkWidget* widget, GdkWindow* window, cairo_region_t* region) {
+static void ApplyInputRegion(GtkWidget* widget, GdkWindow* window, cairo_region_t* region,
+                             bool shadow_rectangle = false) {
   // GTK intersects its CSD input region with the explicit widget region. Register
   // ours with GTK as well as GDK so a later allocation cannot overwrite it.
   auto* policy = GetMouseInputPolicy(widget, window, true);
   if (policy->region) cairo_region_destroy(policy->region);
   policy->region = region ? cairo_region_copy(region) : nullptr;
+  policy->shadow_rectangle = shadow_rectangle;
   ApplyMouseInputPolicy(widget, window, *policy);
   g_object_set_data(G_OBJECT(window), kInputShapeKey, region ? GINT_TO_POINTER(1) : nullptr);
   gdk_window_invalidate_rect(window, nullptr, TRUE);
@@ -2703,7 +2717,7 @@ static void RefreshShadowInput(GtkWidget* widget) {
     rectangle.AddPoint({double(width), double(height)}); rectangle.AddPoint({0, double(height)});
   }
   auto* region = RasterizeShape(widget, window, explicit_polygon ? shadow->polygon : rectangle);
-  ApplyInputRegion(widget, window, region);
+  ApplyInputRegion(widget, window, region, !explicit_polygon);
   cairo_region_destroy(region);
   g_object_set_data(G_OBJECT(window), kInputShapeKey, explicit_polygon ? GINT_TO_POINTER(1) : nullptr);
 }
