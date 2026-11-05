@@ -213,9 +213,47 @@ class TrayIcon::Impl {
   // The new taskbar knows nothing about this icon. nid_ still carries the icon,
   // tooltip and callback message, so adding it again restores everything.
   void RestoreAfterTaskbarRestart() {
-    if (hwnd_ && visible_) {
-      Shell_NotifyIconW(NIM_ADD, &nid_);
+    if (hwnd_ && registered_) {
+      NOTIFYICONDATAW nid = nid_;
+      nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_STATE;
+      nid.dwState = visible_ ? 0 : NIS_HIDDEN;
+      nid.dwStateMask = NIS_HIDDEN;
+      Shell_NotifyIconW(NIM_ADD, &nid);
     }
+  }
+
+  // Registers the icon with the shell once an image is available. It goes in
+  // hidden when it was not shown yet. An icon that is added later, after another
+  // one was deleted, can end up visible but deaf to clicks when the process runs
+  // elevated (tray_manager#110), so every icon is registered up front and
+  // visibility is only ever toggled afterwards.
+  void Register() {
+    if (!hwnd_ || registered_)
+      return;
+    if (!nid_.hIcon) {
+      HICON fallback = CopyIcon(LoadIcon(nullptr, IDI_APPLICATION));
+      if (!fallback)
+        return;
+      icon_handle_ = fallback;
+      nid_.hIcon = fallback;
+    }
+    NOTIFYICONDATAW nid = nid_;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_STATE;
+    nid.dwState = visible_ ? 0 : NIS_HIDDEN;
+    nid.dwStateMask = NIS_HIDDEN;
+    registered_ = Shell_NotifyIconW(NIM_ADD, &nid) == TRUE;
+  }
+
+  // Shows or hides an icon that is already registered. Setting NIS_HIDDEN keeps
+  // the shell entry (and its callback) alive, unlike NIM_DELETE.
+  bool ApplyVisibility() {
+    if (!registered_)
+      return false;
+    NOTIFYICONDATAW nid = nid_;
+    nid.uFlags = NIF_STATE;
+    nid.dwState = visible_ ? 0 : NIS_HIDDEN;
+    nid.dwStateMask = NIS_HIDDEN;
+    return Shell_NotifyIconW(NIM_MODIFY, &nid) == TRUE;
   }
 
   void UpdateIcon() {
@@ -235,8 +273,12 @@ class TrayIcon::Impl {
     HICON previous = icon_handle_;
     icon_handle_ = icon;
     nid_.hIcon = icon;
-    if (visible_)
+    if (!registered_) {
+      Register();
+    } else {
+      nid_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
       Shell_NotifyIconW(NIM_MODIFY, &nid_);
+    }
     if (previous)
       DestroyIcon(previous);
   }
@@ -313,6 +355,8 @@ class TrayIcon::Impl {
   // What SetVisible() last asked for; the shell's own answer is lost when
   // Explorer restarts.
   bool visible_ = false;
+  // Whether the shell currently holds this icon (shown or hidden).
+  bool registered_ = false;
   int taskbar_watch_id_ = 0;
 
   // Callback functions for event emission
@@ -460,8 +504,8 @@ void TrayIcon::SetTooltip(std::optional<std::string> tooltip) {
     std::wstring wtooltip = StringToWString(tooltip_str);
     wcsncpy_s(pimpl_->nid_.szTip, _countof(pimpl_->nid_.szTip), wtooltip.c_str(), _TRUNCATE);
 
-    // Update if icon is visible (check if hIcon is set as indicator)
-    if (pimpl_->nid_.hIcon) {
+    // Update if the shell knows the icon (shown or hidden).
+    if (pimpl_->registered_) {
       Shell_NotifyIconW(NIM_MODIFY, &pimpl_->nid_);
     }
   }
@@ -513,18 +557,11 @@ bool TrayIcon::SetVisible(bool visible) {
   // icon comes back once a taskbar exists.
   pimpl_->visible_ = visible;
 
-  bool currently_visible = IsVisible();
-
-  if (visible && !currently_visible) {
-    // Show the tray icon
-    return Shell_NotifyIconW(NIM_ADD, &pimpl_->nid_) == TRUE;
-  } else if (!visible && currently_visible) {
-    // Hide the tray icon
-    return Shell_NotifyIconW(NIM_DELETE, &pimpl_->nid_) == TRUE;
-  } else {
-    // Already in the desired state
-    return true;
+  if (pimpl_->registered_) {
+    return pimpl_->ApplyVisibility();
   }
+  pimpl_->Register();
+  return pimpl_->registered_;
 }
 
 bool TrayIcon::IsVisible() {
