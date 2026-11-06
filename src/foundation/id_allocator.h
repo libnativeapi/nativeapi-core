@@ -85,6 +85,8 @@ class TextField;
 class ImageView;
 class EventRequest;
 class EventDecision;
+class CaptureSource;
+class ScreenRecorder;
 namespace capi { class EventDelivery; }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +210,14 @@ struct IdTypeTag<EventDecision> {
 template <>
 struct IdTypeTag<capi::EventDelivery> {
   static constexpr uint32_t value = 27;
+};
+template <>
+struct IdTypeTag<CaptureSource> {
+  static constexpr uint32_t value = 28;
+};
+template <>
+struct IdTypeTag<ScreenRecorder> {
+  static constexpr uint32_t value = 29;
 };
 
 /**

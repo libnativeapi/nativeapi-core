@@ -16,6 +16,24 @@
 #include "../foundation/handle_table.h"
 #include "../foundation/geometry.h"
 
+void native_point_free(native_point_t* value) {
+  if (!value) {
+    return;
+  }
+}
+
+void native_size_free(native_size_t* value) {
+  if (!value) {
+    return;
+  }
+}
+
+void native_rectangle_free(native_rectangle_t* value) {
+  if (!value) {
+    return;
+  }
+}
+
 native_edge_insets_t native_edge_insets_all(double value) {
   try {
     const auto cpp_result = nativeapi::EdgeInsets::All(value);
@@ -35,6 +53,12 @@ native_edge_insets_t native_edge_insets_symmetric(double vertical, double horizo
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_edge_insets_symmetric");
     native_edge_insets_t result = {};
     return result;
+  }
+}
+
+void native_edge_insets_free(native_edge_insets_t* value) {
+  if (!value) {
+    return;
   }
 }
 
