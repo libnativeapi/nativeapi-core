@@ -1,3 +1,20 @@
+if(EMSCRIPTEN)
+  # Link every object, including the generated C ABI: building a static archive
+  # alone cannot detect missing platform implementations.
+  add_executable(wasm_smoke_test wasm_smoke_test.cpp wasm_c_smoke_test.c)
+  target_link_libraries(wasm_smoke_test PRIVATE
+    -Wl,--whole-archive nativeapi -Wl,--no-whole-archive -Wl,--no-gc-sections)
+  add_test(NAME wasm_smoke_test COMMAND wasm_smoke_test)
+
+  # These tests exercise shared arithmetic without desktop APIs or threads.
+  foreach(test window_shape view_layout screen_layout ohos_window_mask window_shadow_blur)
+    add_executable(${test}_test ${test}_test.cpp)
+    target_link_libraries(${test}_test PRIVATE nativeapi)
+    add_test(NAME ${test}_test COMMAND ${test}_test)
+  endforeach()
+  return()
+endif()
+
 # Objective-C++ tests, on macOS and the iOS clipboard host. The language must be
 # enabled in this directory: enable_language() in src/ is scoped to that sibling,
 # and a target here that compiles .mm or is marked LANGUAGE OBJCXX makes CMake

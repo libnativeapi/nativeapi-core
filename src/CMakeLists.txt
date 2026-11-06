@@ -24,7 +24,9 @@ list(FILTER COMMON_SOURCES EXCLUDE REGEX "platform/*")
 file(GLOB CAPI_SOURCES "capi/*.cpp" "capi/*.c")
 
 # Platform-specific source files
-if(ANDROID)
+if(EMSCRIPTEN)
+    file(GLOB PLATFORM_SOURCES "platform/wasm/*.cpp")
+elseif(ANDROID)
     file(GLOB PLATFORM_SOURCES "platform/android/*.cpp")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     file(GLOB PLATFORM_SOURCES "platform/ios/*.mm")
@@ -69,6 +71,13 @@ endif()
 # compiled at the toolchain default, which is how a header using std::optional
 # could fail to compile in a target that links this library.
 target_compile_features(nativeapi PUBLIC cxx_std_17)
+
+if(EMSCRIPTEN)
+    # The common layer and generated C ABI catch exceptions. Emscripten disables
+    # catching by default; propagate the same setting to consumers and the link.
+    target_compile_options(nativeapi PUBLIC -fexceptions)
+    target_link_libraries(nativeapi PUBLIC -fexceptions)
+endif()
 
 set_target_properties(nativeapi PROPERTIES
   PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/../include/**/*.h"

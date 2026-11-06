@@ -1,0 +1,28 @@
+name: WebAssembly
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 4.0.23
+          "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.23
+      - name: Build C++ and C ABI and run WebAssembly tests
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-wasm --parallel 2
+          ctest --test-dir build-wasm --output-on-failure

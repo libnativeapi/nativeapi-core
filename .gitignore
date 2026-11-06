@@ -8,6 +8,7 @@ build-linux/
 build-macos/
 build-ohos/
 build-windows/
+build-wasm/
 cmake-build-debug/
 _codeql_detected_source_root
 

@@ -25,6 +25,10 @@ On Windows, configure with `-DNATIVEAPI_ENABLE_WINUI3=ON` to use the WinUI 3 bac
 
 On Linux, window control policies depend on the window manager and decoration type — see [docs/linux-window-controls.md](docs/linux-window-controls.md) for supported behavior and compositor limitations.
 
+WebAssembly compilation of the C++ API and C ABI is supported with Emscripten.
+This is a compile-only backend; native desktop services are unavailable. See
+[docs/wasm.md](docs/wasm.md) for build commands, embedding and limitations.
+
 ## Quick Start
 
 ```cpp
