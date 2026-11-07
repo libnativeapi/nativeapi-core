@@ -144,9 +144,21 @@ void TestRequestVotes() {
   Dispatch::Finish(request);
   Check(outcome == -1 && request->IsPending(), "queued callbacks hold implicit request votes");
   native_event_delivery_complete(first, true);
+  Drain();
   Check(outcome == -1, "first asynchronous callback cannot approve other pending callbacks");
   native_event_delivery_complete(second, false);
+  Check(outcome == -1 && request->IsPending(), "a vote is resolved from the main loop, not inline");
+  Drain();
   Check(outcome == 0 && request->IsCancelled(), "failed asynchronous callback vetoes request");
+
+  outcome = -1;
+  request = Dispatch::Create(true, [&](bool accept) { outcome = accept ? 1 : 0; });
+  auto approved = Lease(request);
+  Dispatch::Finish(request);
+  native_event_delivery_complete(approved, true);
+  Check(outcome == -1 && request->IsPending(), "approval cannot tear down the consumer inside acknowledgment");
+  Drain();
+  Check(outcome == 1 && !request->IsPending(), "approved continuation runs after acknowledgment returns");
 
   outcome = -1;
   request = Dispatch::Create(true, [&](bool accept) { outcome = accept ? 1 : 0; });
@@ -155,6 +167,7 @@ void TestRequestVotes() {
   auto explicit_vote = request->Defer();
   Check(explicit_vote != nullptr, "async callback can create an independently owned decision");
   native_event_delivery_complete(lease, true);
+  Drain();
   Check(outcome == -1 && explicit_vote->IsPending(), "owned decision outlives callback payload");
   explicit_vote->Accept();
   Check(outcome == 1, "owned decision completes request after callback returns");
@@ -165,6 +178,7 @@ void TestRequestVotes() {
   Dispatch::Finish(request);
   Check(outcome == 1 && !request->IsPending(), "required shutdown never waits for asynchronous observers");
   native_event_delivery_complete(lease, false);
+  Drain();
   Check(outcome == 1, "failed required observer cannot veto completed shutdown");
 }
 
@@ -187,6 +201,7 @@ void TestConcurrentAcknowledgment() {
     if (native_event_delivery_complete(delivery, true)) ++successful;
   });
   for (auto& responder : responders) responder.join();
+  Drain();
   Check(successful == 1 && completed == 1 && freed == 1, "concurrent completion releases payload and votes once");
 }
 void TestThrowingCallback() {

@@ -8,6 +8,7 @@
 #include <mutex>
 #include <utility>
 
+#include "../foundation/dispatcher.h"
 #include "../foundation/event_request.h"
 #include "../foundation/event_listener_dispatch.h"
 #include "user_data.h"
@@ -57,8 +58,16 @@ class EventDelivery {
     // target. Neither payload destruction nor completion runs under mutex_.
     payload.reset();
     if (vote) {
-      if (accept) vote->Accept();
-      else vote->Cancel();
+      // Resolve from the main loop rather than inside the consumer's call:
+      // the continuation may close a window or quit, tearing down the runtime
+      // still inside this call (leanflutter/window_manager#593).
+      // A dropped task destroys the vote unresolved, which cancels it.
+      auto resolve = [vote, accept] {
+        if (accept) vote->Accept();
+        else vote->Cancel();
+      };
+      // Embedders without a dispatcher retain their synchronous fallback.
+      if (!RunOnMainThread(resolve)) resolve();
     }
     return true;
   }
