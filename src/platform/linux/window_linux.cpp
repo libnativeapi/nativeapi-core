@@ -2644,8 +2644,14 @@ static cairo_region_t* RasterizeShape(GtkWidget* widget, GdkWindow* window,
   // Rasterize at pixel centres using the even-odd rule. GDK region coordinates
   // are logical pixels, including on HiDPI displays. Bound work by the surface.
   cairo_region_t* region = cairo_region_create();
-  const int width = gdk_window_get_width(window);
-  const int height = gdk_window_get_height(window);
+  // size-allocate runs before GDK finishes resizing the native surface. The
+  // child's offset already includes the new shadow gutter, so clipping against
+  // the previous GdkWindow size truncates the right/bottom content (#595).
+  const bool gtk_toplevel = widget && GTK_IS_WINDOW(widget);
+  const int width = gtk_toplevel ? gtk_widget_get_allocated_width(widget)
+                                : gdk_window_get_width(window);
+  const int height = gtk_toplevel ? gtk_widget_get_allocated_height(widget)
+                                 : gdk_window_get_height(window);
   gint origin_x = 0, origin_y = 0;
   gdk_window_get_origin(window, &origin_x, &origin_y);
   const auto layout = GetLayout(widget, window);

@@ -228,9 +228,11 @@ inline void ClearGutterBackground(GtkWidget* widget) {
                                     "window.nativeapi-shadow-gutter:backdrop {"
                                     "  background: none; }",
                                     -1, nullptr);
+    // KDE's GTK modules install user-priority providers. The gutter is backing
+    // for our shadow, so its transparency must survive theme overrides (#594).
     gtk_style_context_add_provider_for_screen(gtk_widget_get_screen(widget),
                                               GTK_STYLE_PROVIDER(provider),
-                                              GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                                              GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
     g_object_unref(provider);
   }
   gtk_style_context_add_class(gtk_widget_get_style_context(widget), kGutterStyleClass);
