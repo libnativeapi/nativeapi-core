@@ -95,6 +95,8 @@ void ReleaseIdentifier(const std::string& identifier) {
 }
 }  // namespace
 
+static constexpr char kKdeWatcher[] = "org.kde.StatusNotifierWatcher";
+
 // ── D-Bus introspection XML for org.kde.StatusNotifierItem ───────────────────
 
 static const char kSniIntrospectionXml[] =
@@ -284,6 +286,9 @@ class TrayIcon::Impl {
   guint registration_id_;
   guint menu_registration_id_;
   guint name_owner_id_;
+  guint watcher_watch_id_;
+  bool name_acquired_ = false;
+  std::string registered_watcher_owner_;
   std::string service_name_;
   std::unordered_map<int, GtkWidget*> dbusmenu_items_;
   // dbusmenu ids the host reported open (0 is the root menu), so that a repeated
@@ -306,6 +311,7 @@ class TrayIcon::Impl {
         registration_id_(0),
         menu_registration_id_(0),
         name_owner_id_(0),
+        watcher_watch_id_(0),
         menu_revision_(1) {
     id_ = IdAllocator::Allocate<TrayIcon>();
   }
@@ -554,6 +560,9 @@ class TrayIcon::Impl {
     name_owner_id_ = g_bus_own_name_on_connection(connection_, service_name_.c_str(),
                                                    G_BUS_NAME_OWNER_FLAGS_NONE, &Impl::OnNameAcquired,
                                                    &Impl::OnNameLost, this, nullptr);
+    watcher_watch_id_ = g_bus_watch_name_on_connection(
+        connection_, kKdeWatcher, G_BUS_NAME_WATCHER_FLAGS_NONE, &Impl::OnWatcherAppeared,
+        &Impl::OnWatcherVanished, this, nullptr);
     return true;
   }
 
@@ -567,6 +576,10 @@ class TrayIcon::Impl {
     }
     StopWatchingAppearance();
 
+    if (watcher_watch_id_ != 0) {
+      g_bus_unwatch_name(watcher_watch_id_);
+      watcher_watch_id_ = 0;
+    }
     if (name_owner_id_ != 0) {
       g_bus_unown_name(name_owner_id_);
       name_owner_id_ = 0;
@@ -642,31 +655,53 @@ class TrayIcon::Impl {
 
   static void OnNameAcquired(GDBusConnection* conn, const gchar* name, gpointer user_data) {
     Impl* self = static_cast<Impl*>(user_data);
-    if (self) self->RegisterWithWatcher(conn, name);
+    if (!self) return;
+    self->name_acquired_ = true;
+    self->RegisterWithWatcher(conn, name);
   }
 
-  static void OnNameLost(GDBusConnection*, const gchar* name, gpointer) {
+  static void OnNameLost(GDBusConnection*, const gchar* name, gpointer user_data) {
+    Impl* self = static_cast<Impl*>(user_data);
+    if (self) self->name_acquired_ = false;
     std::cerr << "[nativeapi] SNI: lost D-Bus name " << (name ? name : "(null)") << std::endl;
+  }
+
+  static void OnWatcherAppeared(GDBusConnection* conn, const gchar*, const gchar* name_owner,
+                                gpointer user_data) {
+    Impl* self = static_cast<Impl*>(user_data);
+    if (!self || !self->name_acquired_ || !name_owner) return;
+    if (self->registered_watcher_owner_ == name_owner) return;
+    self->RegisterWithWatcher(conn, self->service_name_.c_str());
+  }
+
+  static void OnWatcherVanished(GDBusConnection*, const gchar*, gpointer user_data) {
+    Impl* self = static_cast<Impl*>(user_data);
+    if (self) self->registered_watcher_owner_.clear();
   }
 
   // Try both KDE and Canonical watcher service names.
   void RegisterWithWatcher(GDBusConnection* conn, const gchar* service_name) {
     static const char* const kWatchers[] = {
-        "org.kde.StatusNotifierWatcher",
+        kKdeWatcher,
         "com.canonical.StatusNotifierWatcher",
         nullptr,
     };
     for (int i = 0; kWatchers[i]; ++i) {
-      GError* error = nullptr;
-      GVariant* reply = g_dbus_connection_call_sync(
-          conn, kWatchers[i], "/StatusNotifierWatcher", kWatchers[i],
-          "RegisterStatusNotifierItem", g_variant_new("(s)", service_name), nullptr,
-          G_DBUS_CALL_FLAGS_NONE, 2000, nullptr, &error);
-      if (reply) {
-        g_variant_unref(reply);
-        return;
+      GDBusMessage* call = g_dbus_message_new_method_call(
+          kWatchers[i], "/StatusNotifierWatcher", kWatchers[i], "RegisterStatusNotifierItem");
+      g_dbus_message_set_body(call, g_variant_new("(s)", service_name));
+      GDBusMessage* reply = g_dbus_connection_send_message_with_reply_sync(
+          conn, call, G_DBUS_SEND_MESSAGE_FLAGS_NONE, 2000, nullptr, nullptr, nullptr);
+      g_object_unref(call);
+      if (!reply) continue;
+      const bool registered =
+          g_dbus_message_get_message_type(reply) == G_DBUS_MESSAGE_TYPE_METHOD_RETURN;
+      if (registered) {
+        const gchar* sender = g_dbus_message_get_sender(reply);
+        registered_watcher_owner_ = sender ? sender : "";
       }
-      if (error) g_error_free(error);
+      g_object_unref(reply);
+      if (registered) return;
     }
     std::cerr << "[nativeapi] SNI: no StatusNotifierWatcher found; tray icon may not appear"
               << std::endl;
