@@ -15,7 +15,11 @@
 @end
 @implementation HeadlessQuitApplication
 - (void)terminate:(id)sender {
-  [self.delegate applicationShouldTerminate:self];
+  const auto reply = [self.delegate applicationShouldTerminate:self];
+  // Real AppKit acknowledges NSTerminateCancel this way even when Flutter
+  // still has its own asynchronous Dart decision outstanding (#65).
+  if (reply == NSTerminateCancel)
+    [self replyToApplicationShouldTerminate:NO];
 }
 @end
 
@@ -149,7 +153,7 @@ int main(int argc, char** argv) {
     std::thread worker([&] { b->Accept(); });
     worker.join();
     check(WaitFor([&] { return state->requests == 3; }) && pending(),
-          "worker approval resumes the real Flutter request on UI");
+          "AppKit cancel acknowledgement preserves the pending Dart request after worker approval");
     check([[coordinator valueForKey:@"shouldTerminate"] boolValue] && ask() == NSTerminateCancel,
           "Flutter's early shouldTerminate flag cannot authorize a repeated user quit");
     app.Quit(23);

@@ -45,6 +45,7 @@ struct Session {
   WeakObject host;
   std::shared_ptr<nativeapi::EventRequest> request;
   bool asking = true, decided = false, approved = false, waiting_host = false;
+  bool waiting_appkit_reply = false;
   explicit Session(id target) : host(target) {}
 };
 struct FlutterBridge;
@@ -92,6 +93,7 @@ struct MacApplicationQuitPolicy::Impl {
       const std::function<NSApplicationTerminateReply()>& original) {
     owner->ObserveHost(target->host.Get());
     target->waiting_host = false;
+    target->waiting_appkit_reply = false;
     ++entering;
     NSApplicationTerminateReply reply;
     @try {
@@ -104,6 +106,7 @@ struct MacApplicationQuitPolicy::Impl {
       End(target);
     } else if (reply == NSTerminateLater) {
       target->waiting_host = true;
+      target->waiting_appkit_reply = true;
     } else if (!target->waiting_host) {
       End(target);  // An ordinary host cancellation, without an async bridge.
     }
@@ -281,7 +284,11 @@ void MacApplicationQuitPolicy::ReplyFromHost(bool allowed) {
   if (!impl_->app)
     return;
   auto target = impl_->session;
-  if (impl_->Current(target) && target->waiting_host) {
+  // AppKit also calls this with NO after a synchronous NSTerminateCancel.
+  // Flutter returns Cancel while its own channel reply is pending; that
+  // notification must not invalidate the ticket for its eventual approval.
+  // Only NSTerminateLater delegates finish through this AppKit reply API.
+  if (impl_->Current(target) && target->waiting_appkit_reply) {
     if (allowed)
       impl_->announced_termination = true;
     impl_->End(target);
