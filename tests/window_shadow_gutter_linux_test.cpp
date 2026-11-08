@@ -157,6 +157,9 @@ void AllocationQuiescence() {
   gtk_widget_realize(widget);
   gtk_widget_hide(header);
   gtk_widget_realize(content);
+  Check(gdk_screen_is_composited(gtk_widget_get_screen(widget)) &&
+            gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd"),
+        "CSD fixture has compositor-supported client-side shadow geometry");
   nativeapi::linux_shadow::Ensure(widget);
   // The application requests its content dimensions after installing the
   // hidden-title-bar shadow policy, before mapping the native host.
@@ -250,12 +253,36 @@ void AllocationQuiescence() {
         "restoring system decorations removes core shadow state and style");
   gtk_widget_destroy(widget);
 }
+void MappedCsdContent() {
+  GtkWidget* content = nullptr;
+  auto* widget = MakeWindow(&content);
+  gtk_window_set_decorated(GTK_WINDOW(widget), TRUE);
+  gtk_window_set_titlebar(GTK_WINDOW(widget), gtk_header_bar_new());
+  gtk_widget_show(content);
+  gtk_widget_show(widget);
+  Pump(500);
+  gtk_window_resize(GTK_WINDOW(widget), 480, 360);
+  Pump(500);
+  Check(gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd") &&
+            gtk_widget_get_allocated_width(content) == 480 &&
+            gtk_widget_get_allocated_height(content) == 360,
+        "mapped CSD fixture starts with exact content dimensions");
+  nativeapi::linux_shadow::Ensure(widget);
+  Pump(600);  // Include the deferred gutter decision, without another resize.
+  std::cout << "mapped CSD after installing gutter=" << gtk_widget_get_allocated_width(content)
+            << "x" << gtk_widget_get_allocated_height(content) << std::endl;
+  Check(gtk_widget_get_allocated_width(content) == 480 &&
+            gtk_widget_get_allocated_height(content) == 360,
+        "installing a gutter on mapped CSD preserves content dimensions without a resize request");
+  gtk_widget_destroy(widget);
+}
 }
 
 int main(int argc, char** argv) {
   if (!gtk_init_check(&argc, &argv)) return 77;
   RepeatedDeclarations();
   AllocationQuiescence();
+  MappedCsdContent();
   std::cout << (failures ? "FAILED " : "ALL PASS ") << failures << std::endl;
   return failures ? 1 : 0;
 }

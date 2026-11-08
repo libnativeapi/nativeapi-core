@@ -1,6 +1,9 @@
 #pragma once
 
 #include <gtk/gtk.h>
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
 #include <memory>
 #include <string>
 
@@ -354,9 +357,14 @@ inline void AddGutter(GtkWidget* widget, State* state) {
   gtk_window_get_size(GTK_WINDOW(widget), &width, &height);
   SetGutter(widget, state, true);
   if (state->gtk_gutter) {
-    // GTK size requests already exclude its decoration margin. Keep the same
-    // content request while GTK grows the surface around it.
     NoteRequestedSize(widget, width, height);
+#ifdef GDK_WINDOWING_WAYLAND
+    // Wayland grows the surface when GTK updates its shadow widths. An explicit
+    // resize here expands it twice, leaving the content larger than requested.
+    if (GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(widget)))
+      return;
+#endif
+    // X11 only declares the extents; GTK still needs the content-size request.
     gtk_window_resize(GTK_WINDOW(widget), width, height);
     return;
   }
