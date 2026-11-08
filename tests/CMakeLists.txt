@@ -375,6 +375,17 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_shadow_remap_linux_test window_shadow_remap_linux_test.cpp)
   target_link_libraries(window_shadow_remap_linux_test PRIVATE nativeapi)
+  # Real GTK helper/backend regression; skips when no display is available.
+  # Build the internal helper in one translation unit so its GDK writes can be
+  # counted without changing or interposing the public nativeapi library.
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SHADOW_GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+  add_executable(window_shadow_gutter_linux_test
+    window_shadow_gutter_linux_test.cpp ../src/window_shape.cpp ../src/window_shadow.cpp)
+  target_compile_features(window_shadow_gutter_linux_test PRIVATE cxx_std_17)
+  target_link_libraries(window_shadow_gutter_linux_test PRIVATE PkgConfig::SHADOW_GTK)
+  add_test(NAME window_shadow_gutter_linux_test COMMAND window_shadow_gutter_linux_test)
+  set_tests_properties(window_shadow_gutter_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 10)
 endif()
 
 # Explicit desktop integration test; creates windows but sends no input.

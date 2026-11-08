@@ -2,6 +2,7 @@
 
 #include <gtk/gtk.h>
 #include <memory>
+#include <string>
 
 #include "../window_shadow_blur.h"
 
@@ -13,6 +14,14 @@ static void ClearShadowInput(GtkWidget* widget);
 namespace nativeapi::linux_shadow {
 constexpr char kConfig[] = "NativeAPICustomShadow";
 constexpr char kState[] = "NativeAPICoreShadow";
+constexpr char kReservedGutterStyleClass[] = "nativeapi-shadow-reserved";
+
+// GTK rewrites a CSD window's shadow widths during every allocation. Keep its
+// decoration margin as the only source of geometry rather than competing with
+// that declaration from an allocation handler.
+inline bool GtkOwnsGutter(GtkWidget* widget) {
+  return gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd");
+}
 
 // Reserve the complete supported blur/offset envelope once. Wayland cannot
 // compensate for changing surface gutters with gtk_window_move(), and doing so
@@ -27,12 +36,12 @@ inline int ReservedMargin() {
 // States in which the window manager fits the whole surface to the space it gives the
 // window - a tiling window manager's tiles, maximized, full screen. The gutter is then
 // no shadow, only a band of empty window around the content, so it is taken away
-// while the window is in one of them - when the window manager really sized the
-// surface. Hyprland reports every toplevel as maximized and tiled, floating ones too,
+// while the window is in one of them. GTK owns that transition for CSD windows.
+// For the non-CSD fallback, Hyprland reports every toplevel as maximized and tiled, floating ones too,
 // so that it draws no client-side shadow, and leaves the size to the client: nothing
 // is painted in the gutter then, but the gutter stays, because GDK takes no resize
 // while those states stand and taking the border away would hand the content the
-// whole surface. The declared window geometry excludes the gutter either way.
+// whole surface. Its declared window geometry excludes the gutter either way.
 constexpr int kFittedStates =
     GDK_WINDOW_STATE_MAXIMIZED | GDK_WINDOW_STATE_FULLSCREEN | GDK_WINDOW_STATE_TILED |
     GDK_WINDOW_STATE_TOP_TILED | GDK_WINDOW_STATE_RIGHT_TILED |
@@ -47,8 +56,13 @@ struct State {
   bool enabled = true;
   // The window manager's states say fitted: nothing is painted in the gutter.
   bool fitted = false;
-  // The surface carries the gutter: the container border is the margin.
+  // The surface carries the gutter, in the GTK decoration or the fallback border.
   bool gutter = false;
+  bool gtk_gutter = false;
+  // Only non-CSD windows need a direct GDK declaration. The cache belongs to the
+  // native surface, which can be replaced while this GtkWidget survives.
+  GdkWindow* declared_window = nullptr;
+  int declared_left = -1, declared_right = -1, declared_top = -1, declared_bottom = -1;
   // The surface size last allocated or asked for, to tell a surface the window manager
   // sized for a fitted state from one its states merely relabelled.
   int surface_width = 0, surface_height = 0;
@@ -73,11 +87,14 @@ inline void Trace(const char* where, GtkWidget* widget, State* state);
 inline State* Get(GtkWidget* widget) {
   return widget ? static_cast<State*>(g_object_get_data(G_OBJECT(widget), kState)) : nullptr;
 }
-// The gutter the surface has around the content right now.
+// Extra inset for GTK size/position requests. GTK already accounts for its CSD
+// decoration margin; only the container border must be added by the caller.
 inline int Gutter(GtkWidget* widget) {
   auto* state = Get(widget);
   if (!state)
     return 0;
+  if (state->gtk_gutter)
+    return static_cast<int>(state->original_border);
   return state->gutter ? state->margin : static_cast<int>(state->original_border);
 }
 // What the surface is about to be sized to (SetContentSize), so that a configure
@@ -95,11 +112,18 @@ inline bool SurfaceSizedByWindowManager(GtkWidget* widget, State* state) {
          (width != state->surface_width || height != state->surface_height);
 }
 inline void SetGutter(GtkWidget* widget, State* state, bool gutter) {
-  if (state->gutter == gutter)
+  const bool gtk_gutter = GtkOwnsGutter(widget);
+  if (state->gutter == gutter && state->gtk_gutter == gtk_gutter)
     return;
   state->gutter = gutter;
+  state->gtk_gutter = gtk_gutter;
+  auto* context = gtk_widget_get_style_context(widget);
+  if (gtk_gutter && gutter)
+    gtk_style_context_add_class(context, kReservedGutterStyleClass);
+  else
+    gtk_style_context_remove_class(context, kReservedGutterStyleClass);
   gtk_container_set_border_width(GTK_CONTAINER(widget),
-                                 gutter ? state->margin : state->original_border);
+                                 gutter && !gtk_gutter ? state->margin : state->original_border);
 }
 inline bool IsFitted(GtkWidget* widget) {
   auto* window = gtk_widget_get_window(widget);
@@ -184,9 +208,12 @@ inline gboolean DrawOverlay(GtkWidget*, cairo_t* cr, gpointer data) {
 // The gutter is shadow, not window. Tell the window manager, so that it places,
 // snaps and tiles the content rather than the whole surface (_GTK_FRAME_EXTENTS on
 // X11, the xdg_surface window geometry on Wayland). GTK declares its own
-// decoration's extents while allocating the window; this runs after it and
-// declares everything around the content, GTK's part included.
+// decoration's extents while allocating the window, so CSD windows reserve the
+// gutter in that decoration instead. Only windows without CSD declare it here.
 inline void DeclareGutter(GtkWidget* widget) {
+  auto* state = Get(widget);
+  if (!state || GtkOwnsGutter(widget))
+    return;
   auto* window = gtk_widget_get_window(widget);
   auto* child = gtk_bin_get_child(GTK_BIN(widget));
   int x = 0, y = 0;
@@ -199,10 +226,27 @@ inline void DeclareGutter(GtkWidget* widget) {
                      gtk_widget_get_allocated_height(child);
   if (x < 0 || y < 0 || right < 0 || bottom < 0)
     return;
+  if (state->declared_window == window && state->declared_left == x &&
+      state->declared_right == right && state->declared_top == y &&
+      state->declared_bottom == bottom)
+    return;
+  state->declared_window = window;
+  state->declared_left = x;
+  state->declared_right = right;
+  state->declared_top = y;
+  state->declared_bottom = bottom;
   gdk_window_set_shadow_width(window, x, right, y, bottom);
+}
+inline void InvalidateDeclaration(GtkWidget*, gpointer data) {
+  static_cast<State*>(data)->declared_window = nullptr;
+}
+inline void DeclarationPropertyChanged(GObject*, GParamSpec*, gpointer data) {
+  static_cast<State*>(data)->declared_window = nullptr;
 }
 inline void Allocated(GtkWidget* widget, GtkAllocation*, gpointer data) {
   auto* state = static_cast<State*>(data);
+  if (state->gtk_gutter != GtkOwnsGutter(widget))
+    SetGutter(widget, state, state->gutter);
   gtk_window_get_size(GTK_WINDOW(widget), &state->surface_width, &state->surface_height);
   RefreshShadowInput(widget);
   DeclareGutter(widget);
@@ -218,16 +262,19 @@ inline bool CanBeTranslucent(GtkWidget* widget) {
   return gdk_screen_is_composited(screen) &&
          gtk_widget_get_visual(widget) == gdk_screen_get_rgba_visual(screen);
 }
-inline void ClearGutterBackground(GtkWidget* widget) {
+inline void InstallGutterStyle(GtkWidget* widget) {
   static bool installed = false;
   if (!installed) {
     installed = true;
     GtkCssProvider* provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(provider,
-                                    "window.nativeapi-shadow-gutter,"
-                                    "window.nativeapi-shadow-gutter:backdrop {"
-                                    "  background: none; }",
-                                    -1, nullptr);
+    const std::string css =
+        "window.nativeapi-shadow-gutter,"
+        "window.nativeapi-shadow-gutter:backdrop { background: none; }"
+        "window.nativeapi-shadow-reserved.csd decoration,"
+        "window.nativeapi-shadow-reserved.csd decoration:backdrop {"
+        " box-shadow: none; border: none; padding: 0; margin: " +
+        std::to_string(ReservedMargin()) + "px; }";
+    gtk_css_provider_load_from_data(provider, css.c_str(), -1, nullptr);
     // KDE's GTK modules install user-priority providers. The gutter is backing
     // for our shadow, so its transparency must survive theme overrides (#594).
     gtk_style_context_add_provider_for_screen(gtk_widget_get_screen(widget),
@@ -235,14 +282,16 @@ inline void ClearGutterBackground(GtkWidget* widget) {
                                               GTK_STYLE_PROVIDER_PRIORITY_USER + 1);
     g_object_unref(provider);
   }
+}
+inline void ClearGutterBackground(GtkWidget* widget) {
   gtk_style_context_add_class(gtk_widget_get_style_context(widget), kGutterStyleClass);
 }
 // Into a fitted state the window manager has already sized the surface, and changing
 // the border only moves the content edge to the surface edge; out of one it restores
 // the surface it had, gutter included, and the border moves the edge back in. A fitted
 // state that came with no size of the window manager's (Hyprland, see kFittedStates)
-// keeps the gutter: the surface is what the client asked for, and GDK would not
-// shrink it now anyway.
+// keeps the fallback border gutter: the surface is what the client asked for, and
+// GDK would not shrink it now anyway. CSD follows GTK's own fitted geometry.
 inline gboolean StateChanged(GtkWidget* widget, GdkEventWindowState* event, gpointer data) {
   auto* state = static_cast<State*>(data);
   Trace("state-event", widget, state);
@@ -261,7 +310,8 @@ inline gboolean StateChanged(GtkWidget* widget, GdkEventWindowState* event, gpoi
   if (fitted == state->fitted)
     return FALSE;
   state->fitted = fitted;
-  SetGutter(widget, state, !fitted || !SurfaceSizedByWindowManager(widget, state));
+  SetGutter(widget, state,
+            !fitted || (!state->gtk_gutter && !SurfaceSizedByWindowManager(widget, state)));
   gtk_widget_queue_draw(widget);
   return FALSE;
 }
@@ -276,6 +326,7 @@ inline void Remove(GtkWidget* widget) {
   g_signal_handlers_disconnect_by_data(widget, state);
   ClearShadowInput(widget);
   gtk_style_context_remove_class(gtk_widget_get_style_context(widget), kGutterStyleClass);
+  gtk_style_context_remove_class(gtk_widget_get_style_context(widget), kReservedGutterStyleClass);
   if (state->overlay && child == state->overlay) {
     auto* content = gtk_bin_get_child(GTK_BIN(state->overlay));
     g_object_ref(content);
@@ -302,6 +353,13 @@ inline void AddGutter(GtkWidget* widget, State* state) {
   gtk_window_get_position(GTK_WINDOW(widget), &x, &y);
   gtk_window_get_size(GTK_WINDOW(widget), &width, &height);
   SetGutter(widget, state, true);
+  if (state->gtk_gutter) {
+    // GTK size requests already exclude its decoration margin. Keep the same
+    // content request while GTK grows the surface around it.
+    NoteRequestedSize(widget, width, height);
+    gtk_window_resize(GTK_WINDOW(widget), width, height);
+    return;
+  }
   const int extra = state->margin - state->original_border;
   NoteRequestedSize(widget, width + extra * 2, height + extra * 2);
   gtk_window_resize(GTK_WINDOW(widget), width + extra * 2, height + extra * 2);
@@ -407,12 +465,19 @@ inline State* Ensure(GtkWidget* widget) {
     state->custom = std::make_shared<WindowShadow>(*config);
   }
   state->original_border = gtk_container_get_border_width(GTK_CONTAINER(widget));
+  state->gtk_gutter = GtkOwnsGutter(widget);
   state->fitted = IsFitted(widget);  // final once Decide() has run
   g_object_set_data_full(G_OBJECT(widget), kState, state,
                          [](gpointer p) { delete static_cast<State*>(p); });
   g_signal_connect_after(widget, "draw", G_CALLBACK(Draw), state);
   g_signal_connect_after(widget, "size-allocate", G_CALLBACK(Allocated), state);
+  g_signal_connect(widget, "unrealize", G_CALLBACK(InvalidateDeclaration), state);
+  g_signal_connect(widget, "map", G_CALLBACK(InvalidateDeclaration), state);
+  g_signal_connect(widget, "style-updated", G_CALLBACK(InvalidateDeclaration), state);
+  g_signal_connect(widget, "notify::decorated", G_CALLBACK(DeclarationPropertyChanged), state);
+  g_signal_connect(widget, "notify::scale-factor", G_CALLBACK(DeclarationPropertyChanged), state);
   g_signal_connect(widget, "window-state-event", G_CALLBACK(StateChanged), state);
+  InstallGutterStyle(widget);
   if (CanBeTranslucent(widget))
     ClearGutterBackground(widget);
   // The gutter belongs to GTK, not the application's render tree. Keeping it

@@ -2061,7 +2061,11 @@ bool Window::SetFrameless(bool is_frameless) {
   SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
   if (is_frameless) {
     g_object_set_data(G_OBJECT(widget), kFramelessKey, GINT_TO_POINTER(1));
-    gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
+    // A hidden CSD header and the core's borderless decoration CSS are already
+    // visually frameless. Keep GTK's decoration geometry active so that it can
+    // reserve the custom shadow margin itself.
+    if (!linux_shadow::GtkOwnsGutter(widget))
+      gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
     SetHasShadow(HasShadow());
   }
   return true;
