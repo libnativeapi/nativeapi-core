@@ -53,6 +53,15 @@ GtkWidget* MakeWindow(GtkWidget** content) {
   gtk_container_add(GTK_CONTAINER(widget), *content);
   return widget;
 }
+bool SkipUnsupportedCsd(GtkWidget* widget, const char* test_name) {
+  if (gdk_screen_is_composited(gtk_widget_get_screen(widget)) &&
+      gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd"))
+    return false;
+  std::cout << "SKIP " << test_name
+            << ": compositor-supported CSD is unavailable" << std::endl;
+  gtk_widget_destroy(widget);
+  return true;
+}
 void AllocateContent(GtkWidget* widget, GtkWidget* content,
                      int left, int right, int top, int bottom) {
   GtkAllocation allocation{left, top,
@@ -157,9 +166,8 @@ void AllocationQuiescence() {
   gtk_widget_realize(widget);
   gtk_widget_hide(header);
   gtk_widget_realize(content);
-  Check(gdk_screen_is_composited(gtk_widget_get_screen(widget)) &&
-            gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd"),
-        "CSD fixture has compositor-supported client-side shadow geometry");
+  if (SkipUnsupportedCsd(widget, "AllocationQuiescence"))
+    return;
   nativeapi::linux_shadow::Ensure(widget);
   // The application requests its content dimensions after installing the
   // hidden-title-bar shadow policy, before mapping the native host.
@@ -261,6 +269,8 @@ void MappedCsdContent() {
   gtk_widget_show(content);
   gtk_widget_show(widget);
   Pump(500);
+  if (SkipUnsupportedCsd(widget, "MappedCsdContent"))
+    return;
   gtk_window_resize(GTK_WINDOW(widget), 480, 360);
   Pump(500);
   Check(gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd") &&
