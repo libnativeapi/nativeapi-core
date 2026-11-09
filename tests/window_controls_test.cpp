@@ -161,6 +161,24 @@ void CompositeGtkTitleBar() {
     Check(gtk_widget_get_mapped(content_header) &&
           window.GetBounds().height > window.GetContentSize().height,
           "restored composite GTK title bar occupies its own space above application content");
+    // Entering and leaving frameless must not ratchet the window: each round trip
+    // once grew it by the title bar's height, and an instant shadow-margin change
+    // on Wayland once shrank it by the whole gutter.
+    const auto before = window.GetBounds();
+    Check(window.SetFrameless(true), "composite GTK title bar enters frameless again");
+    Pump(400);
+    Check(window.SetFrameless(false), "composite GTK title bar leaves frameless again");
+    Pump(400);
+    const auto after = window.GetBounds();
+    if (after.width != before.width || after.height != before.height)
+      std::cout << "INFO composite GTK round trip frame=" << before.width << "x" << before.height
+                << " -> " << after.width << "x" << after.height << std::endl;
+    // Known gap (X11 only): where GTK draws a solid title bar instead of CSD - bare
+    // Xvfb, openbox with xcompmgr - the container-border gutter still grows the frame
+    // on each round trip (520x410 -> 530x490).
+    if (gtk_style_context_has_class(gtk_widget_get_style_context(host), "csd"))
+      Check(after.width == before.width && after.height == before.height,
+            "a frameless round trip keeps the composite GTK frame size");
   }
   gtk_widget_destroy(host);
 }

@@ -270,12 +270,16 @@ inline void InstallGutterStyle(GtkWidget* widget) {
   if (!installed) {
     installed = true;
     GtkCssProvider* provider = gtk_css_provider_new();
+    // The reserved margin must change in one step. Adwaita transitions every
+    // decoration property into and out of :backdrop; an animated margin resizes
+    // the surface per frame, and a content size requested meanwhile on Wayland
+    // is applied against a stale margin (it came out 40 px too large on Weston).
     const std::string css =
         "window.nativeapi-shadow-gutter,"
         "window.nativeapi-shadow-gutter:backdrop { background: none; }"
         "window.nativeapi-shadow-reserved.csd decoration,"
         "window.nativeapi-shadow-reserved.csd decoration:backdrop {"
-        " box-shadow: none; border: none; padding: 0; margin: " +
+        " box-shadow: none; border: none; padding: 0; transition: none; margin: " +
         std::to_string(ReservedMargin()) + "px; }";
     gtk_css_provider_load_from_data(provider, css.c_str(), -1, nullptr);
     // KDE's GTK modules install user-priority providers. The gutter is backing
@@ -340,7 +344,16 @@ inline void Remove(GtkWidget* widget) {
     g_object_unref(content);
   }
   gtk_container_set_border_width(GTK_CONTAINER(widget), border);
-  if (width > 0 && height > 0)
+  bool resize = width > 0 && height > 0;
+#ifdef GDK_WINDOWING_WAYLAND
+  // As in AddGutter: GDK keeps the window geometry when GTK drops its shadow
+  // widths and shrinks the surface itself. A resize requested here is applied
+  // first and then shrunk again by the old margin, so the window would lose the
+  // whole gutter on every side.
+  if (state->gtk_gutter && GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(widget)))
+    resize = false;
+#endif
+  if (resize)
     gtk_window_resize(GTK_WINDOW(widget), width + border * 2, height + border * 2);
   g_object_set_data(G_OBJECT(widget), kState, nullptr);
   gtk_widget_queue_draw(widget);
