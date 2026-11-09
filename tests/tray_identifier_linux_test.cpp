@@ -25,13 +25,18 @@ void Require(bool ok, const char* name) {
   if (!ok) std::exit(1);
 }
 
-bool Wait(const std::function<bool()>& done) {
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+bool Wait(const std::function<bool()>& done,
+          std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!done() && std::chrono::steady_clock::now() < deadline) {
     while (g_main_context_iteration(nullptr, FALSE)) {}
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return done();
+}
+
+void Pump(std::chrono::milliseconds duration) {
+  Wait([] { return false; }, duration);
 }
 
 GDBusConnection* Connect() {
@@ -229,6 +234,32 @@ void CheckSeparateApplications(Watcher& watcher) {
   }
   std::filesystem::remove_all(folder);
 }
+
+void CheckWatcherRestart(std::unique_ptr<Watcher>& watcher) {
+  {
+    nativeapi::TrayIcon icon;
+    const auto before = watcher->FirstIds().size();
+    Require(Wait([&] { return watcher->FirstIds().size() == before + 1; }),
+            "icon registers with the running watcher");
+    watcher.reset();
+    watcher = std::make_unique<Watcher>();
+    Require(Wait([&] { return watcher->FirstIds().size() == 1; }),
+            "icon registers again when the watcher restarts");
+    Require(watcher->FirstIds()[0] == icon.GetIdentifier(), "restarted watcher reads the same Id");
+    Pump(std::chrono::milliseconds(200));
+    Require(watcher->FirstIds().size() == 1, "restarted watcher sees a single registration");
+  }
+  watcher.reset();
+  {
+    nativeapi::TrayIcon icon;
+    Pump(std::chrono::milliseconds(200));
+    watcher = std::make_unique<Watcher>();
+    Require(Wait([&] { return watcher->FirstIds().size() == 1; }),
+            "icon registers with a watcher that starts after it");
+    Pump(std::chrono::milliseconds(200));
+    Require(watcher->FirstIds().size() == 1, "late watcher sees a single registration");
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -236,7 +267,7 @@ int main(int argc, char** argv) {
   auto* bus = g_test_dbus_new(G_TEST_DBUS_NONE);
   g_test_dbus_up(bus);
   {
-    Watcher watcher;
+    auto watcher = std::make_unique<Watcher>();
     auto* client = Connect();
     auto* app = g_application_new("org.nativeapi.TrayIdentifierTest", G_APPLICATION_NON_UNIQUE);
     g_application_set_default(app);
@@ -249,8 +280,8 @@ int main(int argc, char** argv) {
       Require(second->GetIdentifier() == "org.nativeapi.TrayIdentifierTest-2", "second icon has stable suffix");
       Require(first->GetIdentifier() != second->GetIdentifier(), "live default identifiers are distinct");
       Require(first_id != second->GetId(), "numeric identity remains distinct");
-      Require(Wait([&] { return watcher.FirstIds().size() == 3; }), "watcher reads each initial Id");
-      const auto initial_ids = watcher.FirstIds();
+      Require(Wait([&] { return watcher->FirstIds().size() == 3; }), "watcher reads each initial Id");
+      const auto initial_ids = watcher->FirstIds();
       for (const auto& id : {first->GetIdentifier(), second->GetIdentifier(), explicit_icon.GetIdentifier()}) {
         Require(std::find(initial_ids.begin(), initial_ids.end(), id) != initial_ids.end(),
                 "identifier fixed before watcher registration");
@@ -274,19 +305,19 @@ int main(int argc, char** argv) {
       char* name = native_tray_icon_get_identifier(handle);
       Require(name && std::string(name) == "org.nativeapi.TrayIdentifierTest.capi", "C ABI string round trip");
       free_c_str(name);
-      Require(Wait([&] { return watcher.FirstIds().size() == 5; }), "all registrations dispatched");
+      Require(Wait([&] { return watcher->FirstIds().size() == 5; }), "all registrations dispatched");
       native_tray_icon_free(handle);
     }
     {
       nativeapi::TrayIcon reserved(std::string("org.nativeapi.TrayIdentifierTest"));
       nativeapi::TrayIcon automatic;
       Require(automatic.GetIdentifier() == "org.nativeapi.TrayIdentifierTest-2", "defaults avoid explicit names");
-      Require(Wait([&] { return watcher.FirstIds().size() == 7; }), "explicit and default registered");
+      Require(Wait([&] { return watcher->FirstIds().size() == 7; }), "explicit and default registered");
     }
     {
       nativeapi::TrayIcon recreated;
       Require(recreated.GetIdentifier() == "org.nativeapi.TrayIdentifierTest", "single icon recreation retains base name");
-      Require(Wait([&] { return watcher.FirstIds().size() == 8; }), "recreated base registered");
+      Require(Wait([&] { return watcher->FirstIds().size() == 8; }), "recreated base registered");
     }
     g_application_set_default(nullptr);
     g_object_unref(app);
@@ -295,16 +326,17 @@ int main(int argc, char** argv) {
     {
       nativeapi::TrayIcon other;
       Require(other.GetIdentifier() == "org.nativeapi.OtherTrayTest", "another application has another default");
-      Require(Wait([&] { return watcher.FirstIds().size() == 9; }), "other application registered");
+      Require(Wait([&] { return watcher->FirstIds().size() == 9; }), "other application registered");
     }
     g_application_set_default(nullptr);
     g_object_unref(app);
     {
       nativeapi::TrayIcon fallback;
       Require(fallback.GetIdentifier() == "tray_identifier_linux_test", "executable basename fallback");
-      Require(Wait([&] { return watcher.FirstIds().size() == 10; }), "fallback registered");
+      Require(Wait([&] { return watcher->FirstIds().size() == 10; }), "fallback registered");
     }
-    CheckSeparateApplications(watcher);
+    CheckSeparateApplications(*watcher);
+    CheckWatcherRestart(watcher);
     g_dbus_connection_close_sync(client, nullptr, nullptr);
     g_object_unref(client);
   }
