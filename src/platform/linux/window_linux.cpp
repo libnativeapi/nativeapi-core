@@ -2061,7 +2061,11 @@ bool Window::SetFrameless(bool is_frameless) {
   SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
   if (is_frameless) {
     g_object_set_data(G_OBJECT(widget), kFramelessKey, GINT_TO_POINTER(1));
-    gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
+    // A hidden CSD header and the core's borderless decoration CSS are already
+    // visually frameless. Keep GTK's decoration geometry active so that it can
+    // reserve the custom shadow margin itself.
+    if (!linux_shadow::GtkOwnsGutter(widget))
+      gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
     SetHasShadow(HasShadow());
   }
   return true;
@@ -2100,21 +2104,24 @@ void Window::SetTitleBarStyle(TitleBarStyle style) {
   bool show_decorations = (style == TitleBarStyle::Normal);
   if (show_decorations) linux_shadow::Remove(pimpl_->widget_);
 
-  // Try to find and toggle header bar visibility
-  GtkWidget* header_bar = WindowHeaderBar(pimpl_->widget_);
-  if (header_bar) {
-    gtk_widget_set_visible(header_bar, show_decorations);
+  // A custom title bar can contain more than its header bar. Toggle the whole
+  // widget while preserving its children's visibility; GTK's internal header
+  // is not returned by gtk_window_get_titlebar().
+  GtkWidget* title_bar = gtk_window_get_titlebar(gtk_window);
+  if (!title_bar) title_bar = WindowHeaderBar(pimpl_->widget_);
+  if (title_bar) {
+    gtk_widget_set_visible(title_bar, show_decorations);
   } else {
-    // If no header bar found, toggle window decorations
+    // If no title bar is found, toggle window decorations.
     const gchar* title = gtk_window_get_title(gtk_window);
     if (title != nullptr) {
       gtk_window_set_decorated(gtk_window, show_decorations);
     }
   }
 
-  // An owned CSD header remains hidden in Hidden mode, but GTK must regain
+  // An owned CSD title bar stays hidden in Hidden mode, but GTK must regain
   // its normal frame after an explicit frameless mode.
-  if (show_decorations || header_bar) {
+  if (show_decorations || title_bar) {
     gtk_window_set_decorated(gtk_window, TRUE);
   }
   SetWindowControlButtonsVisible(show_decorations);

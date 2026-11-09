@@ -36,11 +36,135 @@ void Pump(int ms = 150) {
       DispatchMessageW(&msg);
     }
 #else
-    while (gtk_events_pending()) gtk_main_iteration();
+    for (int i = 0; i < 32 && gtk_events_pending() && std::chrono::steady_clock::now() < end; ++i)
+      g_main_context_iteration(nullptr, FALSE);
 #endif
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   } while (std::chrono::steady_clock::now() < end);
 }
+#if !defined(__APPLE__) && !defined(_WIN32)
+bool GtkContentFillsFrame(const Window& window, GtkWidget* content) {
+  const auto frame = window.GetBounds();
+  const auto bounds = window.GetContentBounds();
+  const bool fills = bounds.x == frame.x && bounds.y == frame.y &&
+         bounds.width == frame.width && bounds.height == frame.height &&
+         bounds.width == gtk_widget_get_allocated_width(content) &&
+         bounds.height == gtk_widget_get_allocated_height(content);
+  if (!fills)
+    std::cout << "INFO GTK frame=" << frame.x << "," << frame.y << " " << frame.width << "x" << frame.height
+              << " content=" << bounds.x << "," << bounds.y << " " << bounds.width << "x" << bounds.height
+              << " allocation=" << gtk_widget_get_allocated_width(content) << "x"
+              << gtk_widget_get_allocated_height(content) << std::endl;
+  return fills;
+}
+void GtkHostWithoutTitleBar() {
+  auto* host = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  auto* content = gtk_drawing_area_new();
+  gtk_container_add(GTK_CONTAINER(host), content);
+  gtk_widget_show(content);
+  Window window(host);
+  window.SetTitle("nativeapi GTK host without an explicit title bar");
+  window.SetContentSize({520, 340});
+  window.ShowInactive();
+  Pump(400);
+  const bool csd = gtk_style_context_has_class(gtk_widget_get_style_context(host), "csd");
+  Check(window.SetFrameless(true) && window.IsFrameless(),
+        "GTK host without an explicit title bar accepts frameless policy");
+  Pump(400);
+  if (!csd)
+    Check(!gtk_window_get_decorated(GTK_WINDOW(host)), "frameless non-CSD GTK disables native decorations");
+  Check(gtk_widget_get_mapped(content) && GtkContentFillsFrame(window, content),
+        "frameless GTK host without an explicit title bar gives its frame to content");
+  gtk_widget_destroy(host);
+}
+void CompositeGtkTitleBar() {
+  auto* host = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  auto* titlebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  auto* header = gtk_header_bar_new();
+  auto* extra_row = gtk_label_new("Application title-bar row");
+  auto* hidden_row = gtk_label_new("Initially hidden title-bar row");
+  gtk_widget_set_size_request(extra_row, -1, 24);
+  gtk_box_pack_start(GTK_BOX(titlebar), header, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(titlebar), extra_row, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(titlebar), hidden_row, FALSE, FALSE, 0);
+  gtk_widget_show(header);
+  gtk_widget_show(extra_row);
+  gtk_widget_show(titlebar);
+  gtk_window_set_titlebar(GTK_WINDOW(host), titlebar);
+  auto* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  auto* content_header = gtk_header_bar_new();
+  auto* drawing = gtk_drawing_area_new();
+  gtk_box_pack_start(GTK_BOX(content), content_header, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(content), drawing, TRUE, TRUE, 0);
+  gtk_container_add(GTK_CONTAINER(host), content);
+  gtk_widget_show(content_header);
+  gtk_widget_show(drawing);
+  gtk_widget_show(content);
+  Window window(host);
+  window.SetTitle("nativeapi composite GTK title-bar regression");
+  window.SetContentSize({520, 340});
+  window.ShowInactive();
+  Pump(400);
+  std::cout << "INFO composite GTK decoration class="
+            << (gtk_style_context_has_class(gtk_widget_get_style_context(host), "csd") ? "csd" : "non-CSD")
+            << std::endl;
+  Check(gtk_widget_get_mapped(titlebar) && gtk_widget_get_mapped(extra_row) &&
+        !gtk_widget_get_visible(hidden_row), "composite GTK title bar starts with its original child visibility");
+  auto check_hidden = [&] {
+    Check(!gtk_widget_get_visible(titlebar) && !gtk_widget_get_mapped(titlebar) &&
+          !gtk_widget_get_mapped(extra_row), "GTK hides the entire composite title bar");
+    Check(gtk_widget_get_visible(header) && gtk_widget_get_visible(extra_row) &&
+          !gtk_widget_get_visible(hidden_row), "GTK title-bar transitions preserve individual child visibility");
+    Check(gtk_widget_get_mapped(content_header), "GTK composite title-bar changes preserve the application content header");
+    Check(GtkContentFillsFrame(window, content), "hidden composite GTK title bar consumes no frame space");
+    const auto size = window.GetContentSize();
+    if (size.width != 520 || size.height != 340)
+      std::cout << "INFO composite GTK requested=520x340 actual=" << size.width << "x" << size.height
+                << " frame=" << window.GetBounds().width << "x" << window.GetBounds().height << std::endl;
+    Check(size.width == 520 && size.height == 340,
+          "hidden composite GTK title bar retains the requested content size");
+  };
+  for (int round = 0; round < 2; ++round) {
+    Check(window.SetFrameless(true) && window.SetFrameless(true) && window.IsFrameless(),
+          "composite GTK title bar accepts repeated frameless requests");
+    // GTK's CSD resize accounting depends on the new title-bar style being measured.
+    Pump(400);
+    window.SetContentSize({520, 340});
+    Pump(400);
+    check_hidden();
+    for (bool shadow : {false, true}) {
+      window.SetHasShadow(shadow);
+      Pump();
+      Check(window.IsFrameless() && window.HasShadow() == shadow,
+            "GTK shadow changes preserve frameless policy");
+      check_hidden();
+    }
+    window.Hide();
+    Pump();
+    window.ShowInactive();
+    Pump(400);
+    check_hidden();
+    window.SetTitleBarStyle(TitleBarStyle::Hidden);
+    Pump();
+    Check(!window.IsFrameless(), "explicit Hidden exits frameless for a composite GTK title bar");
+    // Hidden may restore a non-CSD frame. Request content size after that style settles.
+    window.SetContentSize({520, 340});
+    Pump();
+    check_hidden();
+    Check(window.SetFrameless(true) && window.SetFrameless(false),
+          "composite GTK title bar exits frameless through the public policy");
+    Pump(400);
+    Check(!window.IsFrameless() && window.GetTitleBarStyle() == TitleBarStyle::Normal &&
+          gtk_widget_get_mapped(titlebar) && gtk_widget_get_mapped(header) &&
+          gtk_widget_get_mapped(extra_row) && !gtk_widget_get_visible(hidden_row),
+          "Normal restores the composite GTK title bar without showing initially hidden children");
+    Check(gtk_widget_get_mapped(content_header) &&
+          window.GetBounds().height > window.GetContentSize().height,
+          "restored composite GTK title bar occupies its own space above application content");
+  }
+  gtk_widget_destroy(host);
+}
+#endif
 }
 int main(int argc, char** argv) {
 #ifdef __APPLE__
@@ -156,7 +280,11 @@ int main(int argc, char** argv) {
   const bool shadow = window.HasShadow();
   changes.clear();
   Check(native_window_set_frameless(ffi_window, true), "C ABI accepts frameless mode");
+#if !defined(__APPLE__) && !defined(_WIN32)
+  Pump(400);  // Include the deferred GTK shadow-gutter decision.
+#else
   Pump();
+#endif
   Check(alias.IsFrameless() && native_window_is_frameless(ffi_window) &&
         window.GetTitleBarStyle() == TitleBarStyle::Hidden && !window.IsWindowControlButtonsVisible(),
         "C ABI frameless policy is shared and hides the native caption");
@@ -179,8 +307,13 @@ int main(int argc, char** argv) {
             (frame_rect.top + frame_rect.bottom) / 2)) == HTLEFT,
         "frameless Win32 content retains native edge resize hit testing");
 #elif !defined(__APPLE__)
-  Check(!gtk_window_get_decorated(GTK_WINDOW(host)) && gtk_widget_get_visible(content_header),
-        "frameless GTK removes decorations without hiding application content");
+  Check(!gtk_widget_get_visible(header) && gtk_widget_get_mapped(content_header) &&
+        GtkContentFillsFrame(window, content_header),
+        "frameless GTK removes visible decorations without hiding or insetting application content");
+  if (gtk_style_context_has_class(gtk_widget_get_style_context(host), "csd"))
+    Check(gtk_window_get_decorated(GTK_WINDOW(host)), "frameless CSD GTK retains decoration geometry for shadows");
+  else
+    Check(!gtk_window_get_decorated(GTK_WINDOW(host)), "frameless non-CSD GTK disables native decorations");
 #else
   NSWindow* ns_window = (__bridge NSWindow*)window.GetNativeObject();
   NSView* title_view = [[ns_window standardWindowButton:NSWindowCloseButton] superview].superview;
@@ -263,6 +396,8 @@ int main(int argc, char** argv) {
   DestroyWindow(hwnd);
 #else
   gtk_widget_destroy(host);
+  GtkHostWithoutTitleBar();
+  CompositeGtkTitleBar();
 #endif
   return failures ? 1 : 0;
 }
