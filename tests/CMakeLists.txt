@@ -27,6 +27,10 @@ add_executable(url_opener_test url_opener_test.cpp)
 target_link_libraries(url_opener_test PRIVATE nativeapi)
 add_test(NAME url_opener_test COMMAND url_opener_test)
 
+add_executable(protocol_handler_test protocol_handler_test.cpp)
+target_link_libraries(protocol_handler_test PRIVATE nativeapi)
+add_test(NAME protocol_handler_test COMMAND protocol_handler_test)
+
 add_executable(window_shape_test window_shape_test.cpp)
 target_link_libraries(window_shape_test PRIVATE nativeapi)
 add_test(NAME window_shape_test COMMAND window_shape_test)
