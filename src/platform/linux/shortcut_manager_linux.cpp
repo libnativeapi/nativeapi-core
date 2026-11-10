@@ -14,6 +14,7 @@
 
 #include "../../shortcut_manager.h"
 #include "../shared/shortcut_native_key.h"
+#include "shortcut_gnome_linux.h"
 #include "shortcut_portal_linux.h"
 
 namespace nativeapi {
@@ -227,7 +228,7 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
   ~ShortcutManagerImpl() override {
-    StopThread();
+    Shutdown();
     if (display_) {
       if (wake_window_) XDestroyWindow(display_, wake_window_);
       XCloseDisplay(display_);
@@ -236,10 +237,19 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   }
 
   bool IsSupported() override {
-    return UsesPortal() ? detail::ShortcutPortalLinux::IsSupported() : display_ != nullptr;
+    return UsesPortal() ? (detail::ShortcutPortalLinux::IsSupported() ||
+                           detail::ShortcutGnomeLinux::IsSupported())
+                        : display_ != nullptr;
   }
 
-  void Shutdown() { StopThread(); if (portal_) portal_->Shutdown(); }
+  void Shutdown() {
+    closing_ = true;
+    StopThread();
+    if (portal_)
+      portal_->Shutdown();
+    if (gnome_)
+      gnome_->Shutdown();
+  }
 
   bool ShouldDeferRegistration(const std::shared_ptr<Shortcut>& shortcut) override {
     return shortcut->GetScope() == ShortcutScope::Global && UsesPortal();
@@ -269,14 +279,50 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     std::string name_string = name;
     if (name_string.size() == 1) name_string = ToLower(name_string);
     trigger += name_string;
-    Portal().Request(shortcut, std::move(trigger), std::move(cancelled), std::move(completion));
+    // Missing interface is a capability failure, unlike portal denial or
+    // timeout. Only the former may use GNOME's native settings-daemon path.
+    auto fallback =
+        manager_->CreateGuardedCallback<bool, const std::string&>(RegistrationCompletion(
+            [this, shortcut, cancelled, completion](bool success, const std::string& reason) {
+              if (!closing_.load() && !cancelled->load() && !success &&
+                  reason == detail::ShortcutPortalLinux::kUnavailable &&
+                  detail::ShortcutGnomeLinux::IsSupported()) {
+                std::string gtk_trigger;
+                std::vector<std::string> modifiers;
+                std::string key;
+                ParseAcceleratorTokens(shortcut->GetAccelerator(), modifiers, key);
+                for (const auto& modifier : modifiers) {
+                  if (modifier == "ctrl" || modifier == "control" || modifier == "cmdorctrl" ||
+                      modifier == "commandorcontrol")
+                    gtk_trigger += "<Control>";
+                  else if (modifier == "alt" || modifier == "option")
+                    gtk_trigger += "<Alt>";
+                  else if (modifier == "shift")
+                    gtk_trigger += "<Shift>";
+                  else
+                    gtk_trigger += "<Super>";
+                }
+                gtk_trigger += XKeysymToString(KeySymFromToken(key));
+                Gnome().Request(shortcut, gtk_trigger, cancelled, completion);
+              } else {
+                completion(success, reason);
+              }
+            }));
+    Portal().Request(shortcut, std::move(trigger), std::move(cancelled), std::move(fallback));
   }
   void CancelShortcutRegistration(ShortcutId id) override {
     std::lock_guard<std::mutex> lock(portal_mutex_);
     if (portal_) portal_->Cancel(id);
+    if (gnome_)
+      gnome_->Cancel(id);
   }
   std::optional<std::string> GetShortcutTriggerDescription(ShortcutId id) override {
     std::lock_guard<std::mutex> lock(portal_mutex_);
+    if (gnome_) {
+      auto value = gnome_->TriggerDescription(id);
+      if (value)
+        return value;
+    }
     if (portal_) return portal_->TriggerDescription(id);
     return std::nullopt;
   }
@@ -312,6 +358,8 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
   bool UnregisterShortcut(const std::shared_ptr<Shortcut>& shortcut) override {
     {
       std::lock_guard<std::mutex> lock(portal_mutex_);
+      if (gnome_ && gnome_->Unregister(shortcut->GetId()))
+        return true;
       if (portal_ && portal_->Unregister(shortcut->GetId())) return true;
     }
     if (!display_) {
@@ -372,6 +420,37 @@ class ShortcutManagerImpl final : public ShortcutManager::Impl {
     }
     return *portal_;
   }
+  detail::ShortcutGnomeLinux& Gnome() {
+    std::lock_guard<std::mutex> lock(portal_mutex_);
+    if (!gnome_) {
+      using Signal = detail::ShortcutPortalLinux::Signal;
+      auto delivery = manager_->CreateGuardedCallback<ShortcutId, Signal, std::string>(
+          std::function<void(ShortcutId, Signal, std::string)>(
+              [manager = manager_](ShortcutId id, Signal signal, std::string description) {
+                if (signal == Signal::Closed) {
+                  manager->Unregister(id);
+                  return;
+                }
+                if (signal == Signal::BindingChanged) {
+                  manager->UpdateTriggerDescription(id, description);
+                  return;
+                }
+                auto shortcut = manager->Get(id);
+                if (!shortcut || !manager->IsEnabled() || !shortcut->IsEnabled())
+                  return;
+                manager->EmitShortcutActivated(id, shortcut->GetAccelerator());
+                shortcut->Invoke();
+              }));
+      gnome_ = std::make_unique<detail::ShortcutGnomeLinux>(
+          [delivery](ShortcutId id, Signal signal, const std::string& description) {
+            RunOnMainThread(
+                [delivery, id, signal, description] { delivery(id, signal, description); });
+          });
+    }
+    return *gnome_;
+  }
+  std::atomic<bool> closing_{false};
+  std::unique_ptr<detail::ShortcutGnomeLinux> gnome_;
   std::mutex portal_mutex_;
   std::unique_ptr<detail::ShortcutPortalLinux> portal_;
   struct GrabInfo {

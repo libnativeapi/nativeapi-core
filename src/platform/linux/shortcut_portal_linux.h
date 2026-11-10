@@ -13,6 +13,7 @@ namespace nativeapi::detail {
 // owns a connection/session, so cancellation also revokes late server resources.
 class ShortcutPortalLinux {
  public:
+  static constexpr const char* kUnavailable = "GlobalShortcuts portal is unavailable";
   enum class Signal { Activated, Released, Closed, BindingChanged };
   using Completion = std::function<void(bool, const std::string&)>;
   using Listener = std::function<void(ShortcutId, Signal, const std::string&)>;

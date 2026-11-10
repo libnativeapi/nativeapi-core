@@ -625,3 +625,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME tray_context_menu_linux_test COMMAND tray_context_menu_linux_test)
   set_tests_properties(tray_context_menu_linux_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_program(GLIB_COMPILE_SCHEMAS glib-compile-schemas REQUIRED)
+  set(GNOME_TEST_SCHEMAS "${CMAKE_CURRENT_BINARY_DIR}/gnome-schemas")
+  file(MAKE_DIRECTORY "${GNOME_TEST_SCHEMAS}")
+  configure_file(gnome_schemas/org.nativeapi.shortcut-test.gschema.xml
+    "${GNOME_TEST_SCHEMAS}/org.nativeapi.shortcut-test.gschema.xml" COPYONLY)
+  add_custom_command(OUTPUT "${GNOME_TEST_SCHEMAS}/gschemas.compiled"
+    COMMAND "${GLIB_COMPILE_SCHEMAS}" "${GNOME_TEST_SCHEMAS}"
+    DEPENDS "${GNOME_TEST_SCHEMAS}/org.nativeapi.shortcut-test.gschema.xml")
+  add_custom_target(gnome_test_schemas DEPENDS "${GNOME_TEST_SCHEMAS}/gschemas.compiled")
+  add_executable(shortcut_gnome_linux_test shortcut_gnome_linux_test.cpp)
+  # Deliberately not a CTest: reserves real shortcuts only when explicitly run.
+  add_executable(shortcut_gnome_linux_live shortcut_gnome_linux_live.cpp)
+  target_link_libraries(shortcut_gnome_linux_live PRIVATE nativeapi)
+  target_link_libraries(shortcut_gnome_linux_test PRIVATE nativeapi)
+  add_dependencies(shortcut_gnome_linux_test gnome_test_schemas)
+  add_test(NAME shortcut_gnome_linux_test COMMAND shortcut_gnome_linux_test)
+  set_tests_properties(shortcut_gnome_linux_test PROPERTIES
+    ENVIRONMENT "GSETTINGS_SCHEMA_DIR=${GNOME_TEST_SCHEMAS}" TIMEOUT 30)
+endif()

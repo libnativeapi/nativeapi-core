@@ -364,15 +364,29 @@ struct ShortcutPortalLinux::State : std::enable_shared_from_this<State> {
     Call(entry, "org.freedesktop.DBus.Properties", "Get",
          g_variant_new("(ss)", kInterface, "version"), G_VARIANT_TYPE("(v)"),
          [this, entry](GVariant* reply, GError* error) {
-      if (error) { Close(entry, error->message); return; }
-      GVariant* version = nullptr;
-      g_variant_get(reply, "(v)", &version);
-      const bool supported = g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32) &&
-                             g_variant_get_uint32(version) >= 1;
-      g_variant_unref(version);
-      if (!supported) { Close(entry, "Desktop does not support global shortcuts"); return; }
-      Create(entry);
-    });
+           if (error) {
+             gchar* name = g_dbus_error_get_remote_error(error);
+             const bool missing = name && (g_str_has_suffix(name, ".UnknownInterface") ||
+                                           g_str_has_suffix(name, ".UnknownMethod") ||
+                                           g_str_has_suffix(name, ".UnknownProperty") ||
+                                           g_str_has_suffix(name, ".InvalidArgs") ||
+                                           g_str_has_suffix(name, ".ServiceUnknown") ||
+                                           g_str_has_suffix(name, ".NameHasNoOwner"));
+             g_free(name);
+             Close(entry, missing ? ShortcutPortalLinux::kUnavailable : error->message);
+             return;
+           }
+           GVariant* version = nullptr;
+           g_variant_get(reply, "(v)", &version);
+           const bool supported = g_variant_is_of_type(version, G_VARIANT_TYPE_UINT32) &&
+                                  g_variant_get_uint32(version) >= 1;
+           g_variant_unref(version);
+           if (!supported) {
+             Close(entry, ShortcutPortalLinux::kUnavailable);
+             return;
+           }
+           Create(entry);
+         });
   }
   void RegisterHost(const std::shared_ptr<Entry>& entry) {
     if (entry->application_id.empty() || g_file_test("/.flatpak-info", G_FILE_TEST_EXISTS) || g_getenv("SNAP")) {
@@ -386,8 +400,13 @@ struct ShortcutPortalLinux::State : std::enable_shared_from_this<State> {
         gchar* name = g_dbus_error_get_remote_error(error);
         const bool old_portal = name &&
             (g_str_has_suffix(name, ".UnknownMethod") || g_str_has_suffix(name, ".UnknownInterface"));
+        const bool missing = name && (g_str_has_suffix(name, ".ServiceUnknown") ||
+                                      g_str_has_suffix(name, ".NameHasNoOwner"));
         g_free(name);
-        if (!old_portal) { Close(entry, error->message); return; }
+        if (!old_portal) {
+          Close(entry, missing ? ShortcutPortalLinux::kUnavailable : error->message);
+          return;
+        }
       }
       CheckVersion(entry);
     });
