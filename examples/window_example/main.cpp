@@ -2,6 +2,7 @@
 #include "nativeapi.h"
 
 using nativeapi::Application;
+using nativeapi::ContextMenuTrigger;
 using nativeapi::Display;
 using nativeapi::DisplayAddedEvent;
 using nativeapi::DisplayManager;
@@ -292,17 +293,17 @@ int main() {
     });
     context_menu->AddItem(exit_item);
 
-    // Set the context menu to the tray icon
+    // Set the context menu to the tray icon. A left click opens it; a trigger
+    // (rather than OpenContextMenu() in a listener) also works on Linux, where
+    // the tray host renders the menu.
     tray_icon.SetContextMenu(context_menu);
+    tray_icon.SetContextMenuTrigger(ContextMenuTrigger::Clicked);
 
     // Set up event listeners
-    tray_icon.AddListener<TrayIconClickedEvent>([&tray_icon](const TrayIconClickedEvent& event) {
+    tray_icon.AddListener<TrayIconClickedEvent>([](const TrayIconClickedEvent& event) {
       std::cout << "*** TRAY ICON LEFT CLICKED! ***" << std::endl;
       std::cout << "This is the left click handler working!" << std::endl;
       std::cout << "Tray icon ID: " << event.GetTrayIconId() << std::endl;
-
-      // Open context menu on left click
-      tray_icon.OpenContextMenu();
     });
 
     tray_icon.AddListener<TrayIconRightClickedEvent>([](const TrayIconRightClickedEvent& event) {

@@ -29,7 +29,9 @@ enum class ContextMenuTrigger {
    *
    * The application must call OpenContextMenu() explicitly to display the menu.
    * Use this when you want full control over when the menu appears.
-   * On Linux this requires X11; native Wayland apps must use Clicked or RightClicked.
+   * On Linux this requires X11 and a host that reports right clicks (KDE);
+   * GNOME's AppIndicator extension never does. Native Wayland apps, and any
+   * app that wants its menu on GNOME, must use Clicked or RightClicked.
    */
   None,
 
@@ -204,21 +206,21 @@ class TrayIconDoubleClickedEvent : public TrayIconEvent {
  *     main_window->IsVisible() ? main_window->Hide() : main_window->Show();
  * });
  *
- * tray_icon->AddListener<TrayIconRightClickedEvent>([](const
- * TrayIconRightClickedEvent& event) {
- *     // Handle right click - open context menu
- *     tray_icon->OpenContextMenu();
- * });
- *
- * // Set up a context menu
- * Menu menu;
- * auto item = menu.CreateItem("Exit");
- * menu.AddItem(item);
+ * // Attach the context menu up front and let a trigger open it. Replace the
+ * // menu with SetContextMenu() when its contents change.
+ * auto menu = std::make_shared<Menu>();
+ * menu->AddItem(std::make_shared<MenuItem>("Exit"));
  * tray_icon->SetContextMenu(menu);
+ * tray_icon->SetContextMenuTrigger(ContextMenuTrigger::RightClicked);
  *
  * // Show the tray icon
  * tray_icon->SetVisible(true);
  * ```
+ *
+ * @note Do not attach the menu in a TrayIconRightClickedEvent listener and open
+ * it with OpenContextMenu(): on Linux the tray host renders the menu itself.
+ * GNOME's AppIndicator extension never reports a right click, and Wayland has no
+ * local popup, so such an icon does nothing when clicked.
  */
 class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider {
  public:
@@ -548,6 +550,8 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * None and DoubleClicked use a local popup and require X11. Native Wayland
    * applications must use Clicked or RightClicked. GNOME AppIndicators reserves
    * single clicks for host menus and sends activation only on a double click.
+   * It never reports a right click either, so with None (or DoubleClicked) and no
+   * exported menu, single clicks and right clicks on GNOME do nothing.
    *
    * @param trigger The desired trigger behavior
    *
@@ -566,7 +570,8 @@ class TrayIcon : public EventEmitter<TrayIconEvent>, public NativeObjectProvider
    * // Double click shows menu
    * tray_icon->SetContextMenuTrigger(ContextMenuTrigger::DoubleClicked);
    *
-   * // Manual control (default) - handle events yourself
+   * // Manual control (default) - handle events yourself. Not portable: on
+   * // Linux it needs X11 and a host that reports right clicks (not GNOME).
    * tray_icon->SetContextMenuTrigger(ContextMenuTrigger::None);
    * tray_icon->AddListener<TrayIconRightClickedEvent>([&](const auto& e) {
    *   // Custom logic before showing menu
