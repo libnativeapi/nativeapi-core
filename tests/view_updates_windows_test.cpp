@@ -31,7 +31,7 @@ LRESULT CALLBACK Watch(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
     if (callback)
       callback();
   }
-  if (msg == WM_PAINT || msg == WM_ERASEBKGND)
+  if (msg == WM_PAINT || msg == WM_ERASEBKGND || msg == WM_SYNCPAINT)
     ++count.paints;
   return DefSubclassProc(hwnd, msg, wp, lp);
 }
@@ -148,6 +148,7 @@ int main() {
   root->AddSubview(peer);
   layouts = 0;
   count.on_position = [&] {
+    Check(View::IsUpdating(), "native notifications observe the flushing batch");
     View::BeginUpdates();
     peer->SetFrame({33, 44, 20, 20});
     buttons[1]->SetPreferredSize({100, 26});

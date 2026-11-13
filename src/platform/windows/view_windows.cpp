@@ -702,7 +702,10 @@ void View::Impl::BeginNativeUpdates() {
 }
 
 void View::Impl::EndNativeUpdates(bool redraw) {
-  constexpr UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_NOSIZE;
+  // A transaction must not send synchronous erase/paint work to other windows
+  // while publishing geometry. Leave it to the final invalidation boundary.
+  constexpr UINT flags =
+      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_DEFERERASE | SWP_NOSIZE;
   // DeferWindowPos requires every entry in one batch to have the same parent.
   while (!native_updates->moves.empty()) {
     auto moves = std::move(native_updates->moves);
@@ -778,9 +781,9 @@ void View::Impl::SetNativeFrame(Rectangle frame) {
   }
   // Sizes are needed by nested layout and native hit-region clients now.
   // Translations can wait until the whole batch is ready.
-  SetWindowPos(
-      hwnd, nullptr, x, y, width, height,
-      SWP_NOZORDER | SWP_NOACTIVATE | (BatchingViews() ? SWP_NOREDRAW | SWP_NOCOPYBITS : 0));
+  SetWindowPos(hwnd, nullptr, x, y, width, height,
+               SWP_NOZORDER | SWP_NOACTIVATE |
+                   (BatchingViews() ? SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_DEFERERASE : 0));
   if (platform->kind == ViewKind::ImageView &&
       (before.right - before.left != width || before.bottom - before.top != height)) {
     platform->RenderImage();
@@ -924,7 +927,7 @@ void View::Impl::SetNativeVisible(bool is_visible) {
     DamageParent(hwnd, frame, frame);
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW |
-                     (is_visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+                     SWP_DEFERERASE | (is_visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
   } else {
     ShowWindow(hwnd, is_visible ? SW_SHOWNA : SW_HIDE);
   }

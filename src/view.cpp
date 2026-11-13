@@ -230,7 +230,9 @@ void View::EndUpdates(bool redraw) {
 }
 
 bool View::IsUpdating() {
-  return g_update_depth > 0;
+  // Synchronous native notifications during EndUpdates still observe a batch,
+  // so hosts can defer their own work until its final publication boundary.
+  return g_update_depth > 0 || g_flushing_updates;
 }
 
 // === Tree ===
