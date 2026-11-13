@@ -81,6 +81,35 @@ native_view_backend_t native_view_get_default_backend(void) {
   }
 }
 
+void native_view_begin_updates(void) {
+  try {
+    nativeapi::View::BeginUpdates();
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_begin_updates");
+    return;
+  }
+}
+
+void native_view_end_updates(bool redraw) {
+  try {
+    nativeapi::View::EndUpdates(redraw);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_end_updates");
+    return;
+  }
+}
+
+bool native_view_is_updating(void) {
+  try {
+    return nativeapi::View::IsUpdating();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_is_updating");
+    return false;
+  }
+}
+
 native_view_id_t native_view_get_id(native_view_t view) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
   if (!self) {

@@ -56,6 +56,8 @@ class View::Impl {
   /// Lays the whole tree out again, from the root down. Called after any
   /// change that can move or resize something.
   void RelayoutTree();
+  /// Coalesced subtree layout for explicit frame changes in Absolute parents.
+  void RequestLayout();
   /// The top of this view's tree (itself when detached).
   View* Root() const;
   /// Called by the platform when the native frame of a root view changed.
@@ -116,6 +118,9 @@ class View::Impl {
   std::optional<std::string> tooltip;
 
   // ---- platform seam ----
+
+  static void BeginNativeUpdates();
+  static void EndNativeUpdates(bool redraw);
 
   /// Creates the native container for a plain View.
   static void* CreateNativeContainer();

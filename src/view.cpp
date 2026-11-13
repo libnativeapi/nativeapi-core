@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_set>
 
 #include "view_impl.h"
 #include "view_layout.h"
@@ -16,6 +17,23 @@ namespace {
 // measured again at every level above it.
 thread_local int g_layout_depth = 0;
 thread_local uint64_t g_layout_pass = 0;
+thread_local size_t g_update_depth = 0;
+thread_local bool g_flushing_updates = false;
+using LayoutSet = std::unordered_set<ViewInternal::Impl*>;
+thread_local LayoutSet* g_pending_layouts = nullptr;
+struct LayoutQueue {
+  LayoutSet entries;
+  LayoutQueue() { g_pending_layouts = &entries; }
+  ~LayoutQueue() { g_pending_layouts = nullptr; }
+};
+
+void InitializeLayoutQueue() {
+  thread_local LayoutQueue queue;
+}
+
+bool SameFrame(Rectangle a, Rectangle b) {
+  return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
 
 class LayoutPass {
  public:
@@ -43,12 +61,19 @@ View* View::Impl::Root() const {
 }
 
 void View::Impl::RelayoutTree() {
-  LayoutPass pass;
-  Impl& root = *Root()->pimpl_;
-  if (root.host_layout) {
-    root.host_layout();
+  Root()->pimpl_->RequestLayout();
+}
+
+void View::Impl::RequestLayout() {
+  if (g_update_depth > 0 || g_flushing_updates) {
+    g_pending_layouts->insert(this);
+    return;
   }
-  root.Relayout();
+  LayoutPass pass;
+  if (host_layout) {
+    host_layout();
+  }
+  Relayout();
 }
 
 void View::Impl::InvalidateIntrinsicSize() {
@@ -56,8 +81,7 @@ void View::Impl::InvalidateIntrinsicSize() {
 }
 
 void View::Impl::OnNativeResized() {
-  LayoutPass pass;
-  Relayout();
+  RequestLayout();
 }
 
 Size View::Impl::IntrinsicSize() const {
@@ -101,6 +125,8 @@ Rectangle View::Impl::AbsoluteFrame() const {
 }
 
 void View::Impl::Relayout() {
+  if (g_pending_layouts)
+    g_pending_layouts->erase(this);
   if (layout == ViewLayout::Absolute) {
     // Re-applied on every pass: on platforms whose native origin is bottom-left
     // a child's position depends on the parent's height.
@@ -114,8 +140,8 @@ void View::Impl::Relayout() {
       children.push_back(subview->pimpl_->AsLayoutChild());
     }
     const Rectangle own = GetNativeFrame();
-    const auto frames = ComputeStackLayout(layout, Size{own.width, own.height}, padding, spacing,
-                                           children);
+    const auto frames =
+        ComputeStackLayout(layout, Size{own.width, own.height}, padding, spacing, children);
     for (size_t i = 0; i < subviews.size(); ++i) {
       if (children[i].visible) {
         subviews[i]->pimpl_->SetNativeFrame(frames[i]);
@@ -145,6 +171,10 @@ View::View(void* native_view) : pimpl_(std::make_unique<Impl>(this, native_view,
 View::View(NativeControl control) : pimpl_(std::make_unique<Impl>(this, control.native, true)) {}
 
 View::~View() {
+  // Main-thread TLS may already be gone when the process handle table releases
+  // its last Views. Do not resurrect or access a destroyed update queue.
+  if (g_pending_layouts)
+    g_pending_layouts->erase(pimpl_.get());
   // Subviews must let go of their parent pointer before the native tree is
   // torn down, and a root stops watching the content view it never owned.
   for (const auto& subview : pimpl_->subviews) {
@@ -161,6 +191,46 @@ ViewId View::GetId() const {
 
 ViewBackend View::GetBackend() const {
   return pimpl_->backend;
+}
+
+void View::BeginUpdates() {
+  if (g_update_depth++ == 0 && !g_flushing_updates) {
+    InitializeLayoutQueue();
+    Impl::BeginNativeUpdates();
+  }
+}
+
+void View::EndUpdates(bool redraw) {
+  if (g_update_depth == 0 || --g_update_depth != 0 || g_flushing_updates) {
+    return;
+  }
+  g_flushing_updates = true;
+  do {
+    while (!g_pending_layouts->empty()) {
+      auto* next = *g_pending_layouts->begin();
+      // Lay out the highest dirty ancestor once. Descendant requests are
+      // consumed by that traversal, including after a reparent in this batch.
+      for (auto parent = next->parent.lock(); parent; parent = parent->pimpl_->parent.lock()) {
+        if (g_pending_layouts->count(parent->pimpl_.get()))
+          next = parent->pimpl_.get();
+      }
+      auto keep_alive = next->owner->weak_from_this().lock();
+      LayoutPass pass;
+      if (next->host_layout)
+        next->host_layout();
+      next->Relayout();
+    }
+    Impl::EndNativeUpdates(redraw);
+    // Native position notifications may enqueue another layout. Drain that
+    // work before returning, without recursively entering a partial layout.
+    if (!g_pending_layouts->empty())
+      Impl::BeginNativeUpdates();
+  } while (!g_pending_layouts->empty());
+  g_flushing_updates = false;
+}
+
+bool View::IsUpdating() {
+  return g_update_depth > 0;
 }
 
 // === Tree ===
@@ -219,9 +289,11 @@ bool View::RemoveSubviewAt(size_t index) {
 }
 
 void View::ClearSubviews() {
+  BeginUpdates();
   while (!pimpl_->subviews.empty()) {
     RemoveSubviewAt(pimpl_->subviews.size() - 1);
   }
+  EndUpdates();
 }
 
 size_t View::GetSubviewCount() const {
@@ -257,9 +329,16 @@ void View::SetFrame(Rectangle frame) {
   pimpl_->has_frame = true;
   auto parent = pimpl_->parent.lock();
   if (!parent || parent->pimpl_->layout == ViewLayout::Absolute) {
+    const auto before = pimpl_->GetNativeFrame();
+    if (SameFrame(before, frame))
+      return;
     pimpl_->SetNativeFrame(frame);
+    // Absolute geometry cannot change the parent's intrinsic size. A pure
+    // translation also leaves all local child frames and measurements intact.
+    if (before.width != frame.width || before.height != frame.height) {
+      pimpl_->RequestLayout();
+    }
   }
-  pimpl_->RelayoutTree();
 }
 
 Rectangle View::GetFrame() const {
@@ -267,6 +346,8 @@ Rectangle View::GetFrame() const {
 }
 
 void View::SetPreferredSize(Size size) {
+  if (pimpl_->preferred_size.width == size.width && pimpl_->preferred_size.height == size.height)
+    return;
   pimpl_->preferred_size = size;
   pimpl_->RelayoutTree();
 }
@@ -280,6 +361,9 @@ Size View::GetIntrinsicSize() const {
 }
 
 void View::SetFlex(double flex) {
+  flex = std::max(0.0, flex);
+  if (pimpl_->flex == flex)
+    return;
   pimpl_->flex = flex < 0.0 ? 0.0 : flex;
   pimpl_->RelayoutTree();
 }
@@ -289,6 +373,8 @@ double View::GetFlex() const {
 }
 
 void View::SetAlignment(ViewAlignment alignment) {
+  if (pimpl_->alignment == alignment)
+    return;
   pimpl_->alignment = alignment;
   pimpl_->RelayoutTree();
 }
@@ -298,6 +384,8 @@ ViewAlignment View::GetAlignment() const {
 }
 
 void View::SetLayout(ViewLayout layout) {
+  if (pimpl_->layout == layout)
+    return;
   pimpl_->layout = layout;
   pimpl_->RelayoutTree();
 }
@@ -307,6 +395,9 @@ ViewLayout View::GetLayout() const {
 }
 
 void View::SetSpacing(double spacing) {
+  spacing = std::max(0.0, spacing);
+  if (pimpl_->spacing == spacing)
+    return;
   pimpl_->spacing = spacing < 0.0 ? 0.0 : spacing;
   pimpl_->RelayoutTree();
 }
@@ -316,6 +407,10 @@ double View::GetSpacing() const {
 }
 
 void View::SetPadding(EdgeInsets padding) {
+  const auto old = pimpl_->padding;
+  if (old.top == padding.top && old.right == padding.right && old.bottom == padding.bottom &&
+      old.left == padding.left)
+    return;
   pimpl_->padding = padding;
   pimpl_->RelayoutTree();
 }
@@ -327,9 +422,16 @@ EdgeInsets View::GetPadding() const {
 // === Appearance & state ===
 
 void View::SetVisible(bool is_visible) {
+  if (pimpl_->owned && pimpl_->visible == is_visible)
+    return;
   pimpl_->visible = is_visible;
   pimpl_->SetNativeVisible(is_visible);
-  pimpl_->RelayoutTree();
+  if (auto parent = pimpl_->parent.lock();
+      parent && parent->pimpl_->layout != ViewLayout::Absolute) {
+    pimpl_->RelayoutTree();
+  } else if (pimpl_->host_layout) {
+    pimpl_->RequestLayout();
+  }
 }
 
 bool View::IsVisible() const {
@@ -337,6 +439,8 @@ bool View::IsVisible() const {
 }
 
 void View::SetEnabled(bool is_enabled) {
+  if (pimpl_->IsNativeEnabled() == is_enabled)
+    return;
   pimpl_->SetNativeEnabled(is_enabled);
 }
 
@@ -354,6 +458,8 @@ Color View::GetBackgroundColor() const {
 }
 
 void View::SetTooltip(const std::optional<std::string>& tooltip) {
+  if (pimpl_->tooltip == tooltip)
+    return;
   pimpl_->tooltip = tooltip;
   pimpl_->SetNativeTooltip(tooltip);
 }

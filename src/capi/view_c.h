@@ -171,6 +171,15 @@ FFI_PLUGIN_EXPORT
 native_view_backend_t native_view_get_default_backend(void);
 
 FFI_PLUGIN_EXPORT
+void native_view_begin_updates(void);
+
+FFI_PLUGIN_EXPORT
+void native_view_end_updates(bool redraw);
+
+FFI_PLUGIN_EXPORT
+bool native_view_is_updating(void);
+
+FFI_PLUGIN_EXPORT
 native_view_id_t native_view_get_id(native_view_t view);
 
 FFI_PLUGIN_EXPORT

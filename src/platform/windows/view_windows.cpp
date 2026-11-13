@@ -15,6 +15,7 @@ using std::min;
 #include <cstdint>
 #include <cwchar>
 #include <string>
+#include <unordered_map>
 
 #include "../../foundation/id_allocator.h"
 #include "../../window.h"
@@ -39,6 +40,50 @@ const wchar_t* const kViewBackgroundProperty = L"NativeApiViewBackground";
 const wchar_t* const kWindowBackgroundProperty = L"NativeAPIBackgroundColor";
 
 constexpr UINT_PTR kEditSubclassId = 0x4E415649;  // 'NAVI'
+
+// Shared by all View wrappers on this UI thread. Never disable WM_SETREDRAW:
+// DefWindowProc changes WS_VISIBLE and can accidentally reveal hidden views.
+struct PendingMove {
+  HWND parent;
+  RECT frame;
+};
+struct NativeUpdateQueue;
+thread_local NativeUpdateQueue* native_updates = nullptr;
+struct NativeUpdateQueue {
+  bool batching = false;
+  std::unordered_map<HWND, PendingMove> moves;
+  std::unordered_map<HWND, RECT> damage;
+  NativeUpdateQueue() { native_updates = this; }
+  ~NativeUpdateQueue() { native_updates = nullptr; }
+};
+
+bool BatchingViews() {
+  return native_updates && native_updates->batching;
+}
+void CancelMove(HWND hwnd) {
+  if (native_updates)
+    native_updates->moves.erase(hwnd);
+}
+
+RECT ParentFrame(HWND hwnd) {
+  RECT frame{};
+  GetWindowRect(hwnd, &frame);
+  MapWindowPoints(nullptr, GetAncestor(hwnd, GA_PARENT), reinterpret_cast<POINT*>(&frame), 2);
+  return frame;
+}
+
+void DamageParent(HWND hwnd, RECT before, RECT after) {
+  const HWND parent = GetAncestor(hwnd, GA_PARENT);
+  if (!parent)
+    return;
+  RECT damage{}, client{};
+  UnionRect(&damage, &before, &after);
+  GetClientRect(parent, &client);
+  if (!IntersectRect(&damage, &damage, &client))
+    return;
+  auto& accumulated = native_updates->damage[parent];
+  UnionRect(&accumulated, &accumulated, &damage);
+}
 
 bool IsContainerClass(HWND hwnd) {
   wchar_t name[64] = {};
@@ -117,6 +162,8 @@ SIZE MeasureText(HWND hwnd, HFONT font, const std::wstring& text) {
   if (!hdc) {
     return size;
   }
+  if (!font)
+    font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
   HGDIOBJ previous = SelectObject(hdc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
   RECT rect = {0, 0, 0, 0};
   DrawTextW(hdc, text.empty() ? L" " : text.c_str(), -1, &rect,
@@ -200,13 +247,15 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
 COLORREF EffectiveBackgroundColor(HWND hwnd) {
   for (HWND ancestor = hwnd; ancestor; ancestor = GetAncestor(ancestor, GA_PARENT)) {
     if (IsContainerClass(ancestor)) {
-      if (const auto stored = reinterpret_cast<uintptr_t>(GetPropW(ancestor, kViewBackgroundProperty))) {
+      if (const auto stored =
+              reinterpret_cast<uintptr_t>(GetPropW(ancestor, kViewBackgroundProperty))) {
         return StoredColor(stored);
       }
       continue;
     }
     // A window, of the library's class or not: the walk ends here.
-    if (const auto stored = reinterpret_cast<uintptr_t>(GetPropW(ancestor, kWindowBackgroundProperty))) {
+    if (const auto stored =
+            reinterpret_cast<uintptr_t>(GetPropW(ancestor, kWindowBackgroundProperty))) {
       return StoredColor(stored);
     }
     break;
@@ -260,7 +309,7 @@ void EnsureCommonControls() {
 
 View::Impl::Platform::Platform(Impl* impl, HWND hwnd)
     : impl(impl), hwnd(hwnd), kind(DetectKind(hwnd)) {
-  if (kind != ViewKind::Container) {
+  if (impl->owned && kind != ViewKind::Container) {
     ApplyFont();
   }
 }
@@ -319,12 +368,15 @@ void View::Impl::Platform::HookParent() {
               reinterpret_cast<HWND>(lparam) != self->platform->hwnd) {
             return std::nullopt;
           }
+          // Borrowing an existing control must preserve the host's appearance
+          // unless the caller explicitly requested a View background colour.
+          if (!self->owned && self->background_color.a == 0 && self->platform->text_color.a == 0)
+            return std::nullopt;
           return reinterpret_cast<LRESULT>(
               self->platform->OnControlColor(reinterpret_cast<HDC>(wparam)));
         });
   }
-  auto on_command = [self](HWND, UINT msg, WPARAM wparam,
-                           LPARAM lparam) -> std::optional<LRESULT> {
+  auto on_command = [self](HWND, UINT msg, WPARAM wparam, LPARAM lparam) -> std::optional<LRESULT> {
     if (msg != WM_COMMAND || !self->platform ||
         reinterpret_cast<HWND>(lparam) != self->platform->hwnd) {
       return std::nullopt;
@@ -445,8 +497,7 @@ void View::Impl::Platform::ApplyFont() {
     logfont.lfHeight = -ToPixels(font_size * 96.0 / 72.0, scale);
   } else {
     // The metrics are for the system DPI; rescale to the control's monitor.
-    logfont.lfHeight =
-        static_cast<LONG>(std::lround(logfont.lfHeight * scale / ScaleFor(nullptr)));
+    logfont.lfHeight = static_cast<LONG>(std::lround(logfont.lfHeight * scale / ScaleFor(nullptr)));
   }
   HFONT created = CreateFontIndirectW(&logfont);
   if (!created) {
@@ -460,8 +511,9 @@ void View::Impl::Platform::ApplyFont() {
 }
 
 void View::Impl::Platform::RefreshFontsRecursive() {
-  ApplyFont();
-  if (kind == ViewKind::ImageView) {
+  if (impl->owned)
+    ApplyFont();
+  if (impl->owned && kind == ViewKind::ImageView) {
     RenderImage();
   }
   for (const auto& subview : impl->subviews) {
@@ -598,6 +650,11 @@ View::Impl::Impl(View* owner, void* native, bool owned)
 }
 
 View::Impl::~Impl() {
+  if (platform && platform->hwnd) {
+    CancelMove(platform->hwnd);
+    if (native_updates)
+      native_updates->damage.erase(platform->hwnd);
+  }
   if (platform && platform->xaml) {
     // Take the subviews' elements out first: an element has one parent, and a
     // subview that outlives this view may be added somewhere else.
@@ -638,6 +695,46 @@ void* View::Impl::CreateNativeContainer() {
                          host, nullptr, GetModuleHandleW(nullptr), nullptr);
 }
 
+void View::Impl::BeginNativeUpdates() {
+  thread_local NativeUpdateQueue queue;
+  queue.batching = true;
+}
+
+void View::Impl::EndNativeUpdates(bool redraw) {
+  // DeferWindowPos requires every entry in one batch to have the same parent.
+  while (!native_updates->moves.empty()) {
+    auto moves = std::move(native_updates->moves);
+    native_updates->moves.clear();
+    std::unordered_map<HWND, std::vector<std::pair<HWND, RECT>>> groups;
+    for (const auto& [hwnd, move] : moves) {
+      if (IsWindow(hwnd) && GetAncestor(hwnd, GA_PARENT) == move.parent)
+        groups[move.parent].push_back({hwnd, move.frame});
+    }
+    constexpr UINT flags =
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_NOSIZE;
+    for (const auto& [parent, group] : groups) {
+      auto batch = BeginDeferWindowPos(static_cast<int>(group.size()));
+      for (const auto& [hwnd, frame] : group) {
+        if (!batch)
+          break;
+        batch = DeferWindowPos(batch, hwnd, nullptr, frame.left, frame.top, 0, 0, flags);
+      }
+      if (!batch || !EndDeferWindowPos(batch)) {
+        for (const auto& [hwnd, frame] : group)
+          if (IsWindow(hwnd))
+            SetWindowPos(hwnd, nullptr, frame.left, frame.top, 0, 0, flags);
+      }
+    }
+  }
+  native_updates->batching = false;
+  auto damage = std::move(native_updates->damage);
+  native_updates->damage.clear();
+  for (const auto& [hwnd, rect] : damage) {
+    if (redraw && IsWindow(hwnd))
+      RedrawWindow(hwnd, &rect, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+  }
+}
+
 void View::Impl::SetNativeFrame(Rectangle frame) {
   NATIVEAPI_VIEW_XAML(*this, SetFrame(frame))
   HWND hwnd = platform->hwnd;
@@ -645,12 +742,29 @@ void View::Impl::SetNativeFrame(Rectangle frame) {
     return;
   }
   const double scale = ScaleFor(hwnd);
-  RECT before = {};
-  GetWindowRect(hwnd, &before);
+  RECT before = ParentFrame(hwnd);
   const int width = (std::max)(0, ToPixels(frame.width, scale));
   const int height = (std::max)(0, ToPixels(frame.height, scale));
-  SetWindowPos(hwnd, nullptr, ToPixels(frame.x, scale), ToPixels(frame.y, scale), width, height,
-               SWP_NOZORDER | SWP_NOACTIVATE);
+  const int x = ToPixels(frame.x, scale), y = ToPixels(frame.y, scale);
+  RECT after{x, y, x + width, y + height};
+  if (EqualRect(&before, &after)) {
+    CancelMove(hwnd);
+    return;
+  }
+  const bool resized = before.right - before.left != width || before.bottom - before.top != height;
+  if (BatchingViews()) {
+    DamageParent(hwnd, before, after);
+    if (!resized) {
+      native_updates->moves[hwnd] = {GetAncestor(hwnd, GA_PARENT), after};
+      return;
+    }
+    CancelMove(hwnd);
+  }
+  // Sizes are needed by nested layout and native hit-region clients now.
+  // Translations can wait until the whole batch is ready.
+  SetWindowPos(
+      hwnd, nullptr, x, y, width, height,
+      SWP_NOZORDER | SWP_NOACTIVATE | (BatchingViews() ? SWP_NOREDRAW | SWP_NOCOPYBITS : 0));
   if (platform->kind == ViewKind::ImageView &&
       (before.right - before.left != width || before.bottom - before.top != height)) {
     platform->RenderImage();
@@ -664,6 +778,14 @@ Rectangle View::Impl::GetNativeFrame() const {
     return Rectangle{0, 0, 0, 0};
   }
   const double scale = ScaleFor(hwnd);
+  if (native_updates) {
+    const auto pending = native_updates->moves.find(hwnd);
+    if (pending != native_updates->moves.end()) {
+      const auto& r = pending->second.frame;
+      return Rectangle{r.left / scale, r.top / scale, (r.right - r.left) / scale,
+                       (r.bottom - r.top) / scale};
+    }
+  }
   if (is_root) {
     RECT client = {};
     GetClientRect(hwnd, &client);
@@ -726,12 +848,14 @@ Size View::Impl::GetNativeIntrinsicSize() const {
 }
 
 void View::Impl::AddNativeSubview(Impl& child, size_t index) {
-  NATIVEAPI_VIEW_XAML(*this, AddSubview(child.platform ? child.platform->xaml.get() : nullptr, index))
+  NATIVEAPI_VIEW_XAML(*this,
+                      AddSubview(child.platform ? child.platform->xaml.get() : nullptr, index))
   HWND hwnd = platform->hwnd;
   HWND child_hwnd = child.platform ? child.platform->hwnd : nullptr;
   if (!hwnd || !child_hwnd) {
     return;
   }
+  CancelMove(child_hwnd);
   SetParent(child_hwnd, hwnd);
   // Index 0 is the bottom. `subviews` already holds the child at `index`, so
   // the entry after it is the one it goes directly underneath.
@@ -744,8 +868,9 @@ void View::Impl::AddNativeSubview(Impl& child, size_t index) {
       insert_after = above->pimpl_->platform->hwnd;
     }
   }
-  SetWindowPos(child_hwnd, insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  ShowWindow(child_hwnd, child.visible ? SW_SHOWNA : SW_HIDE);
+  SetWindowPos(child_hwnd, insert_after, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | (BatchingViews() ? SWP_NOREDRAW : 0));
+  child.SetNativeVisible(child.visible);
   // The new window may sit on another monitor: fonts and the rendered image
   // follow its DPI, and the tooltip must be owned by a real top-level window.
   child.platform->RefreshFontsRecursive();
@@ -764,7 +889,8 @@ void View::Impl::RemoveNativeSubview(Impl& child) {
   }
   child.platform->UnhookParent();
   child.platform->DestroyTooltip();
-  ShowWindow(child_hwnd, SW_HIDE);
+  CancelMove(child_hwnd);
+  child.SetNativeVisible(false);
   // Back under the hidden host, where it was created, until it is added again.
   SetParent(child_hwnd, WindowMessageDispatcher::GetInstance().GetHostWindow());
 }
@@ -775,7 +901,17 @@ void View::Impl::SetNativeVisible(bool is_visible) {
   if (!hwnd || is_root) {
     return;
   }
-  ShowWindow(hwnd, is_visible ? SW_SHOWNA : SW_HIDE);
+  if (((GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE) != 0) == is_visible)
+    return;
+  if (BatchingViews()) {
+    const auto frame = ParentFrame(hwnd);
+    DamageParent(hwnd, frame, frame);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW |
+                     (is_visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+  } else {
+    ShowWindow(hwnd, is_visible ? SW_SHOWNA : SW_HIDE);
+  }
 }
 
 void View::Impl::SetNativeEnabled(bool is_enabled) {
@@ -842,10 +978,10 @@ void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
   info.uId = reinterpret_cast<UINT_PTR>(hwnd);
   info.lpszText = &text[0];
   if (!platform->tooltip_hwnd) {
-    platform->tooltip_hwnd = CreateWindowExW(
-        WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr,
-        GetModuleHandleW(nullptr), nullptr);
+    platform->tooltip_hwnd = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                                             WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT,
+                                             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd,
+                                             nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!platform->tooltip_hwnd) {
       return;
     }

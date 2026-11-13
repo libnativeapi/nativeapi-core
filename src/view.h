@@ -289,6 +289,46 @@ class View : public EventEmitter<ViewEvent>,
   static ViewBackend GetDefaultBackend();
 
   /**
+   * @brief Begins a nested batch of view updates on the current UI thread.
+   *
+   * All views on this thread participate, including detached and borrowed views.
+   * Layout is coalesced until the matching outermost EndUpdates(). Stored
+   * properties change immediately; native geometry may lag until the batch ends.
+   * Pair every call with EndUpdates() on the same thread, without pumping the
+   * event loop inside the batch. This is not a rollback transaction.
+   *
+   * @note Platform availability:
+   * - macOS: Fully supported - Coalesces the shared view layout.
+   * - Windows: Fully supported - Also batches Win32 moves and defers geometry
+   *   and visibility repaint; other control properties may update immediately.
+   *   WinUI3 coalesces shared layout and uses its native rendering scheduler.
+   * - Linux: Fully supported - Coalesces shared layout; GTK schedules painting.
+   * - Android: Not applicable - Views are unsupported.
+   * - iOS: Not applicable - Views are unsupported.
+   * - OpenHarmony: Fully supported - Coalesces layout on the owning UI thread.
+   */
+  static void BeginUpdates();
+
+  /**
+   * @brief Ends a batch, applying pending layout at the outermost boundary.
+   *
+   * An unmatched call is ignored. Win32 repaint is scheduled, never forced
+   * synchronously, so callers can finish publishing their own drawing first.
+   * @param redraw Whether the outermost call requests Win32 geometry and
+   *        visibility repaint. Pass false when a host renderer publishes its
+   *        own damage. Inner calls do not change the outer call's choice.
+   *        Other backends retain their native paint scheduling.
+   * @see BeginUpdates() for platform availability and pairing requirements.
+   */
+  static void EndUpdates(bool redraw = true);
+
+  /**
+   * @brief Checks if this UI thread has an open view update batch.
+   * @return true between BeginUpdates() and its matching EndUpdates().
+   */
+  static bool IsUpdating();
+
+  /**
    * @brief Creates an empty container.
    */
   View();

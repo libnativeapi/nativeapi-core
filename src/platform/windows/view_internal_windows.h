@@ -134,7 +134,10 @@ inline double ScaleFor(HWND hwnd) {
 }
 
 inline int ToPixels(double points, double scale) {
-  return static_cast<int>(std::lround(points * scale));
+  // Half-away-from-zero rounding jumps an extra pixel when an integer
+  // translation crosses zero. Use the same tie direction on both sides;
+  // absorb sub-nanopixel error from equivalent layout arithmetic as well.
+  return static_cast<int>(std::floor(points * scale + 0.5 + 1e-8));
 }
 
 inline COLORREF ToColorRef(Color color) {
