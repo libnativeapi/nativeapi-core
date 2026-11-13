@@ -123,6 +123,12 @@ int main() {
   View::BeginUpdates();
   column->SetFrame({200, 0, 300, 400});
   column->SetFrame({100, 0, 300, 400});
+  View::EndUpdates();
+  Check(count.positions == 0 && !GetUpdateRect(hwnd, nullptr, FALSE),
+        "cancelled moves publish neither geometry nor repaint damage");
+  View::BeginUpdates();
+  column->SetFrame({200, 0, 300, 400});
+  column->SetFrame({100, 0, 300, 400});
   buttons[0]->SetVisible(false);
   View::EndUpdates();
   Check(count.positions == 0, "returning to the original frame cancels pending translation");

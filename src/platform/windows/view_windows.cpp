@@ -46,6 +46,7 @@ constexpr UINT_PTR kEditSubclassId = 0x4E415649;  // 'NAVI'
 struct PendingMove {
   HWND parent;
   RECT frame;
+  RECT before;
 };
 struct NativeUpdateQueue;
 thread_local NativeUpdateQueue* native_updates = nullptr;
@@ -701,17 +702,30 @@ void View::Impl::BeginNativeUpdates() {
 }
 
 void View::Impl::EndNativeUpdates(bool redraw) {
+  constexpr UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_NOSIZE;
   // DeferWindowPos requires every entry in one batch to have the same parent.
   while (!native_updates->moves.empty()) {
     auto moves = std::move(native_updates->moves);
     native_updates->moves.clear();
+    // Scrolling commonly translates one container. Avoid allocating groups and
+    // an HDWP for that case; descendants retain their parent-local geometry.
+    if (moves.size() == 1) {
+      const auto& [hwnd, move] = *moves.begin();
+      if (IsWindow(hwnd) && GetAncestor(hwnd, GA_PARENT) == move.parent) {
+        if (redraw)
+          DamageParent(hwnd, move.before, move.frame);
+        SetWindowPos(hwnd, nullptr, move.frame.left, move.frame.top, 0, 0, flags);
+      }
+      continue;
+    }
     std::unordered_map<HWND, std::vector<std::pair<HWND, RECT>>> groups;
     for (const auto& [hwnd, move] : moves) {
-      if (IsWindow(hwnd) && GetAncestor(hwnd, GA_PARENT) == move.parent)
+      if (IsWindow(hwnd) && GetAncestor(hwnd, GA_PARENT) == move.parent) {
+        if (redraw)
+          DamageParent(hwnd, move.before, move.frame);
         groups[move.parent].push_back({hwnd, move.frame});
+      }
     }
-    constexpr UINT flags =
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_NOSIZE;
     for (const auto& [parent, group] : groups) {
       auto batch = BeginDeferWindowPos(static_cast<int>(group.size()));
       for (const auto& [hwnd, frame] : group) {
@@ -753,11 +767,13 @@ void View::Impl::SetNativeFrame(Rectangle frame) {
   }
   const bool resized = before.right - before.left != width || before.bottom - before.top != height;
   if (BatchingViews()) {
-    DamageParent(hwnd, before, after);
     if (!resized) {
-      native_updates->moves[hwnd] = {GetAncestor(hwnd, GA_PARENT), after};
+      // Damage only the geometry that is actually published. Intermediate
+      // positions, cancelled moves and host-owned repaint need no region work.
+      native_updates->moves[hwnd] = {GetAncestor(hwnd, GA_PARENT), after, before};
       return;
     }
+    DamageParent(hwnd, before, after);
     CancelMove(hwnd);
   }
   // Sizes are needed by nested layout and native hit-region clients now.
