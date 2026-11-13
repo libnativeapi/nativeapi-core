@@ -20,6 +20,7 @@ using std::min;
 #include "../../foundation/id_allocator.h"
 #include "../../window.h"
 #include "view_internal_windows.h"
+#include "view_update_scheduler_windows.h"
 #include "window_message_dispatcher.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -699,6 +700,11 @@ void* View::Impl::CreateNativeContainer() {
 void View::Impl::BeginNativeUpdates() {
   thread_local NativeUpdateQueue queue;
   queue.batching = true;
+}
+
+bool View::Impl::RequestNativeUpdate() {
+  return backend == ViewBackend::Native &&
+         detail::ScheduleViewUpdate(owner->weak_from_this().lock());
 }
 
 void View::Impl::EndNativeUpdates(bool redraw) {

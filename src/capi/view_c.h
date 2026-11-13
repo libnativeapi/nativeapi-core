@@ -131,6 +131,7 @@ typedef enum {
   NATIVE_VIEW_EVENT_TYPE_BUTTON_CLICKED = 2,
   NATIVE_VIEW_EVENT_TYPE_TEXT_FIELD_CHANGED = 3,
   NATIVE_VIEW_EVENT_TYPE_TEXT_FIELD_SUBMITTED = 4,
+  NATIVE_VIEW_EVENT_TYPE_UPDATING = 5,
 } native_view_event_type_t;
 
 /// One ViewEvent, tagged by its concrete type.
@@ -178,6 +179,15 @@ void native_view_end_updates(bool redraw);
 
 FFI_PLUGIN_EXPORT
 bool native_view_is_updating(void);
+
+FFI_PLUGIN_EXPORT
+bool native_view_request_update(native_view_t view);
+
+FFI_PLUGIN_EXPORT
+void native_view_cancel_update(native_view_t view);
+
+FFI_PLUGIN_EXPORT
+bool native_view_is_update_pending(native_view_t view);
 
 FFI_PLUGIN_EXPORT
 native_view_id_t native_view_get_id(native_view_t view);

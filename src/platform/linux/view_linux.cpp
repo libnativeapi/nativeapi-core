@@ -14,6 +14,10 @@ namespace nativeapi {
 void View::Impl::BeginNativeUpdates() {}
 void View::Impl::EndNativeUpdates(bool) {}
 
+bool View::Impl::RequestNativeUpdate() {
+  return PostUpdate();
+}
+
 namespace {
 
 using Impl = ViewInternal::Impl;

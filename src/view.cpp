@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <unordered_set>
 
+#include "foundation/dispatcher.h"
 #include "view_impl.h"
 #include "view_layout.h"
 
@@ -233,6 +234,45 @@ bool View::IsUpdating() {
   // Synchronous native notifications during EndUpdates still observe a batch,
   // so hosts can defer their own work until its final publication boundary.
   return g_update_depth > 0 || g_flushing_updates;
+}
+
+bool View::RequestUpdate() {
+  if (pimpl_->update_pending)
+    return true;
+  if (weak_from_this().expired())
+    return false;
+  pimpl_->update_pending = true;
+  ++pimpl_->update_generation;
+  if (pimpl_->RequestNativeUpdate())
+    return true;
+  pimpl_->update_pending = false;
+  return false;
+}
+
+void View::CancelUpdate() {
+  pimpl_->update_pending = false;
+  ++pimpl_->update_generation;
+}
+
+bool View::IsUpdatePending() const {
+  return pimpl_->update_pending;
+}
+
+bool View::Impl::DeliverUpdate(uint64_t generation) {
+  if (!update_pending || generation != update_generation)
+    return false;
+  update_pending = false;
+  Emit(ViewUpdatingEvent(id));
+  return true;
+}
+
+bool View::Impl::PostUpdate() {
+  const auto weak = owner->weak_from_this();
+  const auto generation = update_generation;
+  return RunOnMainThread([weak, generation] {
+    if (auto view = weak.lock())
+      ViewInternal::Of(*view).DeliverUpdate(generation);
+  });
 }
 
 // === Tree ===

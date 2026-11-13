@@ -9,6 +9,10 @@ namespace nativeapi {
 void View::Impl::BeginNativeUpdates() {}
 void View::Impl::EndNativeUpdates(bool) {}
 
+bool View::Impl::RequestNativeUpdate() {
+  return false;
+}
+
 struct View::Impl::Platform {};
 
 View::Impl::Impl(View* owner, void* native, bool owned)

@@ -189,6 +189,18 @@ class TextFieldSubmittedEvent : public ViewEvent {
   std::string GetTypeName() const override { return "TextFieldSubmittedEvent"; }
 };
 
+/**
+ * @brief A requested view update is ready to publish on the owning UI thread.
+ *
+ * Repeated RequestUpdate calls coalesce. Listeners publish their current state;
+ * a request made by a listener is delivered in a later update, never recursively.
+ */
+class ViewUpdatingEvent : public ViewEvent {
+ public:
+  explicit ViewUpdatingEvent(ViewId view_id) : ViewEvent(view_id) {}
+  std::string GetTypeName() const override { return "ViewUpdatingEvent"; }
+};
+
 // ---------------------------------------------------------------------------
 // View: the container and the base of every control
 // ---------------------------------------------------------------------------
@@ -327,6 +339,34 @@ class View : public EventEmitter<ViewEvent>,
    * @return true between BeginUpdates() and its matching EndUpdates().
    */
   static bool IsUpdating();
+
+  /**
+   * @brief Requests a coalesced asynchronous ViewUpdatingEvent.
+   *
+   * Call on the owning UI thread. The view must have shared ownership. This
+   * schedules state publication, not an animation or a continuous frame loop.
+   * Destruction or CancelUpdate cancels delivery. Listeners must not pump events.
+   * @return false if unsupported, not shared-owned, or scheduling failed.
+   * @note Platform availability:
+   * - macOS: Supported - Coalesced main-thread dispatch; AppKit owns painting.
+   * - Windows: Supported for Win32 - Coalesced per UI thread using the observed
+   *   desktop refresh period (60 Hz fallback), followed by pending native paint.
+   *   Input may defer delivery. This is not a vsync or frame-rate guarantee.
+   * - Linux: Supported - Coalesced main-thread dispatch; GTK owns painting.
+   * - Android: Not applicable - Views are unsupported; returns false.
+   * - iOS: Not applicable - Views are unsupported; returns false.
+   * - OpenHarmony: Supported - Coalesced dispatch through the initialized UI host.
+   */
+  bool RequestUpdate();
+
+  /** @brief Cancels this view's pending update without running its listeners. */
+  void CancelUpdate();
+
+  /**
+   * @brief Checks if a requested update is awaiting delivery.
+   * @return true after a successful RequestUpdate until delivery or cancellation.
+   */
+  bool IsUpdatePending() const;
 
   /**
    * @brief Creates an empty container.

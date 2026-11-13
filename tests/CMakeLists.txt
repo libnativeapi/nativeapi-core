@@ -51,6 +51,10 @@ add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
 # window_manager#412 / #572 (#75): Maximize() before the first show.
 if(WIN32)
+  add_executable(view_update_scheduler_windows_test view_update_scheduler_windows_test.cpp)
+  target_link_libraries(view_update_scheduler_windows_test PRIVATE nativeapi)
+  add_test(NAME view_update_scheduler_windows_test COMMAND view_update_scheduler_windows_test)
+  set_tests_properties(view_update_scheduler_windows_test PROPERTIES TIMEOUT 10)
   add_executable(view_updates_windows_test view_updates_windows_test.cpp)
   target_link_libraries(view_updates_windows_test PRIVATE nativeapi comctl32)
   add_test(NAME view_updates_windows_test COMMAND view_updates_windows_test)

@@ -16,6 +16,7 @@ constexpr wchar_t kQueueWindowClass[] = L"NativeApiUiThreadQueue";
 // message posted to it runs on that thread. `tasks` is guarded by g_mutex.
 struct TaskQueue {
   HWND window = nullptr;
+  bool wake_pending = false;
   std::vector<std::function<void()>> tasks;
 };
 
@@ -49,6 +50,7 @@ LRESULT CALLBACK QueueWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM 
     auto queue = g_queues.find(GetCurrentThreadId());
     if (queue != g_queues.end()) {
       tasks.swap(queue->second.tasks);
+      queue->second.wake_pending = false;
     }
   }
   RunTasks(std::move(tasks));
@@ -81,9 +83,8 @@ void OpenQueueOnCurrentThread(DWORD thread_id) {
       queue.window = CreateQueueWindow();
     }
     window = queue.window;
-  }
-  if (window) {
-    PostMessageW(window, kTaskMessage, 0, 0);
+    if (window && !queue.wake_pending && !queue.tasks.empty())
+      queue.wake_pending = PostMessageW(window, kTaskMessage, 0, 0) != FALSE;
   }
 }
 
@@ -190,6 +191,7 @@ bool PostToThread(DWORD thread_id, std::function<void()> task) {
   auto& queue = g_queues[thread_id];
   if (queue.window && !IsWindow(queue.window)) {
     queue.window = nullptr;
+    queue.wake_pending = false;
   }
   queue.tasks.push_back(std::move(task));
 
@@ -197,7 +199,10 @@ bool PostToThread(DWORD thread_id, std::function<void()> task) {
     queue.window = CreateQueueWindow();
   }
   if (queue.window) {
+    if (queue.wake_pending)
+      return true;
     if (PostMessageW(queue.window, kTaskMessage, 0, 0)) {
+      queue.wake_pending = true;
       return true;
     }
     queue.tasks.pop_back();

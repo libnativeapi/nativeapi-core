@@ -16,6 +16,8 @@
 namespace nativeapi {
 
 // Shared layout batching; this backend schedules painting itself (or is a stub).
+bool View::Impl::RequestNativeUpdate() { return PostUpdate(); }
+
 void View::Impl::BeginNativeUpdates() {}
 void View::Impl::EndNativeUpdates(bool) {}
 namespace {
