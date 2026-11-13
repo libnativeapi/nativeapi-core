@@ -56,10 +56,14 @@ class View::Impl {
   /// Lays the whole tree out again, from the root down. Called after any
   /// change that can move or resize something.
   void RelayoutTree();
+  /// Coalesced subtree layout for explicit frame changes in Absolute parents.
+  void RequestLayout();
   /// The top of this view's tree (itself when detached).
   View* Root() const;
   /// Called by the platform when the native frame of a root view changed.
   void OnNativeResized();
+  bool PostUpdate();
+  bool DeliverUpdate(uint64_t generation);
   /// Marks `view` as a window's root: it wraps the window's content view,
   /// follows its size and answers GetWindow(). Called by Window::GetContentView.
   static void InitializeRoot(const std::shared_ptr<View>& view, std::weak_ptr<Window> window);
@@ -109,6 +113,8 @@ class View::Impl {
   /// called, otherwise the intrinsic size at the origin.
   Rectangle AbsoluteFrame() const;
   bool visible = true;
+  bool update_pending = false;
+  uint64_t update_generation = 0;
   /// IntrinsicSize() of the layout pass numbered `measured_pass` (view.cpp).
   mutable Size measured{0.0, 0.0};
   mutable uint64_t measured_pass = 0;
@@ -116,6 +122,10 @@ class View::Impl {
   std::optional<std::string> tooltip;
 
   // ---- platform seam ----
+
+  static void BeginNativeUpdates();
+  static void EndNativeUpdates(bool redraw);
+  bool RequestNativeUpdate();
 
   /// Creates the native container for a plain View.
   static void* CreateNativeContainer();

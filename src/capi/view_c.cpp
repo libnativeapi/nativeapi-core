@@ -81,6 +81,75 @@ native_view_backend_t native_view_get_default_backend(void) {
   }
 }
 
+void native_view_begin_updates(void) {
+  try {
+    nativeapi::View::BeginUpdates();
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_begin_updates");
+    return;
+  }
+}
+
+void native_view_end_updates(bool redraw) {
+  try {
+    nativeapi::View::EndUpdates(redraw);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_end_updates");
+    return;
+  }
+}
+
+bool native_view_is_updating(void) {
+  try {
+    return nativeapi::View::IsUpdating();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_is_updating");
+    return false;
+  }
+}
+
+bool native_view_request_update(native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->RequestUpdate();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_request_update");
+    return false;
+  }
+}
+
+void native_view_cancel_update(native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return;
+  }
+  try {
+    self->CancelUpdate();
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_cancel_update");
+    return;
+  }
+}
+
+bool native_view_is_update_pending(native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsUpdatePending();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_is_update_pending");
+    return false;
+  }
+}
+
 native_view_id_t native_view_get_id(native_view_t view) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
   if (!self) {
@@ -1221,6 +1290,11 @@ bool to_c_view_event(const nativeapi::ViewEvent& event, native_view_event_t* out
   }
   if (const auto* typed = dynamic_cast<const nativeapi::TextFieldSubmittedEvent*>(&event)) {
     out->type = NATIVE_VIEW_EVENT_TYPE_TEXT_FIELD_SUBMITTED;
+    (void)typed;
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::ViewUpdatingEvent*>(&event)) {
+    out->type = NATIVE_VIEW_EVENT_TYPE_UPDATING;
     (void)typed;
     return true;
   }

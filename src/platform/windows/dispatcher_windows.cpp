@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include <deque>
 #include <mutex>
 
 namespace nativeapi {
@@ -12,7 +13,7 @@ namespace dispatcher_platform {
 
 namespace {
 
-// Private message carrying a heap-allocated std::function* in lParam.
+// One wake-up for a bounded batch of queued callbacks.
 constexpr UINT kDispatchMessage = WM_APP + 0x51;
 constexpr wchar_t kDispatchWindowClass[] = L"NativeApiDispatcherWindow";
 
@@ -45,16 +46,56 @@ DWORD UiThreadIfNotCaptured() {
   return ui_thread && ui_thread != g_captured_thread_id ? ui_thread : 0;
 }
 
+struct DispatchQueue {
+  std::mutex mutex;
+  std::deque<std::function<void()>> tasks;
+  bool wake_pending = false;
+};
+DispatchQueue& WorkQueue() {
+  // C ABI finalizers may still post during static teardown. Match the lifetime
+  // of the process-owned dispatch window, which is not destroyed by this module.
+  static auto* queue = new DispatchQueue();
+  return *queue;
+}
 LRESULT CALLBACK DispatchWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-  if (msg == kDispatchMessage) {
-    auto* work = reinterpret_cast<std::function<void()>*>(lparam);
-    if (work) {
-      (*work)();
-      delete work;
+  if (msg != kDispatchMessage)
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+  auto& queue = WorkQueue();
+  LARGE_INTEGER frequency, started, now;
+  QueryPerformanceFrequency(&frequency);
+  QueryPerformanceCounter(&started);
+  for (;;) {
+    std::function<void()> work;
+    {
+      std::lock_guard<std::mutex> lock(queue.mutex);
+      if (queue.tasks.empty()) {
+        queue.wake_pending = false;
+        return 0;
+      }
+      work = std::move(queue.tasks.front());
+      queue.tasks.pop_front();
     }
-    return 0;
+    // Never run or destroy a client callback under the queue lock.
+    try {
+      work();
+    } catch (...) {
+    }
+    work = {};
+    QueryPerformanceCounter(&now);
+    if (now.QuadPart - started.QuadPart < frequency.QuadPart / 500)
+      continue;
+    {
+      std::lock_guard<std::mutex> lock(queue.mutex);
+      if (queue.tasks.empty()) {
+        queue.wake_pending = false;
+        return 0;
+      }
+      if (PostMessageW(hwnd, kDispatchMessage, 0, 0))
+        return 0;
+    }
+    // If the OS queue is full, finish accepted work rather than strand it.
+    started = now;
   }
-  return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
 /**
@@ -133,12 +174,21 @@ bool PlatformRunOnMainThread(std::function<void()> fn) {
     return false;
   }
 
-  auto* work = new std::function<void()>(std::move(fn));
-  if (!PostMessageW(g_dispatch_window, kDispatchMessage, 0, reinterpret_cast<LPARAM>(work))) {
-    delete work;
-    return false;
+  auto& queue = WorkQueue();
+  std::function<void()> rejected;
+  {
+    std::lock_guard<std::mutex> lock(queue.mutex);
+    queue.tasks.push_back(std::move(fn));
+    if (queue.wake_pending)
+      return true;
+    if (PostMessageW(g_dispatch_window, kDispatchMessage, 0, 0)) {
+      queue.wake_pending = true;
+      return true;
+    }
+    rejected = std::move(queue.tasks.back());
+    queue.tasks.pop_back();
   }
-  return true;
+  return false;
 }
 
 bool PlatformRunMainThreadLoopFor(int timeout_ms) {

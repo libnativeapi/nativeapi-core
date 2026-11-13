@@ -5,6 +5,8 @@
 #include <dwmapi.h>
 // clang-format on
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -110,6 +112,62 @@ static bool SystemPrefersDark() {
   return status == ERROR_SUCCESS && light == 0;
 }
 
+// Posted callbacks precede native input in GetMessage's default ordering.
+// A rendering callback that re-posts itself can therefore leave old wheel/key
+// messages waiting even while the window keeps painting. Drain ready input
+// first, with a bounded slice so continuous input cannot starve publication.
+class ApplicationMessages {
+ public:
+  ApplicationMessages() {
+    QueryPerformanceFrequency(&frequency_);
+    wchar_t path[32768];
+    const auto length = GetEnvironmentVariableW(L"NATIVEAPI_MESSAGE_TRACE_PATH", path, 32768);
+    if (length && length < 32768) { path_.assign(path, length); records_.reserve(100000); }
+  }
+  ~ApplicationMessages() {
+    if (path_.empty()) return;
+    std::ofstream output{std::filesystem::path(path_)};
+    output << "frequency," << frequency_.QuadPart << ",pid," << GetCurrentProcessId()
+           << ",overflow," << overflow_ << '\n';
+    output << "start_qpc,end_qpc,message,tag,queued_ms,input_first,wheel_delta\n";
+    for (const auto& r : records_)
+      output << r.start << ',' << r.end << ',' << r.message << ',' << r.tag << ','
+             << r.queued_ms << ',' << r.input_first << ',' << r.wheel_delta << '\n';
+    output << "complete\n";
+  }
+  BOOL Next(MSG* message) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (!input_started_) input_started_ = now.QuadPart;
+    if (now.QuadPart - input_started_ < frequency_.QuadPart / 125 &&
+        PeekMessage(message, nullptr, 0, 0, PM_REMOVE | PM_QS_INPUT)) {
+      RecordMessage(*message, now.QuadPart, true);
+      return message->message == WM_QUIT ? 0 : 1;
+    }
+    input_started_ = 0;
+    const auto result = GetMessage(message, nullptr, 0, 0);
+    if (result >= 0) RecordMessage(*message, now.QuadPart, false);
+    return result;
+  }
+ private:
+  struct Record { int64_t start, end; UINT message; uint64_t tag; DWORD queued_ms; bool input_first; int wheel_delta; };
+  std::wstring path_;
+  std::vector<Record> records_;
+  bool overflow_ = false;
+  void RecordMessage(const MSG& message, int64_t start, bool input_first) {
+    if (path_.empty()) return;
+    if (records_.size() >= 100000) { overflow_ = true; return; }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    records_.push_back({start, now.QuadPart, message.message,
+      static_cast<uint64_t>(GetMessageExtraInfo()), GetTickCount() - message.time, input_first,
+      message.message == WM_MOUSEWHEEL || message.message == WM_MOUSEHWHEEL
+        ? static_cast<short>(HIWORD(message.wParam)) : 0});
+  }
+  LARGE_INTEGER frequency_{};
+  int64_t input_started_ = 0;
+};
+
 class Application::Impl {
  public:
   Impl(Application* app) : app_(app), hinstance_(GetModuleHandle(nullptr)) {}
@@ -134,11 +192,12 @@ class Application::Impl {
 
   int Run() {
     MSG msg = {};
+    ApplicationMessages messages;
     int exit_code = 0;
 
     while (true) {
       // Get message from the message queue
-      BOOL result = GetMessage(&msg, nullptr, 0, 0);
+      BOOL result = messages.Next(&msg);
 
       if (result == -1) {
         // Error occurred
@@ -172,11 +231,12 @@ class Application::Impl {
 
     // Start the message loop
     MSG msg = {};
+    ApplicationMessages messages;
     int exit_code = 0;
 
     while (true) {
       // Get message from the message queue
-      BOOL result = GetMessage(&msg, nullptr, 0, 0);
+      BOOL result = messages.Next(&msg);
 
       if (result == -1) {
         // Error occurred
