@@ -516,6 +516,7 @@ class Menu::Impl {
   NSMenu* ns_menu_;
   NSMenuDelegateImpl* delegate_;
   std::vector<std::shared_ptr<MenuItem>> items_;
+  std::shared_ptr<uint64_t> open_generation_ = std::make_shared<uint64_t>(0);
 
   Impl(MenuId id, NSMenu* menu)
       : id_(id), ns_menu_(menu), delegate_([[NSMenuDelegateImpl alloc] init]) {
@@ -525,6 +526,7 @@ class Menu::Impl {
   }
 
   ~Impl() {
+    ++*open_generation_;
     // First, remove delegate to prevent callbacks during cleanup
     if (delegate_) {
       // Clean up blocks first
@@ -778,9 +780,15 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
 
   // Use dispatch to ensure menu popup happens on the main run loop
   // Show the menu using screen coordinates (inView:nil)
+  // Keep only the platform menu and cancellation token in the queued block.
+  // Close/destruction can invalidate a pending popup without a dangling `this`.
+  NSMenu* menu = pimpl_->ns_menu_;
+  auto generation = pimpl_->open_generation_;
+  const uint64_t token = ++*generation;
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
-      [pimpl_->ns_menu_ popUpMenuPositioningItem:nil atLocation:point inView:nil];
+      if (*generation != token) return;
+      [menu popUpMenuPositioningItem:nil atLocation:point inView:nil];
     }
   });
 
@@ -788,6 +796,7 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
 }
 
 bool Menu::Close() {
+  ++*pimpl_->open_generation_;
   [pimpl_->ns_menu_ cancelTracking];
   return true;
 }
