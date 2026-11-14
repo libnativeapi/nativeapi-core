@@ -393,6 +393,8 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(window_shadow_remap_linux_test window_shadow_remap_linux_test.cpp)
   target_link_libraries(window_shadow_remap_linux_test PRIVATE nativeapi)
+  add_executable(window_shadow_visual_linux_test window_shadow_visual_linux_test.cpp)
+  target_link_libraries(window_shadow_visual_linux_test PRIVATE nativeapi Xext)
   # Real GTK helper/backend regression; skips when no display is available.
   # Build the internal helper in one translation unit so its GDK writes can be
   # counted without changing or interposing the public nativeapi library.

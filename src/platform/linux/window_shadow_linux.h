@@ -57,6 +57,10 @@ struct State {
   int margin = ReservedMargin();
   std::shared_ptr<WindowShadow> custom;
   bool enabled = true;
+  // A realized host's visual cannot be replaced without destroying its native
+  // surface (and e.g. Flutter's GL resources). RGB hosts retain the requested
+  // policy, but cannot reserve or paint a translucent client shadow.
+  bool translucent = false;
   // The window manager's states say fitted: nothing is painted in the gutter.
   bool fitted = false;
   // The surface carries the gutter, in the GTK decoration or the fallback border.
@@ -115,6 +119,7 @@ inline bool SurfaceSizedByWindowManager(GtkWidget* widget, State* state) {
          (width != state->surface_width || height != state->surface_height);
 }
 inline void SetGutter(GtkWidget* widget, State* state, bool gutter) {
+  gutter = gutter && state->translucent;
   const bool gtk_gutter = GtkOwnsGutter(widget);
   if (state->gutter == gutter && state->gtk_gutter == gtk_gutter)
     return;
@@ -149,7 +154,7 @@ inline void Path(cairo_t* cr, State* state, int width, int height) {
 }
 inline gboolean Paint(GtkWidget* widget, cairo_t* cr, gpointer data, bool inside) {
   auto* state = static_cast<State*>(data);
-  if (!state->enabled || state->fitted)
+  if (!state->enabled || !state->translucent || state->fitted)
     return FALSE;
   GtkWidget* child = gtk_bin_get_child(GTK_BIN(widget));
   if (!child)
@@ -262,8 +267,13 @@ inline void Allocated(GtkWidget* widget, GtkAllocation*, gpointer data) {
 constexpr char kGutterStyleClass[] = "nativeapi-shadow-gutter";
 inline bool CanBeTranslucent(GtkWidget* widget) {
   auto* screen = gtk_widget_get_screen(widget);
-  return gdk_screen_is_composited(screen) &&
-         gtk_widget_get_visual(widget) == gdk_screen_get_rgba_visual(screen);
+  auto* rgba = gdk_screen_get_rgba_visual(screen);
+  auto* surface = gtk_widget_get_window(widget);
+  // set_visual() on an already realized widget changes its preference, not the
+  // existing surface. Check the actual backing so it cannot acquire an opaque
+  // gutter even if a host changes that preference too late.
+  auto* visual = surface ? gdk_window_get_visual(surface) : gtk_widget_get_visual(widget);
+  return rgba && gdk_screen_is_composited(screen) && visual == rgba;
 }
 inline void InstallGutterStyle(GtkWidget* widget) {
   static bool installed = false;
@@ -364,6 +374,8 @@ inline void Remove(GtkWidget* widget) {
 // takes no resize afterwards, and a gutter added before would hand the content the
 // whole surface for good.
 inline void AddGutter(GtkWidget* widget, State* state) {
+  if (!state->translucent)
+    return;
   int width = 0, height = 0;
   int x = 0, y = 0;
   gtk_window_get_position(GTK_WINDOW(widget), &x, &y);
@@ -456,6 +468,7 @@ inline State* Ensure(GtkWidget* widget) {
     return nullptr;
   auto* state = new State;
   state->target = widget;
+  state->translucent = CanBeTranslucent(widget);
   // Parent-window drawing is occluded by native GL child windows. A pass-through
   // GTK overlay paints the part of the core shadow inside the content rectangle;
   // the parent paints only the outer gutter, without double compositing.
@@ -465,7 +478,7 @@ inline State* Ensure(GtkWidget* widget) {
   // and on GNOME its window is never shown at all. Such content stays where it
   // is; the parent then paints the whole shadow outside the content.
   auto* content = gtk_bin_get_child(GTK_BIN(widget));
-  if (content && !gtk_widget_get_realized(content)) {
+  if (state->translucent && content && !gtk_widget_get_realized(content)) {
     g_object_ref(content);
     gtk_container_remove(GTK_CONTAINER(widget), content);
     state->overlay = gtk_overlay_new();
@@ -499,7 +512,7 @@ inline State* Ensure(GtkWidget* widget) {
   g_signal_connect(widget, "notify::scale-factor", G_CALLBACK(DeclarationPropertyChanged), state);
   g_signal_connect(widget, "window-state-event", G_CALLBACK(StateChanged), state);
   InstallGutterStyle(widget);
-  if (CanBeTranslucent(widget))
+  if (state->translucent)
     ClearGutterBackground(widget);
   // The gutter belongs to GTK, not the application's render tree. Keeping it
   // reserved while disabled avoids geometry changes when toggling the shadow.
