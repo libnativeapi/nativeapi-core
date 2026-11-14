@@ -1,4 +1,4 @@
-// Menu item clicks must reach their listener before Menu::Open() returns.
+// A window-relative menu keeps its owner active and delivers clicks inside Open().
 //
 // The native Windows backend used to let TrackPopupMenu post WM_COMMAND, which the
 // host's message loop dispatches after Open() has returned; bindings whose callbacks
@@ -12,6 +12,7 @@
 //   menu_click_test pick_top_level   driver clicks "Alpha"
 //   menu_click_test dismiss          driver clicks the window, clear of the menu
 //   menu_click_test pick_submenu     driver opens "More" and clicks "Beta"
+//   menu_click_test close            the app cancels the menu after it opens
 //
 // The driver creates go.flag in the working directory once it has activated the
 // window, so that no activation click can race the menu open.
@@ -52,22 +53,33 @@ bool Check(bool condition, const std::string& what) {
   return condition;
 }
 
+LRESULT CALLBACK TestWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_APP) {
+    auto* menu = reinterpret_cast<Menu*>(lparam);
+    Check(menu->Close(), "Close() cancels the owner's menu loop");
+    return 0;
+  }
+  return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc <= 1) return 0;  // headless: nothing to drive the menu with
   const std::string round = argv[1];
-  if (round != "pick_top_level" && round != "dismiss" && round != "pick_submenu") {
+  if (round != "pick_top_level" && round != "dismiss" && round != "pick_submenu" &&
+      round != "close") {
     std::cerr << "unknown round: " << round << '\n';
     return 2;
   }
 
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   Application::GetInstance();
 
   // A window of our own: the menu behaves like it does in an app only when its owner
   // is the foreground window, and the driver needs something safe to click on.
   WNDCLASSW wc = {};
-  wc.lpfnWndProc = DefWindowProcW;
+  wc.lpfnWndProc = TestWindowProc;
   wc.hInstance = GetModuleHandleW(nullptr);
   wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
@@ -83,6 +95,10 @@ int main(int argc, char** argv) {
   std::cout << "READY" << std::endl;
 
   Menu menu;
+  POINT origin = {};
+  ClientToScreen(host, &origin);
+  const UINT dpi = GetDpiForWindow(host);
+  auto owner = std::make_shared<Window>(host);
   if (!Check(menu.SetBackend(MenuBackend::Native), "native backend selected")) return 1;
   auto alpha = std::make_shared<MenuItem>("Alpha");
   menu.AddItem(alpha);
@@ -101,8 +117,15 @@ int main(int argc, char** argv) {
     ++beta_clicks;
     if (inside_open) ++beta_inside;
   });
-  menu.AddListener<MenuOpenedEvent>([&](const MenuOpenedEvent&) { ++opened; });
+  menu.AddListener<MenuOpenedEvent>([&](const MenuOpenedEvent&) {
+    ++opened;
+    Check(GetForegroundWindow() == host, "owner remains foreground while the menu is open");
+    if (round == "close") PostMessageW(host, WM_APP, 0, reinterpret_cast<LPARAM>(&menu));
+  });
   menu.AddListener<MenuClosedEvent>([&](const MenuClosedEvent&) { ++closed; });
+  int submenu_opened = 0, submenu_closed = 0;
+  submenu->AddListener<MenuOpenedEvent>([&](const MenuOpenedEvent&) { ++submenu_opened; });
+  submenu->AddListener<MenuClosedEvent>([&](const MenuClosedEvent&) { ++submenu_closed; });
 
   // Wait for the driver's go flag; it activates the window first.
   const ULONGLONG deadline = GetTickCount64() + 60000;
@@ -118,19 +141,23 @@ int main(int argc, char** argv) {
   if (!Check(foreground, "test window is in the foreground")) return 1;
 
   inside_open = true;
-  const bool returned = menu.Open(PositioningStrategy::Absolute({300, 300}));
+  const double scale = static_cast<double>(dpi) / 96.0;
+  const bool returned = menu.Open(
+      PositioningStrategy::Relative(owner, {(300 - origin.x) / scale, (300 - origin.y) / scale}));
   inside_open = false;
 
   Check(returned, "Open() reported success");
   Check(opened == 1 && closed == 1, "one opened and one closed event");
+  Check(GetForegroundWindow() == host, "owner remains foreground after the menu closes");
   if (round == "pick_top_level") {
     Check(alpha_inside == 1, "the click reached the listener before Open() returned");
     Check(beta_clicks == 0, "no other item fired");
   } else if (round == "pick_submenu") {
+    Check(submenu_opened == 1 && submenu_closed == 1, "one submenu opened and closed event");
     Check(beta_inside == 1, "the submenu click reached the listener before Open() returned");
     Check(alpha_clicks == 0, "no other item fired");
   } else {
-    Check(alpha_clicks == 0 && beta_clicks == 0, "dismissing fires no click");
+    Check(alpha_clicks == 0 && beta_clicks == 0, "closing without a selection fires no click");
   }
 
   const int before = alpha_clicks + beta_clicks;
