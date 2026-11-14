@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -21,6 +22,20 @@
 namespace nativeapi {
 
 namespace {
+
+// Menu and submenu listeners are registered on the dispatcher window. Relay
+// lifecycle messages there while Windows tracks a popup for an app window.
+LRESULT CALLBACK ForwardPopupLifecycle(HWND hwnd,
+                                       UINT message,
+                                       WPARAM wparam,
+                                       LPARAM lparam,
+                                       UINT_PTR,
+                                       DWORD_PTR dispatcher) {
+  if (message == WM_INITMENUPOPUP || message == WM_UNINITMENUPOPUP) {
+    SendMessageW(reinterpret_cast<HWND>(dispatcher), message, wparam, lparam);
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
+}
 
 // Classic popup menus require the undocumented UxTheme dark-mode opt-in; DWM's
 // title-bar setting does not affect them. Resolve it only on Windows 10 1903+
@@ -617,6 +632,7 @@ class Menu::Impl {
 #endif
   bool wraps_native_ = false;
   bool opening_ = false;
+  HWND popup_owner_ = nullptr;
   // Set from WM_INITMENUPOPUP: the popup really appeared on screen.
   bool shown_ = false;
 #ifdef NATIVEAPI_ENABLE_WINUI3
@@ -934,8 +950,13 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
   }
 #endif
 
-  // Set the host window as foreground to ensure menu can be displayed
-  SetForegroundWindow(host_window);
+  // A window-relative popup belongs to that window. Making the message-only
+  // dispatcher foreground would deactivate the app throughout menu tracking.
+  HWND owner = host_window;
+  if (const auto& window = strategy.GetRelativeWindow()) {
+    owner = GetAncestor(static_cast<HWND>(window->GetNativeObject()), GA_ROOT);
+    if (!owner || GetForegroundWindow() != owner) return false;
+  }
 
   // Determine alignment flags based on placement (both axes)
   // Horizontal:  TPM_LEFTALIGN | TPM_CENTERALIGN | TPM_RIGHTALIGN
@@ -980,7 +1001,7 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
       break;
   }
 
-  // Show the context menu using the host window
+  // Show the context menu using its owner.
   // Note: TrackPopupMenu is a blocking call
   // - WM_INITMENUPOPUP is sent when the menu opens (triggers MenuOpenedEvent)
   // - WM_UNINITMENUPOPUP is sent when the menu closes (triggers
@@ -992,16 +1013,30 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
   // NativeCallable.isolateLocal) then abort with "Cannot invoke native
   // callback outside an isolate". Emitting the click here, before Open()
   // returns, keeps every menu event inside the Open() call.
+  if (owner != host_window) {
+    DWORD_PTR existing = 0;
+    if (GetWindowSubclass(owner, ForwardPopupLifecycle, 0, &existing) ||
+        !SetWindowSubclass(owner, ForwardPopupLifecycle, 0,
+                           reinterpret_cast<DWORD_PTR>(host_window))) {
+      return false;
+    }
+  } else {
+    // Ownerless popups (including tray menus) still use the dispatcher.
+    SetForegroundWindow(host_window);
+  }
   pimpl_->opening_ = true;
+  pimpl_->popup_owner_ = owner;
   pimpl_->shown_ = false;
   UINT cmd;
   {
     // Scope the process-wide opt-in to the native modal menu loop and restore
     // the embedding application's policy before dispatching its click callback.
-    MenuThemeScope theme(host_window);
+    MenuThemeScope theme(owner);
     cmd = static_cast<UINT>(TrackPopupMenu(
-        pimpl_->hmenu_, uFlags | TPM_RETURNCMD, pt.x, pt.y, 0, host_window, nullptr));
+        pimpl_->hmenu_, uFlags | TPM_RETURNCMD, pt.x, pt.y, 0, owner, nullptr));
   }
+  if (owner != host_window && IsWindow(owner)) RemoveWindowSubclass(owner, ForwardPopupLifecycle, 0);
+  pimpl_->popup_owner_ = nullptr;
   pimpl_->opening_ = false;
   // With TPM_RETURNCMD, 0 means "dismissed without a pick" or "failed".
   // WM_INITMENUPOPUP tells them apart: a menu that never appeared is a failure.
@@ -1038,14 +1073,10 @@ bool Menu::Close() {
 #ifdef NATIVEAPI_ENABLE_WINUI3
   if (pimpl_->modern_session_) return pimpl_->modern_session_->Close();
 #endif
-  // Send WM_CANCELMODE to close any open menus
-  HWND host_window = WindowMessageDispatcher::GetInstance().GetHostWindow();
-  if (host_window) {
-    // This will close the menu and trigger WM_UNINITMENUPOPUP
-    SendMessage(host_window, WM_CANCELMODE, 0, 0);
-    return true;
-  }
-  return false;
+  if (!IsWindow(pimpl_->popup_owner_)) return false;
+  // Cancel the active loop on the same window that owns it.
+  SendMessageW(pimpl_->popup_owner_, WM_CANCELMODE, 0, 0);
+  return true;
 }
 
 void* Menu::GetNativeObjectInternal() const {
