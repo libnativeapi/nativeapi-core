@@ -863,13 +863,32 @@ static LRESULT WindowLifetimeMessage(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 #endif
   return DefSubclassProc(hwnd, message, wp, lp);
 }
-// Returns true the first time, when the HWND was not tracked yet.
+// Returns true only when this call installs tracking on the HWND's own thread.
 static bool TrackWindowLifetime(HWND hwnd, WindowId id) {
+  DWORD process = 0;
+  const DWORD thread = GetWindowThreadProcessId(hwnd, &process);
+  if (!thread || process != GetCurrentProcessId()) return false;
+  if (thread != GetCurrentThreadId()) {
+    // WinEvent callbacks may wrap a COM dialog while its thread is waiting for
+    // the owner thread during focus initialization. Neither subclass helpers
+    // nor the initial property snapshot may run across that thread boundary:
+    // the snapshot's getters would synchronously wait for the dialog thread.
+    // Do not capture this wrapper; it can be temporary. Recheck HWND identity
+    // before constructing an owner-thread wrapper that installs and seeds once.
+    detail::PostToThread(thread, [hwnd, id, thread] {
+      if (::IsWindow(hwnd) && GetWindowThreadProcessId(hwnd, nullptr) == thread &&
+          reinterpret_cast<uintptr_t>(GetPropW(hwnd, kWindowIdProperty)) == id) {
+        Window window(hwnd);
+      }
+    });
+    return false;
+  }
   DWORD_PTR existing = 0;
   const bool tracked = GetWindowSubclass(hwnd, WindowLifetimeProc,
                                          reinterpret_cast<UINT_PTR>(&WindowLifetimeProc), &existing);
-  SetWindowSubclass(hwnd, WindowLifetimeProc, reinterpret_cast<UINT_PTR>(&WindowLifetimeProc), id);
-  return !tracked;
+  const bool installed = SetWindowSubclass(
+      hwnd, WindowLifetimeProc, reinterpret_cast<UINT_PTR>(&WindowLifetimeProc), id) != FALSE;
+  return installed && !tracked;
 }
 
 // Forward declaration

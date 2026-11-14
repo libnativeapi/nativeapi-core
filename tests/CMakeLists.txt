@@ -51,6 +51,10 @@ add_test(NAME screen_layout_test COMMAND screen_layout_test)
 
 # window_manager#412 / #572 (#75): Maximize() before the first show.
 if(WIN32)
+  add_executable(window_cross_thread_dialog_windows_test window_cross_thread_dialog_windows_test.cpp)
+  target_link_libraries(window_cross_thread_dialog_windows_test PRIVATE nativeapi ole32 uuid)
+  add_test(NAME window_cross_thread_dialog_windows_test COMMAND window_cross_thread_dialog_windows_test)
+  set_tests_properties(window_cross_thread_dialog_windows_test PROPERTIES TIMEOUT 120)
   add_executable(view_update_scheduler_windows_test view_update_scheduler_windows_test.cpp)
   target_link_libraries(view_update_scheduler_windows_test PRIVATE nativeapi)
   add_test(NAME view_update_scheduler_windows_test COMMAND view_update_scheduler_windows_test)
