@@ -354,6 +354,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(window_system_menu_linux_test PRIVATE nativeapi)
   add_executable(window_size_constraints_linux_test window_size_constraints_linux_test.cpp)
   target_link_libraries(window_size_constraints_linux_test PRIVATE nativeapi)
+  add_executable(window_minimum_restore_linux_test window_minimum_restore_linux_test.cpp)
+  target_link_libraries(window_minimum_restore_linux_test PRIVATE nativeapi)
 endif()
 
 if(WIN32)

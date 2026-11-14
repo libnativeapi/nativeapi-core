@@ -771,6 +771,49 @@ static void AllowProgrammaticWindowControl(GtkWidget* widget, GdkWindow* surface
       g_object_ref(object), g_object_unref);
 }
 
+// Let GtkWindow derive its minimum from the child requisition, adding the
+// current CSD extents itself. A surface minimum containing yesterday's shadow
+// margin can constrain a maximize configure and overwrite GDK's restore size.
+// Keep this request on the native window, so temporary wrappers do not clear it.
+struct MinimumSizeRequest {
+  GtkWidget* child = nullptr;
+  int original_width = -1, original_height = -1;
+  int applied_width = -1, applied_height = -1;
+
+  void Reset() {
+    if (!child) return;
+    int width, height;
+    gtk_widget_get_size_request(child, &width, &height);
+    gtk_widget_set_size_request(child,
+        width == applied_width ? original_width : width,
+        height == applied_height ? original_height : height);
+    g_object_remove_weak_pointer(G_OBJECT(child), reinterpret_cast<gpointer*>(&child));
+    child = nullptr;
+  }
+  ~MinimumSizeRequest() { Reset(); }
+
+  void Apply(GtkWidget* target, int width, int height) {
+    if (child != target) {
+      Reset();
+      child = target;
+      g_object_add_weak_pointer(G_OBJECT(child), reinterpret_cast<gpointer*>(&child));
+      gtk_widget_get_size_request(child, &original_width, &original_height);
+      applied_width = original_width;
+      applied_height = original_height;
+    }
+    int current_width, current_height;
+    gtk_widget_get_size_request(child, &current_width, &current_height);
+    // Preserve size requests installed by the host after ours as well.
+    if (current_width != applied_width) original_width = current_width;
+    if (current_height != applied_height) original_height = current_height;
+    applied_width = std::max(original_width, width);
+    applied_height = std::max(original_height, height);
+    if (current_width != applied_width || current_height != applied_height)
+      gtk_widget_set_size_request(child, applied_width, applied_height);
+  }
+};
+constexpr char kMinimumSizeRequest[] = "NativeAPIMinimumSizeRequest";
+
 // Private implementation class
 class Window::Impl {
  public:
@@ -823,7 +866,8 @@ class Window::Impl {
     auto dimension = [](double value, int offset) {
       return static_cast<gint>(std::clamp(value + offset, 1.0, static_cast<double>(G_MAXINT)));
     };
-    if (minimum_size_.width > 0 || minimum_size_.height > 0) {
+    minimum_via_child_ = UpdateMinimumSizeRequest();
+    if (!minimum_via_child_ && (minimum_size_.width > 0 || minimum_size_.height > 0)) {
       geometry.min_width =
           minimum_size_.width > 0 ? dimension(minimum_size_.width, hint_width_offset_) : 0;
       geometry.min_height =
@@ -851,6 +895,31 @@ class Window::Impl {
     } else if (gdk_window_) {
       gdk_window_set_geometry_hints(gdk_window_, &geometry, static_cast<GdkWindowHints>(flags));
     }
+  }
+
+  bool UpdateMinimumSizeRequest() {
+    if (!widget_ || !GTK_IS_WINDOW(widget_)) return false;
+    auto* request = static_cast<MinimumSizeRequest*>(
+        g_object_get_data(G_OBJECT(widget_), kMinimumSizeRequest));
+    auto* child = gtk_bin_get_child(GTK_BIN(widget_));
+    if (!child || (minimum_size_.width <= 0 && minimum_size_.height <= 0)) {
+      if (request) g_object_set_data(G_OBJECT(widget_), kMinimumSizeRequest, nullptr);
+      return false;
+    }
+    if (!request) {
+      request = new MinimumSizeRequest;
+      g_object_set_data_full(G_OBJECT(widget_), kMinimumSizeRequest, request,
+                            +[](gpointer data) { delete static_cast<MinimumSizeRequest*>(data); });
+    }
+    const Layout layout = GetLayout(widget_, gdk_window_);
+    const auto content_minimum = [](double value, int decorations) {
+      return value > 0 ? static_cast<int>(std::clamp(value - decorations, 1.0,
+                                                    static_cast<double>(G_MAXINT))) : -1;
+    };
+    request->Apply(child,
+        content_minimum(minimum_size_.width, layout.frame.width - layout.content.width),
+        content_minimum(minimum_size_.height, layout.frame.height - layout.content.height));
+    return true;
   }
 
   void ScheduleGeometryHints() {
@@ -898,7 +967,9 @@ class Window::Impl {
           (aspect_ratio_ * content_height + (surface_width - layout.content.width)) /
           (content_height + (surface_height - layout.content.height));
     }
-    if (width != hint_width_offset_ || height != hint_height_offset_ ||
+    const bool minimum_via_child = UpdateMinimumSizeRequest();
+    if (minimum_via_child != minimum_via_child_ ||
+        width != hint_width_offset_ || height != hint_height_offset_ ||
         std::abs(surface_aspect_ratio - surface_aspect_ratio_) > 1e-4) {
       hint_width_offset_ = width;
       hint_height_offset_ = height;
@@ -910,6 +981,7 @@ class Window::Impl {
   guint hints_refresh_source_ = 0;
   GtkWidget* hints_widget_ = nullptr;  // Weak; wrapped widgets may die before us.
   Size minimum_size_ = {0, 0};
+  bool minimum_via_child_ = false;
   Size maximum_size_ = {-1, -1};
   int hint_width_offset_ = 0;
   int hint_height_offset_ = 0;
