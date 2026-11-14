@@ -85,11 +85,11 @@ void Inspect(GtkWidget* widget, GtkWidget* content, bool alpha, bool fitted) {
 #endif
   }
   if (!fitted)
-    Check(w == 480 && h == 320, "content remains exactly 480x320");
+    Check(w == 800 && h == 600, "content remains exactly 800x600");
 }
-void Run(bool rgba, bool late_preference = false) {
+void Run(bool rgba, bool late_preference = false, bool before_show = false) {
   std::cout << "CASE rgba=" << rgba << " late_preference=" << late_preference << std::endl;
-  auto* widget = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+  auto* widget = GTK_WIDGET(g_object_new(GTK_TYPE_APPLICATION_WINDOW, nullptr));
   gtk_window_set_title(GTK_WINDOW(widget), "NativeAPI shadow visual regression");
   // Plain Flutter/SSD host, without a header bar selecting an RGBA visual for it.
   gtk_window_set_decorated(GTK_WINDOW(widget), FALSE);
@@ -98,7 +98,7 @@ void Run(bool rgba, bool late_preference = false) {
       widget, rgba ? gdk_screen_get_rgba_visual(screen) : gdk_screen_get_system_visual(screen));
 #ifdef GDK_WINDOWING_WAYLAND
   // Wayland's regular Flutter runner uses CSD. Both visuals are RGBA there.
-  if (GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(widget))) {
+  if (!before_show && GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(widget))) {
     gtk_window_set_decorated(GTK_WINDOW(widget), TRUE);
     gtk_window_set_titlebar(GTK_WINDOW(widget), gtk_header_bar_new());
   }
@@ -111,17 +111,28 @@ void Run(bool rgba, bool late_preference = false) {
                      return TRUE;
                    }),
                    nullptr);
-  gtk_window_set_default_size(GTK_WINDOW(widget), 480, 320);
-  gtk_widget_show_all(widget);
+  gtk_window_set_default_size(GTK_WINDOW(widget), 800, 600);
+  if (before_show) {
+    gtk_widget_show(content);
+    gtk_widget_realize(content);
+  } else {
+    gtk_widget_show_all(widget);
+  }
   Settle();
   auto* original_surface = gtk_widget_get_window(widget);
   if (late_preference)
     gtk_widget_set_visual(widget, gdk_screen_get_rgba_visual(screen));
   nativeapi::Window window(widget);
   window.SetTitleBarStyle(nativeapi::TitleBarStyle::Hidden);
-  gtk_widget_show(widget);
+  window.Show();
   Settle();
-  window.SetContentSize({480, 320});
+  const auto initial = window.GetContentSize();
+  // Hiding an existing CSD header can hand its old height to the content.
+  // This assertion targets the plain host's newly installed shadow border.
+  if (!gtk_style_context_has_class(gtk_widget_get_style_context(widget), "csd"))
+    Check(initial.width == 800 && initial.height == 600,
+          "installing the gutter preserves content before any corrective resize");
+  window.SetSize({800, 600}, false);
   Settle();
   const bool alpha =
       gdk_window_get_visual(gtk_widget_get_window(widget)) == gdk_screen_get_rgba_visual(screen);
@@ -145,10 +156,12 @@ void Run(bool rgba, bool late_preference = false) {
   Settle();
   Check(!window.IsMaximized(), "restore acknowledged");
   Inspect(widget, content, alpha, false);
-  gtk_widget_hide(widget);
-  gtk_widget_show(widget);
-  Settle();
-  Inspect(widget, content, alpha, false);
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    window.Hide();
+    window.Show();
+    Settle();
+    Inspect(widget, content, alpha, false);
+  }
   gtk_widget_destroy(widget);
   Settle();
 }
@@ -165,6 +178,7 @@ int main(int argc, char** argv) {
   Run(false);
   Run(true);
   Run(false, true);
+  Run(true, false, true);
   std::cout << "RESULT failures=" << failures << std::endl;
   return failures ? 1 : 0;
 }

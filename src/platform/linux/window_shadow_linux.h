@@ -218,6 +218,30 @@ inline gboolean DrawOverlay(GtkWidget*, cairo_t* cr, gpointer data) {
 // X11, the xdg_surface window geometry on Wayland). GTK declares its own
 // decoration's extents while allocating the window, so CSD windows reserve the
 // gutter in that decoration instead. Only windows without CSD declare it here.
+inline void DeclareExtents(GdkWindow* window, State* state, int x, int right, int y, int bottom) {
+  if (x < 0 || y < 0 || right < 0 || bottom < 0)
+    return;
+  if (state->declared_window == window && state->declared_left == x &&
+      state->declared_right == right && state->declared_top == y &&
+      state->declared_bottom == bottom)
+    return;
+  state->declared_window = window;
+  state->declared_left = x;
+  state->declared_right = right;
+  state->declared_top = y;
+  state->declared_bottom = bottom;
+  gdk_window_set_shadow_width(window, x, right, y, bottom);
+#ifdef GDK_WINDOWING_WAYLAND
+  if (GDK_IS_WAYLAND_WINDOW(window) && !(gdk_window_get_state(window) & kFittedStates)) {
+    // GTK 3's Wayland backend computes its next-map content size while the
+    // previous shadow margins are still installed. Refresh it with the final
+    // margins, without changing the current surface size, so remapping does
+    // not add the gutter a second time.
+    // A resize while fitted instead overwrites GDK's saved restore dimensions.
+    gdk_window_resize(window, gdk_window_get_width(window), gdk_window_get_height(window));
+  }
+#endif
+}
 inline void DeclareGutter(GtkWidget* widget) {
   auto* state = Get(widget);
   if (!state || GtkOwnsGutter(widget))
@@ -232,18 +256,7 @@ inline void DeclareGutter(GtkWidget* widget) {
                     gtk_widget_get_allocated_width(child);
   const int bottom = gtk_widget_get_allocated_height(widget) - y -
                      gtk_widget_get_allocated_height(child);
-  if (x < 0 || y < 0 || right < 0 || bottom < 0)
-    return;
-  if (state->declared_window == window && state->declared_left == x &&
-      state->declared_right == right && state->declared_top == y &&
-      state->declared_bottom == bottom)
-    return;
-  state->declared_window = window;
-  state->declared_left = x;
-  state->declared_right = right;
-  state->declared_top = y;
-  state->declared_bottom = bottom;
-  gdk_window_set_shadow_width(window, x, right, y, bottom);
+  DeclareExtents(window, state, x, right, y, bottom);
 }
 inline void InvalidateDeclaration(GtkWidget*, gpointer data) {
   static_cast<State*>(data)->declared_window = nullptr;
@@ -394,6 +407,19 @@ inline void AddGutter(GtkWidget* widget, State* state) {
     return;
   }
   const int extra = state->margin - state->original_border;
+  // Publish the new frame extents before requesting the enlarged surface.
+  // Otherwise KWin first treats that resize as a larger client rectangle and
+  // then grows it again when _GTK_FRAME_EXTENTS arrives from size-allocate.
+  auto* surface = gtk_widget_get_window(widget);
+  auto* child = gtk_bin_get_child(GTK_BIN(widget));
+  int left = 0, top = 0;
+  if (surface && child && gtk_widget_translate_coordinates(child, widget, 0, 0, &left, &top)) {
+    const int right =
+        gtk_widget_get_allocated_width(widget) - left - gtk_widget_get_allocated_width(child);
+    const int bottom =
+        gtk_widget_get_allocated_height(widget) - top - gtk_widget_get_allocated_height(child);
+    DeclareExtents(surface, state, left + extra, right + extra, top + extra, bottom + extra);
+  }
   NoteRequestedSize(widget, width + extra * 2, height + extra * 2);
   gtk_window_resize(GTK_WINDOW(widget), width + extra * 2, height + extra * 2);
   gtk_window_move(GTK_WINDOW(widget), x - extra, y - extra);
