@@ -60,8 +60,10 @@ class View::Impl {
   void RequestLayout();
   /// The top of this view's tree (itself when detached).
   View* Root() const;
-  /// Called by the platform when the native frame of a root view changed.
+  /// Called by the platform when the native frame of an observed view changed.
   void OnNativeResized();
+  /// Emits ViewResizedEvent when event listening is active and size changed.
+  void EmitResizedIfNeeded();
   bool PostUpdate();
   bool DeliverUpdate(uint64_t generation);
   /// Marks `view` as a window's root: it wraps the window's content view,
@@ -120,6 +122,9 @@ class View::Impl {
   mutable uint64_t measured_pass = 0;
   Color background_color{0, 0, 0, 0};
   std::optional<std::string> tooltip;
+  std::optional<std::string> accessibility_label;
+  bool listening_events = false;
+  Size last_emitted_size{-1.0, -1.0};
 
   // ---- platform seam ----
 
@@ -148,6 +153,7 @@ class View::Impl {
   bool IsNativeEnabled() const;
   void SetNativeBackgroundColor(Color color);
   void SetNativeTooltip(const std::optional<std::string>& tooltip);
+  void SetNativeAccessibilityLabel(const std::optional<std::string>& label);
   void NativeFocus();
   void NativeBlur();
   bool IsNativeFocused() const;

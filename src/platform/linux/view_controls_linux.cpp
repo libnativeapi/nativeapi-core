@@ -2,6 +2,7 @@
 
 #include "../../view.h"
 
+#include <algorithm>
 #include <string>
 
 #include "view_internal_linux.h"
@@ -43,6 +44,7 @@ GtkWidget* MakeEntry(const std::string& text, const Platform* platform) {
     return nullptr;
   }
   gtk_entry_set_text(GTK_ENTRY(entry), text.c_str());
+  gtk_entry_set_has_frame(GTK_ENTRY(entry), (!platform || platform->bordered) ? TRUE : FALSE);
   if (platform) {
     gtk_entry_set_visibility(GTK_ENTRY(entry), platform->secure ? FALSE : TRUE);
     gtk_entry_set_input_purpose(GTK_ENTRY(entry), platform->secure ? GTK_INPUT_PURPOSE_PASSWORD
@@ -55,29 +57,31 @@ GtkWidget* MakeEntry(const std::string& text, const Platform* platform) {
   return entry;
 }
 
-/// A multi-line field: a GtkTextView in a GtkScrolledWindow. The scrolled
-/// window is the view's widget; the text view is handed back through
-/// `text_view`.
+/// A multi-line field: a GtkTextView in a GtkScrolledWindow wrapped by a
+/// GtkOverlay so a pass-through label can render its placeholder text.
 GtkWidget* MakeTextView(const std::string& text,
                         const Platform& platform,
-                        GtkTextView** text_view) {
+                        GtkTextView** text_view,
+                        GtkLabel** placeholder_label) {
   *text_view = nullptr;
+  *placeholder_label = nullptr;
+  GtkWidget* overlay = gtk_overlay_new();
   GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
   GtkWidget* view = gtk_text_view_new();
-  if (!scrolled || !view) {
-    if (scrolled) {
-      g_object_ref_sink(scrolled);
-      g_object_unref(scrolled);
-    }
-    if (view) {
-      g_object_ref_sink(view);
-      g_object_unref(view);
+  GtkWidget* label = gtk_label_new(platform.placeholder ? platform.placeholder->c_str() : "");
+  if (!overlay || !scrolled || !view || !label) {
+    for (GtkWidget* candidate : {overlay, scrolled, view, label}) {
+      if (candidate) {
+        g_object_ref_sink(candidate);
+        g_object_unref(candidate);
+      }
     }
     return nullptr;
   }
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC,
                                  GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled), GTK_SHADOW_IN);
+  gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled),
+                                      platform.bordered ? GTK_SHADOW_IN : GTK_SHADOW_NONE);
   gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
   gtk_text_view_set_editable(GTK_TEXT_VIEW(view), platform.editable ? TRUE : FALSE);
   gtk_text_view_set_justification(GTK_TEXT_VIEW(view), ToGtkJustification(platform.text_alignment));
@@ -87,14 +91,29 @@ GtkWidget* MakeTextView(const std::string& text,
   }
   gtk_container_add(GTK_CONTAINER(scrolled), view);
   gtk_widget_show(view);
+  gtk_widget_show(scrolled);
+
+  gtk_label_set_xalign(GTK_LABEL(label), ToGtkXAlign(platform.text_alignment));
+  gtk_widget_set_halign(label, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(label, GTK_ALIGN_START);
+  gtk_widget_set_margin_start(label, platform.bordered ? 6 : 0);
+  gtk_widget_set_margin_end(label, platform.bordered ? 6 : 0);
+  gtk_widget_set_margin_top(label, platform.bordered ? 4 : 0);
+  gtk_style_context_add_class(gtk_widget_get_style_context(label), "dim-label");
+
+  gtk_container_add(GTK_CONTAINER(overlay), scrolled);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), label);
+  gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), label, TRUE);
+
   *text_view = GTK_TEXT_VIEW(view);
-  return scrolled;
+  *placeholder_label = GTK_LABEL(label);
+  return overlay;
 }
 
 // The text properties shared by Label and TextField.
 
 void SetFieldTextColor(Impl& impl, Color color) {
-  if (!impl.platform->widget) {
+  if (!impl.platform->widget || impl.platform->text_color.ToRGBA() == color.ToRGBA()) {
     return;
   }
   impl.platform->text_color = color;
@@ -102,10 +121,30 @@ void SetFieldTextColor(Impl& impl, Color color) {
 }
 
 void SetFieldFontSize(Impl& impl, double size) {
-  if (!impl.platform->widget) {
+  const double clamped = size < 0 ? 0 : size;
+  if (!impl.platform->widget || impl.platform->font_size == clamped) {
     return;
   }
-  impl.platform->font_size = size < 0 ? 0 : size;
+  impl.platform->font_size = clamped;
+  impl.platform->ApplyCss();
+  impl.InvalidateIntrinsicSize();
+}
+
+void SetControlFontFamily(Impl& impl, const std::optional<std::string>& family) {
+  if (!impl.platform->widget || impl.platform->font_family == family) {
+    return;
+  }
+  impl.platform->font_family = family;
+  impl.platform->ApplyCss();
+  impl.InvalidateIntrinsicSize();
+}
+
+void SetControlFontWeight(Impl& impl, int weight) {
+  const int clamped = weight <= 0 ? 0 : std::clamp(weight, 100, 900);
+  if (!impl.platform->widget || impl.platform->font_weight == clamped) {
+    return;
+  }
+  impl.platform->font_weight = clamped;
   impl.platform->ApplyCss();
   impl.InvalidateIntrinsicSize();
 }
@@ -152,6 +191,22 @@ double Label::GetFontSize() const {
   return pimpl_->platform->font_size;
 }
 
+void Label::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> Label::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void Label::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int Label::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 void Label::SetTextAlignment(TextAlignment alignment) {
   GtkWidget* widget = pimpl_->platform->widget;
   if (!widget || !GTK_IS_LABEL(widget)) {
@@ -192,6 +247,30 @@ std::string Button::GetText() const {
   return text ? text : "";
 }
 
+void Button::SetFontSize(double size) {
+  SetFieldFontSize(*pimpl_, size);
+}
+
+double Button::GetFontSize() const {
+  return pimpl_->platform->font_size;
+}
+
+void Button::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> Button::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void Button::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int Button::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 // ---------------------------------------------------------------------------
 // TextField
 // ---------------------------------------------------------------------------
@@ -200,7 +279,7 @@ TextField::TextField(const std::string& text) : View(Adopt(MakeEntry(text, nullp
 
 void TextField::SetText(const std::string& text) {
   auto& platform = *pimpl_->platform;
-  if (!platform.widget) {
+  if (!platform.widget || ReadWidgetText(platform.widget, platform.text_view) == text) {
     return;
   }
   // A programmatic change is not user input: hold the "changed" signals back.
@@ -237,11 +316,30 @@ double TextField::GetFontSize() const {
   return pimpl_->platform->font_size;
 }
 
+void TextField::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> TextField::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void TextField::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int TextField::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 void TextField::SetTextAlignment(TextAlignment alignment) {
   auto& platform = *pimpl_->platform;
   platform.text_alignment = alignment;
   if (platform.text_view) {
     gtk_text_view_set_justification(platform.text_view, ToGtkJustification(alignment));
+    if (platform.placeholder_label) {
+      gtk_label_set_xalign(platform.placeholder_label, ToGtkXAlign(alignment));
+    }
   } else if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
     gtk_entry_set_alignment(GTK_ENTRY(platform.widget), ToGtkXAlign(alignment));
   }
@@ -253,10 +351,13 @@ TextAlignment TextField::GetTextAlignment() const {
 
 void TextField::SetPlaceholder(const std::optional<std::string>& placeholder) {
   auto& platform = *pimpl_->platform;
+  if (platform.placeholder == placeholder) {
+    return;
+  }
   platform.placeholder = placeholder;
-  // GtkTextView has no placeholder: a multi-line field only remembers it, for
-  // the entry it turns back into.
-  if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
+  if (platform.placeholder_label) {
+    platform.SyncPlaceholderVisibility();
+  } else if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
     gtk_entry_set_placeholder_text(GTK_ENTRY(platform.widget),
                                    placeholder ? placeholder->c_str() : nullptr);
   }
@@ -308,8 +409,9 @@ void TextField::SetMultiline(bool is_multiline) {
   const std::string text = ReadWidgetText(platform.widget, platform.text_view);
   GtkWidget* replacement = nullptr;
   GtkTextView* replacement_text_view = nullptr;
+  GtkLabel* replacement_placeholder = nullptr;
   if (is_multiline) {
-    replacement = MakeTextView(text, platform, &replacement_text_view);
+    replacement = MakeTextView(text, platform, &replacement_text_view, &replacement_placeholder);
   } else {
     replacement = MakeEntry(text, &platform);
   }
@@ -317,12 +419,41 @@ void TextField::SetMultiline(bool is_multiline) {
     return;
   }
   platform.multiline = is_multiline;
-  platform.ReplaceWidget(replacement, replacement_text_view);
+  platform.ReplaceWidget(replacement, replacement_text_view, replacement_placeholder);
   pimpl_->InvalidateIntrinsicSize();
 }
 
 bool TextField::IsMultiline() const {
   return pimpl_->platform->multiline;
+}
+
+void TextField::SetBordered(bool is_bordered) {
+  auto& platform = *pimpl_->platform;
+  if (platform.bordered == is_bordered) {
+    return;
+  }
+  platform.bordered = is_bordered;
+  if (platform.text_view && platform.widget && GTK_IS_BIN(platform.widget)) {
+    GtkWidget* scrolled = gtk_bin_get_child(GTK_BIN(platform.widget));
+    if (scrolled && GTK_IS_SCROLLED_WINDOW(scrolled)) {
+      gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled),
+                                          is_bordered ? GTK_SHADOW_IN : GTK_SHADOW_NONE);
+    }
+    if (platform.placeholder_label) {
+      GtkWidget* lbl = GTK_WIDGET(platform.placeholder_label);
+      gtk_widget_set_margin_start(lbl, is_bordered ? 6 : 0);
+      gtk_widget_set_margin_end(lbl, is_bordered ? 6 : 0);
+      gtk_widget_set_margin_top(lbl, is_bordered ? 4 : 0);
+    }
+  } else if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
+    gtk_entry_set_has_frame(GTK_ENTRY(platform.widget), is_bordered ? TRUE : FALSE);
+  }
+  platform.ApplyCss();
+  pimpl_->InvalidateIntrinsicSize();
+}
+
+bool TextField::IsBordered() const {
+  return pimpl_->platform->bordered;
 }
 
 // ---------------------------------------------------------------------------

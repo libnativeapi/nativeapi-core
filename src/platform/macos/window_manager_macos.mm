@@ -1,6 +1,7 @@
 #include "../../window_close_dispatch.h"
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -49,6 +50,8 @@ class WindowManager::Impl {
   std::unordered_map<WindowId, bool> maximized_;
   // Last top-left corner seen per window, to notice moves that come as resizes
   std::unordered_map<WindowId, Point> positions_;
+  // Last backing scale factor reported per window
+  std::unordered_map<WindowId, double> scale_factors_;
   // Windows seen on screen, which is what WindowCreatedEvent and
   // WindowClosedEvent are about
   std::unordered_set<WindowId> shown_;
@@ -198,6 +201,13 @@ static void NativeAPIInstallNSWindowWillHideSwizzleOnce() {
   }
 }
 
+- (void)windowDidChangeBackingProperties:(NSNotification*)notification {
+  NSWindow* window = [notification object];
+  if (_impl && window && nativeapi::g_window_event_trampoline) {
+    nativeapi::g_window_event_trampoline(_impl, window, "scale_factor_changed");
+  }
+}
+
 - (void)windowDidEnterFullScreen:(NSNotification*)notification {
   NSWindow* window = [notification object];
   if (_impl && window && nativeapi::g_window_event_trampoline) {
@@ -296,6 +306,10 @@ void WindowManager::Impl::StartEventListening() {
                    name:NSWindowDidMoveNotification
                  object:nil];
     [center addObserver:delegate_
+               selector:@selector(windowDidChangeBackingProperties:)
+                   name:NSWindowDidChangeBackingPropertiesNotification
+                 object:nil];
+    [center addObserver:delegate_
                selector:@selector(windowDidEnterFullScreen:)
                    name:NSWindowDidEnterFullScreenNotification
                  object:nil];
@@ -325,6 +339,8 @@ void WindowManager::Impl::StartEventListening() {
                           !([window styleMask] & NSWindowStyleMaskFullScreen);
           const auto top_left = NSRectExt::topLeft([window frame]);
           positions_[id] = {top_left.x, top_left.y};
+          const double scale = [window backingScaleFactor];
+          scale_factors_[id] = scale > 0.0 ? scale : 1.0;
         }
       }
       if ([window isVisible]) {
@@ -354,6 +370,7 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
       WindowId closing_id = [existing_id unsignedLongLongValue];
       maximized_.erase(closing_id);
       positions_.erase(closing_id);
+      scale_factors_.erase(closing_id);
       if (shown_.erase(closing_id) > 0) {
         WindowClosedEvent event(closing_id);
         manager_->DispatchWindowEvent(event);
@@ -401,6 +418,10 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
     // Seed the corner while the frame is still the old one; see "resized".
     CGPoint top_left = NSRectExt::topLeft([window frame]);
     positions_.try_emplace(window_id, Point{top_left.x, top_left.y});
+  }
+  if (event_type != "scale_factor_changed") {
+    const double scale = [window backingScaleFactor];
+    scale_factors_.try_emplace(window_id, scale > 0.0 ? scale : 1.0);
   }
 
   if (event_type == "focused") {
@@ -466,6 +487,15 @@ void WindowManager::Impl::OnWindowEvent(NSWindow* window, const std::string& eve
     positions_[window_id] = new_position;
     WindowMovedEvent event(window_id, new_position);
     manager_->DispatchWindowEvent(event);
+  } else if (event_type == "scale_factor_changed") {
+    const double raw_scale = [window backingScaleFactor];
+    const double scale = raw_scale > 0.0 ? raw_scale : 1.0;
+    auto it = scale_factors_.find(window_id);
+    if (it == scale_factors_.end() || std::abs(it->second - scale) > 1e-6) {
+      scale_factors_[window_id] = scale;
+      WindowScaleFactorChangedEvent event(window_id, scale);
+      manager_->DispatchWindowEvent(event);
+    }
   }
 }
 

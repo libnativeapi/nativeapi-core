@@ -1936,6 +1936,11 @@ bool to_c_window_event(const nativeapi::WindowEvent& event, native_window_event_
     (void)typed;
     return true;
   }
+  if (const auto* typed = dynamic_cast<const nativeapi::WindowScaleFactorChangedEvent*>(&event)) {
+    out->type = NATIVE_WINDOW_EVENT_TYPE_SCALE_FACTOR_CHANGED;
+    out->data.scale_factor_changed.scale_factor = typed->GetScaleFactor();
+    return true;
+  }
   return false;
 }
 

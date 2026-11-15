@@ -83,11 +83,15 @@ struct View::Impl::Platform {
   // zero size can restore it.
   Color text_color{0, 0, 0, 0};
   double font_size = 0.0;
+  std::optional<std::string> font_family;
+  int font_weight = 0;
   TextAlignment text_alignment = TextAlignment::Start;
   std::optional<std::string> placeholder;
   bool editable = true;
   bool secure = false;
   bool multiline = false;
+  bool bordered = true;
+  bool has_acc_name = false;
   /// Set around a programmatic WM_SETTEXT so EN_CHANGE does not become a
   /// TextFieldChangedEvent.
   bool suppress_change = false;

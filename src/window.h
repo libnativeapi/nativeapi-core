@@ -2619,4 +2619,35 @@ class WindowUndockedEvent : public WindowEvent {
   std::string GetTypeName() const override { return "WindowUndockedEvent"; }
 };
 
+/**
+ * Event class for a change of the window's backing pixel scale factor.
+ *
+ * Emitted when the window moves to a display with a different DPI or when the
+ * operating system changes the display scale factor of the window's screen.
+ *
+ * @note Platform availability:
+ * - macOS: ✅ Supported - NSWindowDidChangeBackingPropertiesNotification
+ * - Windows: ✅ Supported - WM_DPICHANGED and per-window DPI changes
+ * - Linux: ✅ Supported - GtkWidget scale-factor notifications
+ * - Android: ❌ Not applicable - Never emitted
+ * - iOS: ❌ Not applicable - Never emitted
+ * - OpenHarmony: ✅ Supported - Window density and geometry notifications
+ */
+class WindowScaleFactorChangedEvent : public WindowEvent {
+ public:
+  WindowScaleFactorChangedEvent(WindowId window_id, double scale_factor)
+      : WindowEvent(window_id), scale_factor_(scale_factor) {}
+
+  /**
+   * @brief Gets the window's new backing scale factor (1.0 at standard DPI).
+   * @return The new scale factor.
+   */
+  double GetScaleFactor() const { return scale_factor_; }
+
+  std::string GetTypeName() const override { return "WindowScaleFactorChangedEvent"; }
+
+ private:
+  double scale_factor_;
+};
+
 }  // namespace nativeapi

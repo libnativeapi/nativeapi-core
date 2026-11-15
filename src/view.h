@@ -201,6 +201,26 @@ class ViewUpdatingEvent : public ViewEvent {
   std::string GetTypeName() const override { return "ViewUpdatingEvent"; }
 };
 
+/**
+ * @brief A view's frame size changed after native layout or allocation.
+ *
+ * On a window's root view, emitted after any Row or Column subview layout pass
+ * triggered by the resize has completed, so listeners reading GetFrame() on
+ * subviews observe updated geometry.
+ */
+class ViewResizedEvent : public ViewEvent {
+ public:
+  ViewResizedEvent(ViewId view_id, Size new_size)
+      : ViewEvent(view_id), new_size_(new_size) {}
+
+  Size GetNewSize() const { return new_size_; }
+
+  std::string GetTypeName() const override { return "ViewResizedEvent"; }
+
+ private:
+  Size new_size_;
+};
+
 // ---------------------------------------------------------------------------
 // View: the container and the base of every control
 // ---------------------------------------------------------------------------
@@ -684,6 +704,28 @@ class View : public EventEmitter<ViewEvent>,
   std::optional<std::string> GetTooltip() const;
 
   /**
+   * @brief Sets the accessible name announced by assistive technologies.
+   *
+   * @param label The accessible label, or std::nullopt to restore the control's
+   *        default accessible name.
+   * @note Platform availability:
+   * - macOS: ✅ Native NSAccessibility label.
+   * - Windows: ✅ MSAA / UI Automation accessible name for Win32 and WinUI 3.
+   * - Linux: ✅ ATK accessible object name.
+   * - Android: ❌ Stores the value without applying it.
+   * - iOS: ❌ Stores the value without applying it.
+   * - OpenHarmony: ✅ Native ArkUI NODE_ACCESSIBILITY_TEXT attribute.
+   */
+  void SetAccessibilityLabel(const std::optional<std::string>& label);
+
+  /**
+   * @brief Gets the accessible name set on this view.
+   *
+   * @return The text set by SetAccessibilityLabel(), or std::nullopt.
+   */
+  std::optional<std::string> GetAccessibilityLabel() const;
+
+  /**
    * @brief Gives the view keyboard focus. Ignored for views that cannot take
    * focus, such as a container or a label.
    */
@@ -786,6 +828,36 @@ class Label : public View {
   double GetFontSize() const;
 
   /**
+   * @brief Sets the font family name.
+   *
+   * @param family Family name (for example "Menlo" or "monospace"), or
+   *        std::nullopt to restore the platform UI font.
+   */
+  void SetFontFamily(const std::optional<std::string>& family);
+
+  /**
+   * @brief Gets the font family name.
+   *
+   * @return The family set by SetFontFamily(), or std::nullopt for the default.
+   */
+  std::optional<std::string> GetFontFamily() const;
+
+  /**
+   * @brief Sets the numeric font weight.
+   *
+   * @param weight OpenType/CSS weight in 100..900 (400 regular, 700 bold);
+   *        0 restores the platform default weight.
+   */
+  void SetFontWeight(int weight);
+
+  /**
+   * @brief Gets the numeric font weight.
+   *
+   * @return The weight in 100..900, or 0 while at the platform default.
+   */
+  int GetFontWeight() const;
+
+  /**
    * @brief Sets the horizontal placement of the text.
    *
    * @param alignment Start by default.
@@ -829,6 +901,50 @@ class Button : public View {
    * @return The current title.
    */
   std::string GetText() const;
+
+  /**
+   * @brief Sets the font size.
+   *
+   * @param size Size in points; 0 restores the platform default.
+   */
+  void SetFontSize(double size);
+
+  /**
+   * @brief Gets the font size.
+   *
+   * @return The size in points; 0 while at the platform default.
+   */
+  double GetFontSize() const;
+
+  /**
+   * @brief Sets the font family name.
+   *
+   * @param family Family name (for example "Menlo" or "monospace"), or
+   *        std::nullopt to restore the platform UI font.
+   */
+  void SetFontFamily(const std::optional<std::string>& family);
+
+  /**
+   * @brief Gets the font family name.
+   *
+   * @return The family set by SetFontFamily(), or std::nullopt for the default.
+   */
+  std::optional<std::string> GetFontFamily() const;
+
+  /**
+   * @brief Sets the numeric font weight.
+   *
+   * @param weight OpenType/CSS weight in 100..900 (400 regular, 700 bold);
+   *        0 restores the platform default weight.
+   */
+  void SetFontWeight(int weight);
+
+  /**
+   * @brief Gets the numeric font weight.
+   *
+   * @return The weight in 100..900, or 0 while at the platform default.
+   */
+  int GetFontWeight() const;
 };
 
 /**
@@ -889,6 +1005,36 @@ class TextField : public View {
    * @return The size in points; 0 while at the platform default.
    */
   double GetFontSize() const;
+
+  /**
+   * @brief Sets the font family name.
+   *
+   * @param family Family name (for example "Menlo" or "monospace"), or
+   *        std::nullopt to restore the platform UI font.
+   */
+  void SetFontFamily(const std::optional<std::string>& family);
+
+  /**
+   * @brief Gets the font family name.
+   *
+   * @return The family set by SetFontFamily(), or std::nullopt for the default.
+   */
+  std::optional<std::string> GetFontFamily() const;
+
+  /**
+   * @brief Sets the numeric font weight.
+   *
+   * @param weight OpenType/CSS weight in 100..900 (400 regular, 700 bold);
+   *        0 restores the platform default weight.
+   */
+  void SetFontWeight(int weight);
+
+  /**
+   * @brief Gets the numeric font weight.
+   *
+   * @return The weight in 100..900, or 0 while at the platform default.
+   */
+  int GetFontWeight() const;
 
   /**
    * @brief Sets the horizontal placement of the text.
@@ -965,6 +1111,21 @@ class TextField : public View {
    * @return true after SetMultiline(true).
    */
   bool IsMultiline() const;
+
+  /**
+   * @brief Sets whether the field draws its standard system border and bezel.
+   *
+   * @param is_bordered true for the standard border (the default), false for a
+   *        chromeless field embedded inside custom host drawing.
+   */
+  void SetBordered(bool is_bordered);
+
+  /**
+   * @brief Checks if the field draws its standard system border.
+   *
+   * @return true unless SetBordered(false) was called.
+   */
+  bool IsBordered() const;
 };
 
 /**

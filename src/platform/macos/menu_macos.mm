@@ -31,6 +31,8 @@ typedef void (^MenuClosedBlock)(nativeapi::MenuId menu_id);
 @interface NSMenuDelegateImpl : NSObject <NSMenuDelegate>
 @property(nonatomic, copy) MenuOpenedBlock openedBlock;
 @property(nonatomic, copy) MenuClosedBlock closedBlock;
+@property(nonatomic, assign) BOOL deferClose;
+@property(nonatomic, assign) BOOL pendingClose;
 @end
 
 namespace nativeapi {
@@ -178,12 +180,25 @@ std::pair<NSString*, NSUInteger> ConvertAccelerator(const KeyboardAccelerator& a
     if (!menu)
       return;
 
+    if (_deferClose) {
+      _pendingClose = YES;
+      return;
+    }
+
     if (_closedBlock) {
-      // Get the MenuId from the menu's associated object
+      // AppKit invokes menuDidClose: immediately before sending the chosen
+      // NSMenuItem's action. Deferring to the next main-queue turn ensures
+      // MenuItemClickedEvent arrives before MenuClosedEvent for menu bars and
+      // status items as well.
       NSNumber* menu_id_obj = objc_getAssociatedObject(menu, kMenuIdKey);
       if (menu_id_obj) {
         nativeapi::MenuId menu_id = static_cast<nativeapi::MenuId>([menu_id_obj longValue]);
-        _closedBlock(menu_id);
+        NSMenuDelegateImpl* delegate = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (delegate.closedBlock) {
+            delegate.closedBlock(menu_id);
+          }
+        });
       }
     }
   } @catch (NSException* exception) {
@@ -783,12 +798,22 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
   // Keep only the platform menu and cancellation token in the queued block.
   // Close/destruction can invalidate a pending popup without a dangling `this`.
   NSMenu* menu = pimpl_->ns_menu_;
+  NSMenuDelegateImpl* delegate = pimpl_->delegate_;
+  const MenuId menu_id = pimpl_->id_;
   auto generation = pimpl_->open_generation_;
   const uint64_t token = ++*generation;
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
       if (*generation != token) return;
+      delegate.deferClose = YES;
+      delegate.pendingClose = NO;
       [menu popUpMenuPositioningItem:nil atLocation:point inView:nil];
+      const BOOL shouldEmitClose = delegate.pendingClose;
+      delegate.deferClose = NO;
+      delegate.pendingClose = NO;
+      if (shouldEmitClose && delegate.closedBlock) {
+        delegate.closedBlock(menu_id);
+      }
     }
   });
 

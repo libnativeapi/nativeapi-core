@@ -5,6 +5,17 @@
 
 namespace nativeapi {
 
+// Requests Per-Monitor V2 DPI awareness once per process before any HWND is
+// created. A no-op if the host executable manifest or caller already set DPI
+// awareness.
+inline void EnsureProcessDpiAwareness() {
+  static const bool initialized = [] {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    return true;
+  }();
+  (void)initialized;
+}
+
 // Returns the DPI scale factor for the given window (1.0 at 96 DPI)
 double GetScaleFactorForWindow(HWND hwnd);
 

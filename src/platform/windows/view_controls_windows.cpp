@@ -2,6 +2,7 @@
 
 #include "../../view.h"
 
+#include <algorithm>
 #include <string>
 
 #include "view_internal_windows.h"
@@ -35,7 +36,8 @@ HWND CreateControl(const wchar_t* class_name, DWORD style, DWORD ex_style) {
   if (!host) {
     return nullptr;  // a WS_CHILD needs a parent
   }
-  return CreateWindowExW(ex_style, class_name, L"", WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
+  return CreateWindowExW(ex_style, class_name, L"",
+                         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style, 0, 0, 0, 0,
                          host, nullptr, GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -81,8 +83,15 @@ HWND CreateButtonHwnd(const std::string& text) {
   return hwnd;
 }
 
-HWND CreateEditHwnd(TextAlignment alignment, bool multiline, bool secure, bool editable) {
-  DWORD style = WS_TABSTOP | WS_BORDER | EditAlignmentStyle(alignment);
+HWND CreateEditHwnd(TextAlignment alignment,
+                    bool multiline,
+                    bool secure,
+                    bool editable,
+                    bool bordered) {
+  DWORD style = WS_TABSTOP | EditAlignmentStyle(alignment);
+  if (bordered) {
+    style |= WS_BORDER;
+  }
   if (multiline) {
     style |= ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN;
   } else {
@@ -94,7 +103,11 @@ HWND CreateEditHwnd(TextAlignment alignment, bool multiline, bool secure, bool e
   if (!editable) {
     style |= ES_READONLY;
   }
-  return CreateControl(L"EDIT", style, 0);
+  HWND hwnd = CreateControl(L"EDIT", style, 0);
+  if (hwnd && !bordered) {
+    SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+  }
+  return hwnd;
 }
 
 HWND CreateImageViewHwnd() {
@@ -115,6 +128,9 @@ void SetCueBanner(HWND hwnd, const std::optional<std::string>& placeholder) {
 // The text properties shared by Label and TextField.
 
 void SetControlTextColor(ViewInternal::Impl& impl, Color color) {
+  if (impl.platform->text_color.ToRGBA() == color.ToRGBA()) {
+    return;
+  }
   impl.platform->text_color = color;
   NATIVEAPI_VIEW_XAML(impl, SetTextColor(color))
   if (impl.platform->hwnd) {
@@ -124,8 +140,33 @@ void SetControlTextColor(ViewInternal::Impl& impl, Color color) {
 }
 
 void SetControlFontSize(ViewInternal::Impl& impl, double size) {
-  impl.platform->font_size = size < 0 ? 0 : size;
+  const double clamped = size < 0 ? 0 : size;
+  if (impl.platform->font_size == clamped) {
+    return;
+  }
+  impl.platform->font_size = clamped;
   NATIVEAPI_VIEW_XAML(impl, SetFontSize(impl.platform->font_size))
+  impl.platform->ApplyFont();
+  impl.InvalidateIntrinsicSize();
+}
+
+void SetControlFontFamily(ViewInternal::Impl& impl, const std::optional<std::string>& family) {
+  if (impl.platform->font_family == family) {
+    return;
+  }
+  impl.platform->font_family = family;
+  NATIVEAPI_VIEW_XAML(impl, SetFontFamily(impl.platform->font_family))
+  impl.platform->ApplyFont();
+  impl.InvalidateIntrinsicSize();
+}
+
+void SetControlFontWeight(ViewInternal::Impl& impl, int weight) {
+  const int clamped = weight <= 0 ? 0 : (std::clamp)(weight, 100, 900);
+  if (impl.platform->font_weight == clamped) {
+    return;
+  }
+  impl.platform->font_weight = clamped;
+  NATIVEAPI_VIEW_XAML(impl, SetFontWeight(impl.platform->font_weight))
   impl.platform->ApplyFont();
   impl.InvalidateIntrinsicSize();
 }
@@ -138,8 +179,8 @@ void RebuildEdit(ViewInternal::Impl& impl) {
   if (!old) {
     return;
   }
-  HWND replacement =
-      CreateEditHwnd(platform.text_alignment, platform.multiline, platform.secure, platform.editable);
+  HWND replacement = CreateEditHwnd(platform.text_alignment, platform.multiline, platform.secure,
+                                    platform.editable, platform.bordered);
   if (!replacement) {
     return;
   }
@@ -187,6 +228,22 @@ double Label::GetFontSize() const {
   return pimpl_->platform->font_size;
 }
 
+void Label::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> Label::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void Label::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int Label::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 void Label::SetTextAlignment(TextAlignment alignment) {
   pimpl_->platform->text_alignment = alignment;
   NATIVEAPI_VIEW_XAML(*pimpl_, SetTextAlignment(alignment))
@@ -224,13 +281,37 @@ std::string Button::GetText() const {
   return WindowTextUtf8(pimpl_->platform->hwnd);
 }
 
+void Button::SetFontSize(double size) {
+  SetControlFontSize(*pimpl_, size);
+}
+
+double Button::GetFontSize() const {
+  return pimpl_->platform->font_size;
+}
+
+void Button::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> Button::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void Button::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int Button::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 // ---------------------------------------------------------------------------
 // TextField
 // ---------------------------------------------------------------------------
 
 TextField::TextField(const std::string& text)
     : View(AdoptFor(ViewKind::TextField, text, [] {
-        return CreateEditHwnd(TextAlignment::Start, false, false, true);
+        return CreateEditHwnd(TextAlignment::Start, false, false, true, true);
       })) {
   if (!text.empty() && GetBackend() == ViewBackend::Native) {
     SetText(text);
@@ -240,13 +321,20 @@ TextField::TextField(const std::string& text)
 void TextField::SetText(const std::string& text) {
   NATIVEAPI_VIEW_XAML(*pimpl_, SetText(text))
   auto& platform = *pimpl_->platform;
-  if (!platform.hwnd) {
+  if (!platform.hwnd || WindowTextUtf8(platform.hwnd) == text) {
     return;
   }
+  DWORD sel_start = 0;
+  DWORD sel_end = 0;
+  SendMessageW(platform.hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&sel_start),
+               reinterpret_cast<LPARAM>(&sel_end));
   // WM_SETTEXT raises EN_CHANGE too; it is not user input.
   platform.suppress_change = true;
   SetWindowTextUtf8(platform.hwnd, text);
   platform.suppress_change = false;
+  const DWORD length = static_cast<DWORD>(GetWindowTextLengthW(platform.hwnd));
+  SendMessageW(platform.hwnd, EM_SETSEL, (std::min)(sel_start, length),
+               (std::min)(sel_end, length));
 }
 
 std::string TextField::GetText() const {
@@ -270,6 +358,22 @@ double TextField::GetFontSize() const {
   return pimpl_->platform->font_size;
 }
 
+void TextField::SetFontFamily(const std::optional<std::string>& family) {
+  SetControlFontFamily(*pimpl_, family);
+}
+
+std::optional<std::string> TextField::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+
+void TextField::SetFontWeight(int weight) {
+  SetControlFontWeight(*pimpl_, weight);
+}
+
+int TextField::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
+}
+
 void TextField::SetTextAlignment(TextAlignment alignment) {
   auto& platform = *pimpl_->platform;
   if (platform.text_alignment == alignment) {
@@ -285,6 +389,9 @@ TextAlignment TextField::GetTextAlignment() const {
 }
 
 void TextField::SetPlaceholder(const std::optional<std::string>& placeholder) {
+  if (pimpl_->platform->placeholder == placeholder) {
+    return;
+  }
   pimpl_->platform->placeholder = placeholder;
   NATIVEAPI_VIEW_XAML(*pimpl_, SetPlaceholder(placeholder))
   SetCueBanner(pimpl_->platform->hwnd, placeholder);
@@ -341,6 +448,35 @@ void TextField::SetMultiline(bool is_multiline) {
 
 bool TextField::IsMultiline() const {
   return pimpl_->platform->multiline;
+}
+
+void TextField::SetBordered(bool is_bordered) {
+  auto& platform = *pimpl_->platform;
+  if (platform.bordered == is_bordered) {
+    return;
+  }
+  platform.bordered = is_bordered;
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetBordered(is_bordered))
+  if (platform.hwnd) {
+    LONG_PTR style = GetWindowLongPtrW(platform.hwnd, GWL_STYLE);
+    if (is_bordered) {
+      style |= WS_BORDER;
+    } else {
+      style &= ~static_cast<LONG_PTR>(WS_BORDER);
+    }
+    SetWindowLongPtrW(platform.hwnd, GWL_STYLE, style);
+    SetWindowPos(platform.hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (!is_bordered) {
+      SendMessageW(platform.hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+    }
+    InvalidateRect(platform.hwnd, nullptr, TRUE);
+  }
+  pimpl_->InvalidateIntrinsicSize();
+}
+
+bool TextField::IsBordered() const {
+  return pimpl_->platform->bordered;
 }
 
 // ---------------------------------------------------------------------------

@@ -73,12 +73,25 @@ std::string ToCssRgba(Color color) {
          std::to_string(color.b) + ", " + FormatDouble(color.a / 255.0) + ")";
 }
 
+std::string EscapeCssString(const std::string& value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (char ch : value) {
+    if (ch == '\\' || ch == '"') {
+      escaped.push_back('\\');
+    }
+    escaped.push_back(ch);
+  }
+  return escaped;
+}
+
 // ---------------------------------------------------------------------------
 // Signal handlers
 // ---------------------------------------------------------------------------
 
 void OnButtonClicked(GtkButton*, gpointer data) {
   auto* impl = static_cast<Impl*>(data);
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(ButtonClickedEvent(impl->id));
 }
 
@@ -88,11 +101,13 @@ void OnEntryChanged(GtkEditable*, gpointer data) {
   if (platform.suppress_changed > 0) {
     return;
   }
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(TextFieldChangedEvent(impl->id, ReadWidgetText(platform.widget, nullptr)));
 }
 
 void OnEntryActivate(GtkEntry*, gpointer data) {
   auto* impl = static_cast<Impl*>(data);
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(TextFieldSubmittedEvent(impl->id));
 }
 
@@ -102,17 +117,24 @@ void OnBufferChanged(GtkTextBuffer*, gpointer data) {
   if (platform.suppress_changed > 0) {
     return;
   }
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(TextFieldChangedEvent(impl->id, ReadWidgetText(nullptr, platform.text_view)));
+}
+
+void OnPlaceholderBufferChanged(GtkTextBuffer*, gpointer data) {
+  static_cast<View::Impl::Platform*>(data)->SyncPlaceholderVisibility();
 }
 
 gboolean OnFocusIn(GtkWidget*, GdkEventFocus*, gpointer data) {
   auto* impl = static_cast<Impl*>(data);
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(ViewFocusedEvent(impl->id));
   return FALSE;  // let GTK's own handler run too
 }
 
 gboolean OnFocusOut(GtkWidget*, GdkEventFocus*, gpointer data) {
   auto* impl = static_cast<Impl*>(data);
+  std::shared_ptr<View> keep_alive = impl->owner ? impl->owner->shared_from_this() : nullptr;
   impl->Emit(ViewBlurredEvent(impl->id));
   return FALSE;
 }
@@ -190,12 +212,22 @@ View::Impl::Platform::~Platform() {
     g_source_remove(relayout_source_id);
     relayout_source_id = 0;
   }
+  if (placeholder_buffer) {
+    DisconnectSignal(placeholder_buffer, placeholder_buffer_changed_id);
+    placeholder_buffer = nullptr;
+  }
+  placeholder_label = nullptr;
   UnhookControl();
   if (widget) {
     DisconnectSignal(widget, size_allocate_id);
     DisconnectSignal(widget, draw_id);
   }
   if (css_provider) {
+    if (placeholder_css_widget) {
+      gtk_style_context_remove_provider(gtk_widget_get_style_context(placeholder_css_widget),
+                                        GTK_STYLE_PROVIDER(css_provider));
+      placeholder_css_widget = nullptr;
+    }
     if (css_widget) {
       gtk_style_context_remove_provider(gtk_widget_get_style_context(css_widget),
                                         GTK_STYLE_PROVIDER(css_provider));
@@ -294,18 +326,55 @@ void View::Impl::Platform::ApplyCss() {
     css_widget = target;
   }
 
-  std::string declarations;
+  GtkWidget* ph_target = placeholder_label ? GTK_WIDGET(placeholder_label) : nullptr;
+  if (placeholder_css_widget != ph_target) {
+    if (placeholder_css_widget) {
+      gtk_style_context_remove_provider(gtk_widget_get_style_context(placeholder_css_widget),
+                                        GTK_STYLE_PROVIDER(css_provider));
+    }
+    if (ph_target) {
+      gtk_style_context_add_provider(gtk_widget_get_style_context(ph_target),
+                                     GTK_STYLE_PROVIDER(css_provider),
+                                     GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+    placeholder_css_widget = ph_target;
+  }
+
+  std::string font_declarations;
+  if (font_size > 0.0) {
+    font_declarations += "font-size: " + FormatDouble(font_size) + "pt; ";
+  }
+  if (font_family && !font_family->empty() && *font_family != "system-ui") {
+    if (*font_family == "monospace" || *font_family == "ui-monospace") {
+      font_declarations += "font-family: monospace; ";
+    } else if (*font_family == "sans-serif") {
+      font_declarations += "font-family: sans-serif; ";
+    } else if (*font_family == "serif" || *font_family == "ui-serif") {
+      font_declarations += "font-family: serif; ";
+    } else {
+      font_declarations += "font-family: \"" + EscapeCssString(*font_family) + "\"; ";
+    }
+  }
+  if (font_weight > 0) {
+    font_declarations += "font-weight: " + std::to_string(std::clamp(font_weight, 100, 900)) + "; ";
+  }
+
+  std::string declarations = font_declarations;
   if (text_color.a != 0) {
     declarations += "color: " + ToCssRgba(text_color) + "; ";
   }
-  if (font_size > 0.0) {
-    declarations += "font-size: " + FormatDouble(font_size) + "pt; ";
+  const bool unbordered_field = !bordered && ((widget && GTK_IS_ENTRY(widget)) || text_view != nullptr);
+  if (unbordered_field) {
+    declarations +=
+        "border: none; box-shadow: none; outline: none; padding: 0; min-height: 0; min-width: 0; ";
   }
   if (background_color.a != 0) {
     // Themes paint buttons and entries with a gradient image; drop it or the
     // colour never shows.
     declarations +=
         "background-color: " + ToCssRgba(background_color) + "; background-image: none; ";
+  } else if (unbordered_field) {
+    declarations += "background-color: transparent; background-image: none; ";
   }
   std::string css;
   if (!declarations.empty()) {
@@ -314,6 +383,13 @@ void View::Impl::Platform::ApplyCss() {
     // "<name> text" reaches the text node a GtkTextView draws its contents in;
     // it matches nothing on the other controls.
     css = selector + ", " + selector + " text { " + declarations + "}";
+  }
+  if (ph_target && !font_declarations.empty()) {
+    if (!css.empty()) {
+      css += " ";
+    }
+    css += "label.dim-label { " + font_declarations +
+           "background-color: transparent; background-image: none; }";
   }
   gtk_css_provider_load_from_data(css_provider, css.c_str(), -1, nullptr);
   gtk_widget_queue_resize(target);
@@ -358,18 +434,50 @@ void View::Impl::Platform::ScaleImage(int width, int height) {
   scaled_height = target_height;
 }
 
+void View::Impl::Platform::SyncPlaceholderVisibility() {
+  if (!placeholder_label || !text_view) {
+    return;
+  }
+  const bool has_placeholder = placeholder.has_value() && !placeholder->empty();
+  const bool empty_text = ReadWidgetText(nullptr, text_view).empty();
+  gtk_label_set_text(placeholder_label, has_placeholder ? placeholder->c_str() : "");
+  gtk_widget_set_visible(GTK_WIDGET(placeholder_label),
+                         (has_placeholder && empty_text) ? TRUE : FALSE);
+}
+
 void View::Impl::Platform::ReplaceWidget(GtkWidget* replacement,
-                                         GtkTextView* replacement_text_view) {
+                                         GtkTextView* replacement_text_view,
+                                         GtkLabel* replacement_placeholder) {
   if (!replacement || replacement == widget) {
     return;
   }
   GtkWidget* old = widget;
   const bool had_focus = old && FocusWidget() && gtk_widget_is_focus(FocusWidget());
+  const bool had_size_allocate = size_allocate_id != 0;
+  if (old) {
+    DisconnectSignal(old, size_allocate_id);
+  }
+  if (relayout_source_id) {
+    g_source_remove(relayout_source_id);
+    relayout_source_id = 0;
+  }
+  if (placeholder_buffer) {
+    DisconnectSignal(placeholder_buffer, placeholder_buffer_changed_id);
+    placeholder_buffer = nullptr;
+  }
+  placeholder_label = nullptr;
   UnhookControl();
-  if (css_provider && css_widget) {
-    gtk_style_context_remove_provider(gtk_widget_get_style_context(css_widget),
-                                      GTK_STYLE_PROVIDER(css_provider));
-    css_widget = nullptr;
+  if (css_provider) {
+    if (placeholder_css_widget) {
+      gtk_style_context_remove_provider(gtk_widget_get_style_context(placeholder_css_widget),
+                                        GTK_STYLE_PROVIDER(css_provider));
+      placeholder_css_widget = nullptr;
+    }
+    if (css_widget) {
+      gtk_style_context_remove_provider(gtk_widget_get_style_context(css_widget),
+                                        GTK_STYLE_PROVIDER(css_provider));
+      css_widget = nullptr;
+    }
   }
   g_object_ref_sink(replacement);
 
@@ -415,12 +523,27 @@ void View::Impl::Platform::ReplaceWidget(GtkWidget* replacement,
 
   widget = replacement;
   text_view = replacement_text_view;
+  placeholder_label = replacement_placeholder;
+  if (text_view && placeholder_label) {
+    placeholder_buffer = gtk_text_view_get_buffer(text_view);
+    if (placeholder_buffer) {
+      placeholder_buffer_changed_id = g_signal_connect(
+          placeholder_buffer, "changed", G_CALLBACK(OnPlaceholderBufferChanged), this);
+    }
+    SyncPlaceholderVisibility();
+  }
   impl->native = replacement;
   if (old) {
     g_object_unref(old);
   }
-  if (css_provider) {
+  if (impl->accessibility_label) {
+    impl->SetNativeAccessibilityLabel(impl->accessibility_label);
+  }
+  if (css_provider || !bordered || font_size > 0.0 || font_weight > 0 || font_family.has_value()) {
     ApplyCss();
+  }
+  if (had_size_allocate) {
+    impl->ObserveNativeResize(true);
   }
   if (had_focus) {
     GtkWidget* focusable = FocusWidget();
@@ -640,6 +763,16 @@ void View::Impl::SetNativeBackgroundColor(Color color) {
 void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
   if (platform->widget) {
     gtk_widget_set_tooltip_text(platform->widget, tooltip ? tooltip->c_str() : nullptr);
+  }
+}
+
+void View::Impl::SetNativeAccessibilityLabel(const std::optional<std::string>& label) {
+  GtkWidget* target = platform->FocusWidget();
+  if (!target) {
+    return;
+  }
+  if (AtkObject* accessible = gtk_widget_get_accessible(target)) {
+    atk_object_set_name(accessible, label ? label->c_str() : "");
   }
 }
 

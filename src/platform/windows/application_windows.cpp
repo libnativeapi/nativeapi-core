@@ -16,6 +16,7 @@
 #include "../../menu.h"
 #include "../../window_manager.h"
 #include "application_theme_windows.h"
+#include "dpi_utils_windows.h"
 #include "string_utils_windows.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -181,6 +182,8 @@ class Application::Impl {
   }
 
   bool Initialize() {
+    EnsureProcessDpiAwareness();
+
     // Initialize COM
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(hr)) {

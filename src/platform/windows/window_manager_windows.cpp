@@ -150,6 +150,7 @@ struct WindowSnapshot {
   bool minimized;
   bool maximized;
   RECT rect;
+  double scale_factor = 1.0;
 };
 static HWINEVENTHOOK g_lifetime_hook = nullptr;
 static std::unordered_map<HWND, WindowSnapshot> g_window_snapshots;
@@ -204,7 +205,7 @@ static LRESULT CALLBACK
 WindowGeometryProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR) {
   if (message == WM_NCDESTROY) {
     RemoveWindowSubclass(hwnd, WindowGeometryProc, subclass_id);
-  } else if (message == WM_WINDOWPOSCHANGED) {
+  } else if (message == WM_WINDOWPOSCHANGED || message == WM_DPICHANGED) {
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
     WithObserver([&] {
       if (g_window_changed_fn && g_window_changed_context) {
@@ -771,6 +772,7 @@ class WindowManager::Impl {
     snapshot.minimized = IsIconic(hwnd) != FALSE;
     snapshot.maximized = IsZoomed(hwnd) != FALSE;
     GetWindowRect(hwnd, &snapshot.rect);
+    snapshot.scale_factor = GetScaleFactorForWindow(hwnd);
     return snapshot;
   }
 
@@ -827,6 +829,9 @@ class WindowManager::Impl {
 
     if (previous.minimized) {
       OnWindowEvent(hwnd, "restored");
+    }
+    if (std::abs(current.scale_factor - previous.scale_factor) > 1e-6) {
+      OnWindowEvent(hwnd, "scale_factor_changed");
     }
     if (current.maximized != previous.maximized) {
       OnWindowEvent(hwnd, current.maximized ? "maximized" : "restored");
@@ -900,6 +905,9 @@ class WindowManager::Impl {
         WindowMovedEvent event(window_id, window->GetPosition());
         manager_->DispatchWindowEvent(event);
       }
+    } else if (event_type == "scale_factor_changed") {
+      WindowScaleFactorChangedEvent event(window_id, GetScaleFactorForWindow(hwnd));
+      manager_->DispatchWindowEvent(event);
     } else if (event_type == "closing") {
       // Window closing event - no longer emitted
     }

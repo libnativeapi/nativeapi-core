@@ -632,6 +632,9 @@ class Menu::Impl {
 #endif
   bool wraps_native_ = false;
   bool opening_ = false;
+  bool defer_close_ = false;
+  bool pending_closed_ = false;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   HWND popup_owner_ = nullptr;
   // Set from WM_INITMENUPOPUP: the popup really appeared on screen.
   bool shown_ = false;
@@ -648,6 +651,7 @@ class Menu::Impl {
   Impl(MenuId id, HMENU menu) : id_(id), hmenu_(menu), window_proc_handle_id_(-1) {}
 
   ~Impl() {
+    *alive_ = false;
     // Unregister window procedure handler
     if (window_proc_handle_id_ != -1) {
       WindowMessageDispatcher::GetInstance().UnregisterHandler(window_proc_handle_id_);
@@ -690,9 +694,11 @@ class Menu::Impl {
       HMENU popup_menu = reinterpret_cast<HMENU>(wparam);
 
       if (popup_menu == hmenu_) {
-        // This is our menu being closed
-        // Emit menu closed event via callback
-        if (closed_callback_) {
+        // Defer MenuClosedEvent while TrackPopupMenu is still unwinding so
+        // MenuItemClickedEvent always precedes MenuClosedEvent.
+        if (defer_close_) {
+          pending_closed_ = true;
+        } else if (closed_callback_) {
           closed_callback_(id_);
         }
       } else {
@@ -1024,7 +1030,10 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
     // Ownerless popups (including tray menus) still use the dispatcher.
     SetForegroundWindow(host_window);
   }
+  const auto alive = pimpl_->alive_;
   pimpl_->opening_ = true;
+  pimpl_->defer_close_ = true;
+  pimpl_->pending_closed_ = false;
   pimpl_->popup_owner_ = owner;
   pimpl_->shown_ = false;
   UINT cmd;
@@ -1036,18 +1045,23 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
         pimpl_->hmenu_, uFlags | TPM_RETURNCMD, pt.x, pt.y, 0, owner, nullptr));
   }
   if (owner != host_window && IsWindow(owner)) RemoveWindowSubclass(owner, ForwardPopupLifecycle, 0);
+  if (!*alive) {
+    return cmd != 0;
+  }
   pimpl_->popup_owner_ = nullptr;
   pimpl_->opening_ = false;
+  pimpl_->defer_close_ = false;
   // With TPM_RETURNCMD, 0 means "dismissed without a pick" or "failed".
   // WM_INITMENUPOPUP tells them apart: a menu that never appeared is a failure.
   // (The last error code cannot: TrackPopupMenu runs a whole modal loop, whose
   // internal calls leave one set on success too.)
   if (cmd == 0 && !pimpl_->shown_) {
+    pimpl_->pending_closed_ = false;
     return false;
   }
 
   if (cmd != 0) {
-    // Find the item (searching submenus) and fire its click.
+    // Find the item (searching submenus) and fire its click before MenuClosedEvent.
     std::function<bool(const Menu&)> dispatch = [&](const Menu& menu) -> bool {
       for (const auto& item : menu.pimpl_->items_) {
         if (item->GetId() == cmd) {
@@ -1063,6 +1077,13 @@ bool Menu::Open(const PositioningStrategy& strategy, Placement placement) {
       return false;
     };
     dispatch(*this);
+  }
+
+  if (*alive && pimpl_->pending_closed_) {
+    pimpl_->pending_closed_ = false;
+    if (pimpl_->closed_callback_) {
+      pimpl_->closed_callback_(pimpl_->id_);
+    }
   }
 
   // Shown (and possibly dismissed without a pick): success, as before.

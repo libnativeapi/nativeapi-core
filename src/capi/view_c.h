@@ -132,6 +132,7 @@ typedef enum {
   NATIVE_VIEW_EVENT_TYPE_TEXT_FIELD_CHANGED = 3,
   NATIVE_VIEW_EVENT_TYPE_TEXT_FIELD_SUBMITTED = 4,
   NATIVE_VIEW_EVENT_TYPE_UPDATING = 5,
+  NATIVE_VIEW_EVENT_TYPE_RESIZED = 6,
 } native_view_event_type_t;
 
 /// One ViewEvent, tagged by its concrete type.
@@ -145,6 +146,9 @@ typedef struct {
     struct {
       char* text;
     } text_field_changed;
+    struct {
+      native_size_t new_size;
+    } resized;
   } data;
 } native_view_event_t;
 
@@ -299,6 +303,13 @@ FFI_PLUGIN_EXPORT
 char* native_view_get_tooltip(native_view_t view);
 
 FFI_PLUGIN_EXPORT
+void native_view_set_accessibility_label(native_view_t view, const char* label);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_view_get_accessibility_label(native_view_t view);
+
+FFI_PLUGIN_EXPORT
 void native_view_focus(native_view_t view);
 
 FFI_PLUGIN_EXPORT
@@ -363,6 +374,19 @@ FFI_PLUGIN_EXPORT
 double native_label_get_font_size(native_label_t label);
 
 FFI_PLUGIN_EXPORT
+void native_label_set_font_family(native_label_t label, const char* family);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_label_get_font_family(native_label_t label);
+
+FFI_PLUGIN_EXPORT
+void native_label_set_font_weight(native_label_t label, int weight);
+
+FFI_PLUGIN_EXPORT
+int native_label_get_font_weight(native_label_t label);
+
+FFI_PLUGIN_EXPORT
 void native_label_set_text_alignment(native_label_t label, native_text_alignment_t alignment);
 
 FFI_PLUGIN_EXPORT
@@ -383,6 +407,25 @@ void native_button_set_text(native_button_t button, const char* text);
 /// Caller owns the returned string; free it with free_c_str().
 FFI_PLUGIN_EXPORT
 char* native_button_get_text(native_button_t button);
+
+FFI_PLUGIN_EXPORT
+void native_button_set_font_size(native_button_t button, double size);
+
+FFI_PLUGIN_EXPORT
+double native_button_get_font_size(native_button_t button);
+
+FFI_PLUGIN_EXPORT
+void native_button_set_font_family(native_button_t button, const char* family);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_button_get_font_family(native_button_t button);
+
+FFI_PLUGIN_EXPORT
+void native_button_set_font_weight(native_button_t button, int weight);
+
+FFI_PLUGIN_EXPORT
+int native_button_get_font_weight(native_button_t button);
 
 /// Releases the caller's reference. Safe to call with an invalid or
 /// already-released handle.
@@ -411,6 +454,19 @@ void native_text_field_set_font_size(native_text_field_t text_field, double size
 
 FFI_PLUGIN_EXPORT
 double native_text_field_get_font_size(native_text_field_t text_field);
+
+FFI_PLUGIN_EXPORT
+void native_text_field_set_font_family(native_text_field_t text_field, const char* family);
+
+/// Caller owns the returned string; free it with free_c_str().
+FFI_PLUGIN_EXPORT
+char* native_text_field_get_font_family(native_text_field_t text_field);
+
+FFI_PLUGIN_EXPORT
+void native_text_field_set_font_weight(native_text_field_t text_field, int weight);
+
+FFI_PLUGIN_EXPORT
+int native_text_field_get_font_weight(native_text_field_t text_field);
 
 FFI_PLUGIN_EXPORT
 void native_text_field_set_text_alignment(native_text_field_t text_field, native_text_alignment_t alignment);
@@ -442,6 +498,12 @@ void native_text_field_set_multiline(native_text_field_t text_field, bool is_mul
 
 FFI_PLUGIN_EXPORT
 bool native_text_field_is_multiline(native_text_field_t text_field);
+
+FFI_PLUGIN_EXPORT
+void native_text_field_set_bordered(native_text_field_t text_field, bool is_bordered);
+
+FFI_PLUGIN_EXPORT
+bool native_text_field_is_bordered(native_text_field_t text_field);
 
 /// Releases the caller's reference. Safe to call with an invalid or
 /// already-released handle.

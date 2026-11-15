@@ -34,6 +34,10 @@ struct View::Impl::Platform {
   /// The GtkTextView inside `widget` while a TextField is multi-line; owned by
   /// the scrolled window, never referenced separately.
   GtkTextView* text_view = nullptr;
+  /// Pass-through overlay label showing the placeholder of a multi-line field.
+  GtkLabel* placeholder_label = nullptr;
+  GtkTextBuffer* placeholder_buffer = nullptr;
+  gulong placeholder_buffer_changed_id = 0;
   bool listening = false;
 
   // Signal handler ids; 0 while not connected.
@@ -62,8 +66,11 @@ struct View::Impl::Platform {
   // one of the three values changes. A zero alpha / zero size drops the rule.
   GtkCssProvider* css_provider = nullptr;
   GtkWidget* css_widget = nullptr;  // where the provider is currently added
+  GtkWidget* placeholder_css_widget = nullptr;
   Color text_color{0, 0, 0, 0};
   double font_size = 0.0;
+  std::optional<std::string> font_family;
+  int font_weight = 0;
   Color background_color{0, 0, 0, 0};
 
   // TextField state that the widget cannot hold itself, or that must survive
@@ -71,6 +78,7 @@ struct View::Impl::Platform {
   bool secure = false;
   bool multiline = false;
   bool editable = true;
+  bool bordered = true;
   TextAlignment text_alignment = TextAlignment::Start;
   std::optional<std::string> placeholder;
 
@@ -90,7 +98,10 @@ struct View::Impl::Platform {
   /// Swaps the native widget for `replacement`, keeping frame, parent,
   /// z-order, visibility, sensitivity, tooltip, stylesheet and the listening
   /// state. Used when a text field changes between single- and multi-line.
-  void ReplaceWidget(GtkWidget* replacement, GtkTextView* replacement_text_view);
+  void ReplaceWidget(GtkWidget* replacement,
+                     GtkTextView* replacement_text_view,
+                     GtkLabel* replacement_placeholder = nullptr);
+  void SyncPlaceholderVisibility();
   /// (Re)connects the signals that produce ViewEvents on the current widget.
   void HookControl();
   void UnhookControl();

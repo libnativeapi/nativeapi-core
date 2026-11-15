@@ -192,10 +192,19 @@ void View::Impl::Platform::ReplaceView(NSView* replacement) {
   if (!replacement || replacement == view) {
     return;
   }
+  const bool had_frame_observer = frame_observer != nil;
+  if (frame_observer) {
+    [[NSNotificationCenter defaultCenter] removeObserver:frame_observer];
+#if !__has_feature(objc_arc)
+    [frame_observer release];
+#endif
+    frame_observer = nil;
+  }
   UnhookControl();
   replacement.frame = view.frame;
   replacement.hidden = view.hidden;
   replacement.toolTip = view.toolTip;
+  [replacement setAccessibilityLabel:[view accessibilityLabel]];
   NSView* superview = view.superview;
   if (superview) {
     [superview addSubview:replacement positioned:NSWindowAbove relativeTo:view];
@@ -207,6 +216,9 @@ void View::Impl::Platform::ReplaceView(NSView* replacement) {
 #endif
   view = replacement;
   impl->NativeReplaced((__bridge void*)replacement);
+  if (had_frame_observer) {
+    impl->ObserveNativeResize(true);
+  }
   HookControl();
 }
 
@@ -368,7 +380,7 @@ void View::Impl::SetNativeBackgroundColor(Color color) {
   if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField* field = (NSTextField*)view;
     if (color.a == 0) {
-      field.drawsBackground = field.isEditable;
+      field.drawsBackground = field.isEditable && platform->bordered;
       field.backgroundColor = [NSColor textBackgroundColor];
     } else {
       field.drawsBackground = YES;
@@ -382,6 +394,14 @@ void View::Impl::SetNativeBackgroundColor(Color color) {
 
 void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
   platform->view.toolTip = tooltip ? [NSString stringWithUTF8String:tooltip->c_str()] : nil;
+}
+
+void View::Impl::SetNativeAccessibilityLabel(const std::optional<std::string>& label) {
+  if (!platform->view) {
+    return;
+  }
+  [platform->view
+      setAccessibilityLabel:label ? [NSString stringWithUTF8String:label->c_str()] : nil];
 }
 
 void View::Impl::NativeFocus() {

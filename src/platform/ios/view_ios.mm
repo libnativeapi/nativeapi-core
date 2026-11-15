@@ -54,6 +54,8 @@ void View::Impl::SetNativeBackgroundColor(Color) {}
 
 void View::Impl::SetNativeTooltip(const std::optional<std::string>&) {}
 
+void View::Impl::SetNativeAccessibilityLabel(const std::optional<std::string>&) {}
+
 void View::Impl::NativeFocus() {}
 
 void View::Impl::NativeBlur() {}
@@ -101,6 +103,14 @@ void Label::SetFontSize(double) {}
 double Label::GetFontSize() const {
   return 0.0;
 }
+void Label::SetFontFamily(const std::optional<std::string>&) {}
+std::optional<std::string> Label::GetFontFamily() const {
+  return std::nullopt;
+}
+void Label::SetFontWeight(int) {}
+int Label::GetFontWeight() const {
+  return 0;
+}
 void Label::SetTextAlignment(TextAlignment) {}
 TextAlignment Label::GetTextAlignment() const {
   return TextAlignment::Start;
@@ -110,6 +120,18 @@ Button::Button(const std::string&) : View(NativeControl{nullptr}) {}
 void Button::SetText(const std::string&) {}
 std::string Button::GetText() const {
   return "";
+}
+void Button::SetFontSize(double) {}
+double Button::GetFontSize() const {
+  return 0.0;
+}
+void Button::SetFontFamily(const std::optional<std::string>&) {}
+std::optional<std::string> Button::GetFontFamily() const {
+  return std::nullopt;
+}
+void Button::SetFontWeight(int) {}
+int Button::GetFontWeight() const {
+  return 0;
 }
 
 TextField::TextField(const std::string&) : View(NativeControl{nullptr}) {}
@@ -124,6 +146,14 @@ Color TextField::GetTextColor() const {
 void TextField::SetFontSize(double) {}
 double TextField::GetFontSize() const {
   return 0.0;
+}
+void TextField::SetFontFamily(const std::optional<std::string>&) {}
+std::optional<std::string> TextField::GetFontFamily() const {
+  return std::nullopt;
+}
+void TextField::SetFontWeight(int) {}
+int TextField::GetFontWeight() const {
+  return 0;
 }
 void TextField::SetTextAlignment(TextAlignment) {}
 TextAlignment TextField::GetTextAlignment() const {
@@ -143,6 +173,10 @@ bool TextField::IsSecure() const {
 }
 void TextField::SetMultiline(bool) {}
 bool TextField::IsMultiline() const {
+  return false;
+}
+void TextField::SetBordered(bool) {}
+bool TextField::IsBordered() const {
   return false;
 }
 

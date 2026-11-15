@@ -65,6 +65,7 @@ class XamlView {
   bool IsEnabled() const;
   void SetBackgroundColor(Color color);
   void SetTooltip(const std::optional<std::string>& tooltip);
+  void SetAccessibilityLabel(const std::optional<std::string>& label);
   void Focus();
   void Blur();
   bool IsFocused() const;
@@ -78,11 +79,14 @@ class XamlView {
   std::string GetText() const;
   void SetTextColor(Color color);
   void SetFontSize(double size);
+  void SetFontFamily(const std::optional<std::string>& family);
+  void SetFontWeight(int weight);
   void SetTextAlignment(TextAlignment alignment);
   void SetPlaceholder(const std::optional<std::string>& placeholder);
   void SetEditable(bool is_editable);
   void SetSecure(bool is_secure);
   void SetMultiline(bool is_multiline);
+  void SetBordered(bool is_bordered);
   void SetImage(const std::shared_ptr<Image>& image);
 
   struct State;

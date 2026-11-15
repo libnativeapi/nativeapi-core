@@ -52,6 +52,7 @@ struct WindowState {
   };
   std::vector<Subscription> subscriptions;
   Rectangle observed_bounds{};
+  double observed_scale = 0;
   bool observed_visible = false, observed_focused = false;
   bool observed_full_screen = false;
   int observed_status = 0;

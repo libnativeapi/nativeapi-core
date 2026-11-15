@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <objidl.h>
+#include <oleacc.h>
 #include <algorithm>
 // gdiplus.h spells min / max unqualified and breaks under NOMINMAX without these.
 using std::max;
@@ -41,6 +42,45 @@ const wchar_t* const kViewBackgroundProperty = L"NativeApiViewBackground";
 const wchar_t* const kWindowBackgroundProperty = L"NativeAPIBackgroundColor";
 
 constexpr UINT_PTR kEditSubclassId = 0x4E415649;  // 'NAVI'
+
+constexpr CLSID kClsidAccPropServices = {
+    0xb5f8350b, 0x0548, 0x48b1, {0xa6, 0xee, 0x88, 0xbd, 0x00, 0xb4, 0xa5, 0xe7}};
+constexpr IID kIidAccPropServices = {
+    0x6e26e776, 0x04f0, 0x495d, {0x80, 0xe4, 0x33, 0x30, 0x35, 0x2e, 0x31, 0x69}};
+constexpr MSAAPROPID kPropidAccName = {
+    0xc3a6921b, 0x4a99, 0x44f1, {0xbc, 0xa6, 0x61, 0x18, 0x70, 0x52, 0xc4, 0x31}};
+
+void ApplyHwndAccessibleName(HWND hwnd, bool& has_acc_name, const std::optional<std::string>& label) {
+  if (!hwnd || !IsWindow(hwnd)) {
+    has_acc_name = false;
+    return;
+  }
+  if (!label && !has_acc_name) {
+    return;
+  }
+  IAccPropServices* acc = nullptr;
+  HRESULT hr = CoCreateInstance(kClsidAccPropServices, nullptr, CLSCTX_INPROC_SERVER,
+                                kIidAccPropServices, reinterpret_cast<void**>(&acc));
+  if (hr == CO_E_NOTINITIALIZED) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    hr = CoCreateInstance(kClsidAccPropServices, nullptr, CLSCTX_INPROC_SERVER,
+                          kIidAccPropServices, reinterpret_cast<void**>(&acc));
+  }
+  if (FAILED(hr) || !acc) {
+    return;
+  }
+  if (label) {
+    const std::wstring wide = StringToWString(*label);
+    if (SUCCEEDED(acc->SetHwndPropStr(hwnd, OBJID_CLIENT, CHILDID_SELF, kPropidAccName,
+                                      wide.c_str()))) {
+      has_acc_name = true;
+    }
+  } else if (has_acc_name) {
+    acc->ClearHwndProps(hwnd, OBJID_CLIENT, CHILDID_SELF, &kPropidAccName, 1);
+    has_acc_name = false;
+  }
+  acc->Release();
+}
 
 // Shared by all View wrappers on this UI thread. Never disable WM_SETREDRAW:
 // DefWindowProc changes WS_VISIBLE and can accidentally reveal hidden views.
@@ -325,6 +365,9 @@ View::Impl::Platform::~Platform() {
   }
   DestroyTooltip();
   if (hwnd && IsWindow(hwnd)) {
+    if (has_acc_name) {
+      ApplyHwndAccessibleName(hwnd, has_acc_name, std::nullopt);
+    }
     if (font) {
       SendMessageW(hwnd, WM_SETFONT, 0, FALSE);
     }
@@ -501,6 +544,24 @@ void View::Impl::Platform::ApplyFont() {
     // The metrics are for the system DPI; rescale to the control's monitor.
     logfont.lfHeight = static_cast<LONG>(std::lround(logfont.lfHeight * scale / ScaleFor(nullptr)));
   }
+  if (font_weight > 0) {
+    logfont.lfWeight = (std::clamp)(font_weight, 100, 900);
+  }
+  if (font_family && !font_family->empty() && *font_family != "system-ui") {
+    std::wstring face;
+    if (*font_family == "monospace" || *font_family == "ui-monospace") {
+      face = L"Consolas";
+    } else if (*font_family == "serif" || *font_family == "ui-serif") {
+      face = L"Georgia";
+    } else if (*font_family == "sans-serif") {
+      face = L"Segoe UI";
+    } else {
+      face = StringToWString(*font_family);
+    }
+    if (!face.empty()) {
+      wcsncpy_s(logfont.lfFaceName, LF_FACESIZE, face.c_str(), _TRUNCATE);
+    }
+  }
   HFONT created = CreateFontIndirectW(&logfont);
   if (!created) {
     return;
@@ -530,10 +591,18 @@ void View::Impl::Platform::ReplaceHwnd(HWND replacement) {
     return;
   }
   HWND old = hwnd;
+  const bool had_resize_handler = resize_handler_id != 0;
+  if (resize_handler_id) {
+    WindowMessageDispatcher::GetInstance().UnregisterHandler(resize_handler_id);
+    resize_handler_id = 0;
+  }
   UnhookParent();
   Unsubclass();
   DestroyTooltip();
   if (old && IsWindow(old)) {
+    if (has_acc_name) {
+      ApplyHwndAccessibleName(old, has_acc_name, std::nullopt);
+    }
     RECT rect = {};
     GetWindowRect(old, &rect);
     HWND parent = GetAncestor(old, GA_PARENT);
@@ -558,9 +627,15 @@ void View::Impl::Platform::ReplaceHwnd(HWND replacement) {
   if (impl->tooltip) {
     impl->SetNativeTooltip(impl->tooltip);
   }
+  if (impl->accessibility_label) {
+    impl->SetNativeAccessibilityLabel(impl->accessibility_label);
+  }
   HookParent();
   if (listening) {
     Subclass();
+  }
+  if (had_resize_handler) {
+    impl->ObserveNativeResize(true);
   }
 }
 
@@ -861,7 +936,8 @@ Size View::Impl::GetNativeIntrinsicSize() const {
         const std::wstring text = WindowTextWide(hwnd);
         lines = 1 + static_cast<int>(std::count(text.begin(), text.end(), L'\n'));
       }
-      const int height = lines * FontLineHeight(hwnd, platform->font) + ToPixels(8.0, scale);
+      const int height = lines * FontLineHeight(hwnd, platform->font) +
+                         ToPixels(platform->bordered ? 8.0 : 2.0, scale);
       return Size{0, height / scale};
     }
     case ViewKind::ImageView:
@@ -981,7 +1057,7 @@ void View::Impl::SetNativeBackgroundColor(Color color) {
   }
   // The controls read `background_color` on their next WM_CTLCOLOR*; the
   // children of a container show through to it.
-  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+  RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
 void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
@@ -1014,6 +1090,11 @@ void View::Impl::SetNativeTooltip(const std::optional<std::string>& tooltip) {
   } else {
     SendMessageW(platform->tooltip_hwnd, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&info));
   }
+}
+
+void View::Impl::SetNativeAccessibilityLabel(const std::optional<std::string>& label) {
+  NATIVEAPI_VIEW_XAML(*this, SetAccessibilityLabel(label))
+  ApplyHwndAccessibleName(platform->hwnd, platform->has_acc_name, label);
 }
 
 void View::Impl::NativeFocus() {

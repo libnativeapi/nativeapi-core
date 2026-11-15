@@ -44,6 +44,13 @@ add_executable(view_layout_test view_layout_test.cpp)
 target_link_libraries(view_layout_test PRIVATE nativeapi)
 add_test(NAME view_layout_test COMMAND view_layout_test)
 
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS"))
+  add_executable(view_api_test view_api_test.cpp)
+  target_link_libraries(view_api_test PRIVATE nativeapi)
+  add_test(NAME view_api_test COMMAND view_api_test)
+  set_tests_properties(view_api_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+endif()
+
 # Plain arithmetic behind the Windows screen coordinates; runs everywhere.
 add_executable(screen_layout_test screen_layout_test.cpp)
 target_link_libraries(screen_layout_test PRIVATE nativeapi)

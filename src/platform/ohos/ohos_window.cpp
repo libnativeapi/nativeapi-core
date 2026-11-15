@@ -122,7 +122,19 @@ void Emit(const WindowEvent& event) {
     // Never unwind a C++ listener exception through an ArkTS native callback.
   }
 }
+void RefreshWindowScale(const std::shared_ptr<WindowState>& state) {
+  if (!state || !state->alive)
+    return;
+  const double scale = WindowScale(state);
+  const double prior = state->observed_scale;
+  state->observed_scale = scale;
+  if (prior > 0 && std::abs(prior - scale) > 1e-6)
+    Emit(WindowScaleFactorChangedEvent(state->id, scale));
+}
 void GeometryChanged(const std::shared_ptr<WindowState>& state) {
+  if (!state->alive)
+    return;
+  RefreshWindowScale(state);
   if (!state->alive)
     return;
   const auto bounds = WindowBounds(state);
@@ -256,6 +268,8 @@ napi_value Observe(napi_env env, napi_callback_info info) {
   } else if (callback->event == "windowSizeChange") {
     ObserveWindowCustomShadowSize(state, value);
     GeometryChanged(state);
+  } else if (callback->event == "windowDensityChange") {
+    RefreshWindowScale(state);
   } else if (callback->event == "windowTitleButtonRectChange") {
     WatchRenderedControls(state);
     if (auto window = WindowRegistry::GetInstance().Get(state->id))
@@ -717,6 +731,7 @@ void SetWindowEventSink(std::function<void(const WindowEvent&)> sink) {
     for (const auto& state : items)
       UseWindow(state, [&] {
         WatchRenderedControls(state);
+        state->observed_scale = WindowScale(state);
         state->observed_bounds = WindowBounds(state);
         state->observed_status = WindowStatus(state);
         state->observed_full_screen = WindowFullscreen(state);
@@ -724,6 +739,7 @@ void SetWindowEventSink(std::function<void(const WindowEvent&)> sink) {
           Watch(state, "windowWillClose");
           Watch(state, "windowRectChange");
           Watch(state, "windowStatusChange");
+          Watch(state, "windowDensityChange");
         } else
           Unwatch(state, false);
       });
@@ -830,6 +846,7 @@ std::shared_ptr<Window> AttachWindow(napi_env env,
   Host().items.push_back(state);
   auto window = std::make_shared<Window>(state.get());
   WindowRegistry::GetInstance().Add(state->id, window);
+  state->observed_scale = WindowScale(state);
   state->observed_bounds = WindowBounds(state);
   state->observed_visible = WindowBoolean(state, "isWindowShowing");
   state->observed_focused = WindowBoolean(state, "isFocused");
@@ -849,6 +866,7 @@ std::shared_ptr<Window> AttachWindow(napi_env env,
     Watch(state, "windowWillClose");
     Watch(state, "windowRectChange");
     Watch(state, "windowStatusChange");
+    Watch(state, "windowDensityChange");
   }
   detail::WindowPropertyDispatch::Refresh(*window);
   Emit(WindowCreatedEvent(state->id));

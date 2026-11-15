@@ -661,6 +661,38 @@ char* native_view_get_tooltip(native_view_t view) {
   }
 }
 
+void native_view_set_accessibility_label(native_view_t view, const char* label) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return;
+  }
+  try {
+    std::optional<std::string> label_cpp;
+    if (label) {
+      label_cpp = std::string(label);
+    }
+    self->SetAccessibilityLabel(label_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_set_accessibility_label");
+    return;
+  }
+}
+
+char* native_view_get_accessibility_label(native_view_t view) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    const auto cpp_result = self->GetAccessibilityLabel();
+    return cpp_result ? to_c_str(*cpp_result) : nullptr;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_view_get_accessibility_label");
+    return nullptr;
+  }
+}
+
 void native_view_focus(native_view_t view) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::View>(view);
   if (!self) {
@@ -901,6 +933,65 @@ double native_label_get_font_size(native_label_t label) {
   }
 }
 
+void native_label_set_font_family(native_label_t label, const char* family) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Label>(label);
+  if (!self) {
+    return;
+  }
+  try {
+    std::optional<std::string> family_cpp;
+    if (family) {
+      family_cpp = std::string(family);
+    }
+    self->SetFontFamily(family_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_label_set_font_family");
+    return;
+  }
+}
+
+char* native_label_get_font_family(native_label_t label) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Label>(label);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    const auto cpp_result = self->GetFontFamily();
+    return cpp_result ? to_c_str(*cpp_result) : nullptr;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_label_get_font_family");
+    return nullptr;
+  }
+}
+
+void native_label_set_font_weight(native_label_t label, int weight) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Label>(label);
+  if (!self) {
+    return;
+  }
+  try {
+    self->SetFontWeight(weight);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_label_set_font_weight");
+    return;
+  }
+}
+
+int native_label_get_font_weight(native_label_t label) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Label>(label);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return self->GetFontWeight();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_label_get_font_weight");
+    return 0;
+  }
+}
+
 void native_label_set_text_alignment(native_label_t label, native_text_alignment_t alignment) {
   auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Label>(label);
   if (!self) {
@@ -968,6 +1059,92 @@ char* native_button_get_text(native_button_t button) {
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_get_text");
     return nullptr;
+  }
+}
+
+void native_button_set_font_size(native_button_t button, double size) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return;
+  }
+  try {
+    self->SetFontSize(size);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_set_font_size");
+    return;
+  }
+}
+
+double native_button_get_font_size(native_button_t button) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return self->GetFontSize();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_get_font_size");
+    return 0;
+  }
+}
+
+void native_button_set_font_family(native_button_t button, const char* family) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return;
+  }
+  try {
+    std::optional<std::string> family_cpp;
+    if (family) {
+      family_cpp = std::string(family);
+    }
+    self->SetFontFamily(family_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_set_font_family");
+    return;
+  }
+}
+
+char* native_button_get_font_family(native_button_t button) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    const auto cpp_result = self->GetFontFamily();
+    return cpp_result ? to_c_str(*cpp_result) : nullptr;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_get_font_family");
+    return nullptr;
+  }
+}
+
+void native_button_set_font_weight(native_button_t button, int weight) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return;
+  }
+  try {
+    self->SetFontWeight(weight);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_set_font_weight");
+    return;
+  }
+}
+
+int native_button_get_font_weight(native_button_t button) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Button>(button);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return self->GetFontWeight();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_button_get_font_weight");
+    return 0;
   }
 }
 
@@ -1068,6 +1245,65 @@ double native_text_field_get_font_size(native_text_field_t text_field) {
     return self->GetFontSize();
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_get_font_size");
+    return 0;
+  }
+}
+
+void native_text_field_set_font_family(native_text_field_t text_field, const char* family) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return;
+  }
+  try {
+    std::optional<std::string> family_cpp;
+    if (family) {
+      family_cpp = std::string(family);
+    }
+    self->SetFontFamily(family_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_set_font_family");
+    return;
+  }
+}
+
+char* native_text_field_get_font_family(native_text_field_t text_field) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return nullptr;
+  }
+  try {
+    const auto cpp_result = self->GetFontFamily();
+    return cpp_result ? to_c_str(*cpp_result) : nullptr;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_get_font_family");
+    return nullptr;
+  }
+}
+
+void native_text_field_set_font_weight(native_text_field_t text_field, int weight) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return;
+  }
+  try {
+    self->SetFontWeight(weight);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_set_font_weight");
+    return;
+  }
+}
+
+int native_text_field_get_font_weight(native_text_field_t text_field) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return 0;
+  }
+  try {
+    return self->GetFontWeight();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_get_font_weight");
     return 0;
   }
 }
@@ -1212,6 +1448,33 @@ bool native_text_field_is_multiline(native_text_field_t text_field) {
   }
 }
 
+void native_text_field_set_bordered(native_text_field_t text_field, bool is_bordered) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return;
+  }
+  try {
+    self->SetBordered(is_bordered);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_set_bordered");
+    return;
+  }
+}
+
+bool native_text_field_is_bordered(native_text_field_t text_field) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsBordered();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_is_bordered");
+    return false;
+  }
+}
+
 void native_text_field_free(native_text_field_t text_field) {
   // The table invalidates the handle itself, so releasing an unknown or
   // already-released one is a no-op rather than a double free.
@@ -1296,6 +1559,11 @@ bool to_c_view_event(const nativeapi::ViewEvent& event, native_view_event_t* out
   if (const auto* typed = dynamic_cast<const nativeapi::ViewUpdatingEvent*>(&event)) {
     out->type = NATIVE_VIEW_EVENT_TYPE_UPDATING;
     (void)typed;
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::ViewResizedEvent*>(&event)) {
+    out->type = NATIVE_VIEW_EVENT_TYPE_RESIZED;
+    out->data.resized.new_size = to_c_size(typed->GetNewSize());
     return true;
   }
   return false;

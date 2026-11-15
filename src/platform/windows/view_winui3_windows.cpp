@@ -19,6 +19,7 @@ using std::min;
 
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Interop.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
@@ -30,6 +31,7 @@ using std::min;
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.h>
 
 #include "view_internal_windows.h"
@@ -155,6 +157,7 @@ struct XamlView::State {
   X::UIElement::PreviewKeyDown_revoker password_key;
   X::UIElement::GotFocus_revoker got_focus;
   X::UIElement::LostFocus_revoker lost_focus;
+  X::FrameworkElement::SizeChanged_revoker size_changed;
   /// A Focus() that came before the target was loaded, which XAML ignores:
   /// applied when it loads.
   X::FrameworkElement::Loaded_revoker focus_when_loaded;
@@ -491,6 +494,20 @@ void XamlView::SetTooltip(const std::optional<std::string>& tooltip) {
   });
 }
 
+void XamlView::SetAccessibilityLabel(const std::optional<std::string>& label) {
+  auto& s = *state_;
+  Guard("SetAccessibilityLabel", [&] {
+    X::DependencyObject target = s.FocusTarget() ? X::DependencyObject(s.FocusTarget())
+                                                 : X::DependencyObject(s.element);
+    if (!target) return;
+    if (label) {
+      X::Automation::AutomationProperties::SetName(target, ToHString(*label));
+    } else {
+      target.ClearValue(X::Automation::AutomationProperties::NameProperty());
+    }
+  });
+}
+
 void XamlView::Focus() {
   auto& s = *state_;
   Guard("Focus", [&] {
@@ -594,7 +611,18 @@ void XamlView::StopListening() {
 
 void XamlView::ObserveResize(bool observe) {
   auto& s = *state_;
-  if (!s.window) return;
+  if (!s.window) {
+    if (observe && s.element && !s.size_changed) {
+      State* state = state_.get();
+      Guard("ObserveResize", [&] {
+        s.size_changed = s.element.SizeChanged(
+            winrt::auto_revoke, [state](auto&&, auto&&) { state->impl->OnNativeResized(); });
+      });
+    } else if (!observe) {
+      s.size_changed.revoke();
+    }
+    return;
+  }
   auto& dispatcher = WindowMessageDispatcher::GetInstance();
   if (observe && !s.resize_handler_id) {
     State* state = state_.get();
@@ -692,6 +720,63 @@ void XamlView::SetFontSize(double size) {
   s.impl->InvalidateIntrinsicSize();
 }
 
+void XamlView::SetFontFamily(const std::optional<std::string>& family) {
+  auto& s = *state_;
+  Guard("SetFontFamily", [&] {
+    const bool custom = family && !family->empty() && *family != "system-ui";
+    winrt::hstring name;
+    if (custom) {
+      if (*family == "monospace" || *family == "ui-monospace") {
+        name = L"Consolas";
+      } else if (*family == "serif" || *family == "ui-serif") {
+        name = L"Georgia";
+      } else if (*family == "sans-serif") {
+        name = L"Segoe UI";
+      } else {
+        name = ToHString(*family);
+      }
+    }
+    if (s.label_text) {
+      if (custom) {
+        s.label_text.FontFamily(M::FontFamily(name));
+      } else {
+        s.label_text.ClearValue(C::TextBlock::FontFamilyProperty());
+      }
+    }
+    for (auto& control : s.Controls()) {
+      if (custom) {
+        control.FontFamily(M::FontFamily(name));
+      } else {
+        control.ClearValue(C::Control::FontFamilyProperty());
+      }
+    }
+  });
+  s.impl->InvalidateIntrinsicSize();
+}
+
+void XamlView::SetFontWeight(int weight) {
+  auto& s = *state_;
+  Guard("SetFontWeight", [&] {
+    const winrt::Windows::UI::Text::FontWeight fw{
+        static_cast<uint16_t>((std::clamp)(weight, 100, 900))};
+    if (s.label_text) {
+      if (weight > 0) {
+        s.label_text.FontWeight(fw);
+      } else {
+        s.label_text.ClearValue(C::TextBlock::FontWeightProperty());
+      }
+    }
+    for (auto& control : s.Controls()) {
+      if (weight > 0) {
+        control.FontWeight(fw);
+      } else {
+        control.ClearValue(C::Control::FontWeightProperty());
+      }
+    }
+  });
+  s.impl->InvalidateIntrinsicSize();
+}
+
 void XamlView::SetTextAlignment(TextAlignment alignment) {
   auto& s = *state_;
   Guard("SetTextAlignment", [&] {
@@ -748,6 +833,23 @@ void XamlView::SetMultiline(bool is_multiline) {
   Guard("SetMultiline", [&] {
     s.text_box.AcceptsReturn(is_multiline);
     s.text_box.TextWrapping(is_multiline ? X::TextWrapping::Wrap : X::TextWrapping::NoWrap);
+  });
+  s.impl->InvalidateIntrinsicSize();
+}
+
+void XamlView::SetBordered(bool is_bordered) {
+  auto& s = *state_;
+  if (!s.text_box) return;
+  Guard("SetBordered", [&] {
+    for (auto& control : s.Controls()) {
+      if (is_bordered) {
+        control.ClearValue(C::Control::BorderThicknessProperty());
+        control.ClearValue(C::Control::PaddingProperty());
+      } else {
+        control.BorderThickness(X::Thickness{0, 0, 0, 0});
+        control.Padding(X::Thickness{0, 0, 0, 0});
+      }
+    }
   });
   s.impl->InvalidateIntrinsicSize();
 }

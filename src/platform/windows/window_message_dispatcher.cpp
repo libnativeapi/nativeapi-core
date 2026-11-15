@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <functional>
 #include <vector>
+#include "dpi_utils_windows.h"
 
 namespace nativeapi {
 
@@ -208,6 +209,8 @@ void WindowMessageDispatcher::UninstallHook(HWND hwnd) {
 }
 
 HWND WindowMessageDispatcher::GetHostWindow() {
+  EnsureProcessDpiAwareness();
+
   // Check if host window already exists (without holding lock to avoid deadlock)
   if (host_window_ && IsWindow(host_window_)) {
     return host_window_;

@@ -76,9 +76,12 @@ struct View::Impl::Platform {
   napi_env env = nullptr;
   uintptr_t token = 0;
   ArkUI_NodeType type = ARKUI_NODE_STACK;
-  bool listening = false, resize = false, editable = true, secure = false, multiline = false;
+  bool listening = false, resize = false, editable = true, secure = false, multiline = false,
+       bordered = true;
   std::string last_text;
   std::optional<std::string> placeholder;
+  std::optional<std::string> font_family;
+  int font_weight = 0;
   ArkUI_NodeAttributeType TextAttribute() const {
     return multiline ? NODE_TEXT_AREA_TEXT : NODE_TEXT_INPUT_TEXT;
   }
@@ -480,6 +483,14 @@ void View::Impl::SetNativeTooltip(const std::optional<std::string>&) try {
 } catch (...) {
   platform->tooltip_hovered = false;
 }
+void View::Impl::SetNativeAccessibilityLabel(const std::optional<std::string>& label) {
+  if (!Main() || !native)
+    return;
+  if (label && label->find('\0') == label->npos)
+    NodeText(Node(*this), NODE_ACCESSIBILITY_TEXT, *label);
+  else if (!label)
+    NodeApi()->resetAttribute(Node(*this), NODE_ACCESSIBILITY_TEXT);
+}
 void View::Impl::NativeFocus() {
   if (Main() && native && !is_root)
     NodeInt(Node(*this), NODE_FOCUS_STATUS, 1);
@@ -583,6 +594,54 @@ bool AttachViewContent(napi_env env, napi_value window, napi_value content, napi
   return true;
 }
 }  // namespace ohos
+namespace {
+int32_t ToArkUiFontWeight(int weight) {
+  if (weight <= 150) return ARKUI_FONT_WEIGHT_W100;
+  if (weight <= 250) return ARKUI_FONT_WEIGHT_W200;
+  if (weight <= 350) return ARKUI_FONT_WEIGHT_W300;
+  if (weight <= 450) return ARKUI_FONT_WEIGHT_W400;
+  if (weight <= 550) return ARKUI_FONT_WEIGHT_W500;
+  if (weight <= 650) return ARKUI_FONT_WEIGHT_W600;
+  if (weight <= 750) return ARKUI_FONT_WEIGHT_W700;
+  if (weight <= 850) return ARKUI_FONT_WEIGHT_W800;
+  return ARKUI_FONT_WEIGHT_W900;
+}
+void SetOhosFontSize(Impl& impl, double size) {
+  if (!std::isfinite(size) || size < 0)
+    return;
+  size = size < 0 ? 0 : size;
+  impl.platform->font_size = size;
+  if (Main() && impl.native) {
+    if (size > 0)
+      NodeFloat(Node(impl), NODE_FONT_SIZE, size);
+    else
+      NodeApi()->resetAttribute(Node(impl), NODE_FONT_SIZE);
+  }
+  impl.InvalidateIntrinsicSize();
+}
+void SetOhosFontFamily(Impl& impl, const std::optional<std::string>& family) {
+  if (family && family->find('\0') != family->npos)
+    return;
+  impl.platform->font_family = family;
+  if (Main() && impl.native) {
+    if (family && !family->empty() && *family != "system-ui")
+      NodeText(Node(impl), NODE_FONT_FAMILY, *family);
+    else
+      NodeApi()->resetAttribute(Node(impl), NODE_FONT_FAMILY);
+  }
+  impl.InvalidateIntrinsicSize();
+}
+void SetOhosFontWeight(Impl& impl, int weight) {
+  impl.platform->font_weight = weight <= 0 ? 0 : std::clamp(weight, 100, 900);
+  if (Main() && impl.native) {
+    if (impl.platform->font_weight > 0)
+      NodeInt(Node(impl), NODE_FONT_WEIGHT, ToArkUiFontWeight(impl.platform->font_weight));
+    else
+      NodeApi()->resetAttribute(Node(impl), NODE_FONT_WEIGHT);
+  }
+  impl.InvalidateIntrinsicSize();
+}
+}  // namespace
 Label::Label(const std::string& text) : View(NativeControl{Create(ARKUI_NODE_TEXT)}) {
   Control(*pimpl_, ARKUI_NODE_TEXT);
   SetText(text);
@@ -602,17 +661,22 @@ Color Label::GetTextColor() const {
   return pimpl_->platform->text_color;
 }
 void Label::SetFontSize(double size) {
-  if (!Main() || !pimpl_->native || !std::isfinite(size) || size < 0)
-    return;
-  if (size)
-    NodeFloat(Node(*pimpl_), NODE_FONT_SIZE, size);
-  else
-    NodeApi()->resetAttribute(Node(*pimpl_), NODE_FONT_SIZE);
-  pimpl_->platform->font_size = size;
-  pimpl_->InvalidateIntrinsicSize();
+  SetOhosFontSize(*pimpl_, size);
 }
 double Label::GetFontSize() const {
   return pimpl_->platform->font_size;
+}
+void Label::SetFontFamily(const std::optional<std::string>& family) {
+  SetOhosFontFamily(*pimpl_, family);
+}
+std::optional<std::string> Label::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+void Label::SetFontWeight(int weight) {
+  SetOhosFontWeight(*pimpl_, weight);
+}
+int Label::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
 }
 void Label::SetTextAlignment(TextAlignment value) {
   if (Main() && pimpl_->native && NodeInt(Node(*pimpl_), NODE_TEXT_ALIGN, static_cast<int>(value)))
@@ -631,6 +695,24 @@ void Button::SetText(const std::string& text) {
 }
 std::string Button::GetText() const {
   return Main() ? NodeTextValue(Node(*pimpl_), NODE_BUTTON_LABEL) : "";
+}
+void Button::SetFontSize(double size) {
+  SetOhosFontSize(*pimpl_, size);
+}
+double Button::GetFontSize() const {
+  return pimpl_->platform->font_size;
+}
+void Button::SetFontFamily(const std::optional<std::string>& family) {
+  SetOhosFontFamily(*pimpl_, family);
+}
+std::optional<std::string> Button::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+void Button::SetFontWeight(int weight) {
+  SetOhosFontWeight(*pimpl_, weight);
+}
+int Button::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
 }
 TextField::TextField(const std::string& text) : View(NativeControl{Create(ARKUI_NODE_TEXT_INPUT)}) {
   Control(*pimpl_, ARKUI_NODE_TEXT_INPUT);
@@ -658,17 +740,22 @@ Color TextField::GetTextColor() const {
   return pimpl_->platform->text_color;
 }
 void TextField::SetFontSize(double size) {
-  if (!Main() || !pimpl_->native || !std::isfinite(size) || size < 0)
-    return;
-  if (size)
-    NodeFloat(Node(*pimpl_), NODE_FONT_SIZE, size);
-  else
-    NodeApi()->resetAttribute(Node(*pimpl_), NODE_FONT_SIZE);
-  pimpl_->platform->font_size = size;
-  pimpl_->InvalidateIntrinsicSize();
+  SetOhosFontSize(*pimpl_, size);
 }
 double TextField::GetFontSize() const {
   return pimpl_->platform->font_size;
+}
+void TextField::SetFontFamily(const std::optional<std::string>& family) {
+  SetOhosFontFamily(*pimpl_, family);
+}
+std::optional<std::string> TextField::GetFontFamily() const {
+  return pimpl_->platform->font_family;
+}
+void TextField::SetFontWeight(int weight) {
+  SetOhosFontWeight(*pimpl_, weight);
+}
+int TextField::GetFontWeight() const {
+  return pimpl_->platform->font_weight;
 }
 void TextField::SetTextAlignment(TextAlignment value) {
   if (Main() && pimpl_->native && NodeInt(Node(*pimpl_), NODE_TEXT_ALIGN, static_cast<int>(value)))
@@ -737,7 +824,14 @@ void TextField::SetMultiline(bool value) {
   SetPlaceholder(p.placeholder);
   SetTextColor(p.text_color);
   SetFontSize(p.font_size);
+  SetFontFamily(p.font_family);
+  SetFontWeight(p.font_weight);
   SetTextAlignment(p.text_alignment);
+  SetBordered(p.bordered);
+  if (pimpl_->accessibility_label)
+    pimpl_->SetNativeAccessibilityLabel(pimpl_->accessibility_label);
+  if (p.resize)
+    pimpl_->ObserveNativeResize(true);
   pimpl_->SetNativeFrame(bounds);
   SetEnabled(enabled);
   pimpl_->SetNativeVisible(IsVisible());
@@ -747,6 +841,22 @@ void TextField::SetMultiline(bool value) {
 }
 bool TextField::IsMultiline() const {
   return pimpl_->platform->multiline;
+}
+void TextField::SetBordered(bool value) {
+  pimpl_->platform->bordered = value;
+  if (!Main() || !pimpl_->native)
+    return;
+  if (value) {
+    NodeApi()->resetAttribute(Node(*pimpl_), NODE_BORDER_WIDTH);
+    NodeApi()->resetAttribute(Node(*pimpl_), NODE_PADDING);
+  } else {
+    NodeFloat(Node(*pimpl_), NODE_BORDER_WIDTH, 0);
+    NodeFloat(Node(*pimpl_), NODE_PADDING, 0);
+  }
+  pimpl_->InvalidateIntrinsicSize();
+}
+bool TextField::IsBordered() const {
+  return pimpl_->platform->bordered;
 }
 ImageView::ImageView() : View(NativeControl{Create(ARKUI_NODE_IMAGE)}) {
   Control(*pimpl_, ARKUI_NODE_IMAGE);

@@ -82,7 +82,23 @@ void View::Impl::InvalidateIntrinsicSize() {
 }
 
 void View::Impl::OnNativeResized() {
-  RequestLayout();
+  if (is_root) {
+    RequestLayout();
+  }
+  EmitResizedIfNeeded();
+}
+
+void View::Impl::EmitResizedIfNeeded() {
+  if (!listening_events) {
+    return;
+  }
+  const Rectangle current = GetNativeFrame();
+  const Size size{current.width, current.height};
+  if (size.width != last_emitted_size.width || size.height != last_emitted_size.height) {
+    last_emitted_size = size;
+    auto keep_alive = owner->weak_from_this().lock();
+    Emit(ViewResizedEvent(id, size));
+  }
 }
 
 Size View::Impl::IntrinsicSize() const {
@@ -133,6 +149,7 @@ void View::Impl::Relayout() {
     // a child's position depends on the parent's height.
     for (const auto& subview : subviews) {
       subview->pimpl_->SetNativeFrame(subview->pimpl_->AbsoluteFrame());
+      subview->pimpl_->EmitResizedIfNeeded();
     }
   } else if (!subviews.empty()) {
     std::vector<LayoutChild> children;
@@ -146,6 +163,7 @@ void View::Impl::Relayout() {
     for (size_t i = 0; i < subviews.size(); ++i) {
       if (children[i].visible) {
         subviews[i]->pimpl_->SetNativeFrame(frames[i]);
+        subviews[i]->pimpl_->EmitResizedIfNeeded();
       }
     }
   }
@@ -181,7 +199,7 @@ View::~View() {
   for (const auto& subview : pimpl_->subviews) {
     subview->pimpl_->parent.reset();
   }
-  if (pimpl_->is_root) {
+  if (pimpl_->is_root || pimpl_->listening_events) {
     pimpl_->ObserveNativeResize(false);
   }
 }
@@ -379,6 +397,7 @@ void View::SetFrame(Rectangle frame) {
     // translation also leaves all local child frames and measurements intact.
     if (before.width != frame.width || before.height != frame.height) {
       pimpl_->RequestLayout();
+      pimpl_->EmitResizedIfNeeded();
     }
   }
 }
@@ -491,6 +510,8 @@ bool View::IsEnabled() const {
 }
 
 void View::SetBackgroundColor(Color color) {
+  if (pimpl_->background_color.ToRGBA() == color.ToRGBA())
+    return;
   pimpl_->background_color = color;
   pimpl_->SetNativeBackgroundColor(color);
 }
@@ -510,6 +531,17 @@ std::optional<std::string> View::GetTooltip() const {
   return pimpl_->tooltip;
 }
 
+void View::SetAccessibilityLabel(const std::optional<std::string>& label) {
+  if (pimpl_->accessibility_label == label)
+    return;
+  pimpl_->accessibility_label = label;
+  pimpl_->SetNativeAccessibilityLabel(label);
+}
+
+std::optional<std::string> View::GetAccessibilityLabel() const {
+  return pimpl_->accessibility_label;
+}
+
 void View::Focus() {
   pimpl_->NativeFocus();
 }
@@ -523,11 +555,21 @@ bool View::IsFocused() const {
 }
 
 void View::StartEventListening() {
+  pimpl_->listening_events = true;
+  const Rectangle current = pimpl_->GetNativeFrame();
+  pimpl_->last_emitted_size = Size{current.width, current.height};
+  if (!pimpl_->is_root) {
+    pimpl_->ObserveNativeResize(true);
+  }
   pimpl_->StartNativeListening();
 }
 
 void View::StopEventListening() {
+  pimpl_->listening_events = false;
   pimpl_->StopNativeListening();
+  if (!pimpl_->is_root) {
+    pimpl_->ObserveNativeResize(false);
+  }
 }
 
 void* View::GetNativeObjectInternal() const {

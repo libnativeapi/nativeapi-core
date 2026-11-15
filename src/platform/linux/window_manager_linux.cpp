@@ -343,6 +343,44 @@ static void* g_window_signal_context = nullptr;
 // Last content rectangle seen per toplevel. configure-event reports moves and
 // resizes alike (and repeats itself), so this tells the two apart.
 static std::map<GtkWidget*, GdkRectangle> g_window_geometry;
+static std::map<GtkWidget*, int> g_window_scale_factors;
+
+static void OnToplevelScaleFactorChanged(GtkWidget* widget, GParamSpec*, gpointer) {
+  if (!widget || !GTK_IS_WINDOW(widget) || !gtk_widget_is_toplevel(widget) ||
+      gtk_window_get_window_type(GTK_WINDOW(widget)) != GTK_WINDOW_TOPLEVEL) {
+    return;
+  }
+  GdkWindow* gdk_window = gtk_widget_get_window(widget);
+  if (!gdk_window || !g_window_signal_fn || !g_window_signal_context) {
+    return;
+  }
+  const int scale = gtk_widget_get_scale_factor(widget);
+  auto it = g_window_scale_factors.find(widget);
+  if (it != g_window_scale_factors.end() && it->second == scale) {
+    return;
+  }
+  g_window_scale_factors[widget] = scale;
+  const WindowId id = GetOrCreateWindowId(gdk_window);
+  if (id != IdAllocator::kInvalidId) {
+    g_window_signal_fn(g_window_signal_context, id, "scale_factor_changed");
+  }
+}
+
+static void OnToplevelScaleFactorChanged(GtkWidget* widget, GParamSpec*, gpointer);
+
+static void OnScaleTrackedWidgetDestroyed(gpointer, GObject* where_the_object_was) {
+  g_window_scale_factors.erase(reinterpret_cast<GtkWidget*>(where_the_object_was));
+}
+
+static void TrackToplevelScaleFactor(GtkWidget* widget) {
+  if (!widget || g_window_scale_factors.count(widget)) {
+    return;
+  }
+  g_window_scale_factors[widget] = gtk_widget_get_scale_factor(widget);
+  g_signal_connect(G_OBJECT(widget), "notify::scale-factor",
+                   G_CALLBACK(OnToplevelScaleFactorChanged), nullptr);
+  g_object_weak_ref(G_OBJECT(widget), OnScaleTrackedWidgetDestroyed, nullptr);
+}
 
 static void OnTrackedWidgetDestroyed(gpointer data, GObject* where_the_object_was) {
   (void)data;
@@ -450,6 +488,7 @@ static gboolean on_configure_emission_hook(GSignalInvocationHint* ihint,
   if (it == g_window_geometry.end()) {
     // First sight: nothing to compare with yet
     g_window_geometry[widget] = current;
+    TrackToplevelScaleFactor(widget);
     g_object_weak_ref(G_OBJECT(widget), OnTrackedWidgetDestroyed, nullptr);
     return TRUE;
   }
@@ -502,6 +541,9 @@ static gboolean on_map_emission_hook(GSignalInvocationHint* ihint,
     return TRUE;
   }
   g_shown_windows[widget] = id;
+  if (!g_window_geometry.count(widget)) {
+    TrackToplevelScaleFactor(widget);
+  }
   g_object_weak_ref(G_OBJECT(widget), OnShownWidgetDestroyed, nullptr);
   g_window_signal_fn(g_window_signal_context, id, "created");
   return TRUE;  // Continue emission
@@ -601,6 +643,12 @@ class WindowManager::Impl {
     RemoveWindowSignalHooks();
     g_window_signal_fn = nullptr;
     g_window_signal_context = nullptr;
+    for (const auto& entry : g_window_scale_factors) {
+      g_signal_handlers_disconnect_by_func(
+          G_OBJECT(entry.first), reinterpret_cast<gpointer>(OnToplevelScaleFactorChanged), nullptr);
+      g_object_weak_unref(G_OBJECT(entry.first), OnScaleTrackedWidgetDestroyed, nullptr);
+    }
+    g_window_scale_factors.clear();
     for (const auto& entry : g_window_geometry) {
       g_object_weak_unref(G_OBJECT(entry.first), OnTrackedWidgetDestroyed, nullptr);
     }
@@ -624,6 +672,7 @@ class WindowManager::Impl {
     geometry.width = gdk_window_get_width(gdk_window);
     geometry.height = gdk_window_get_height(gdk_window);
     g_window_geometry[widget] = geometry;
+    TrackToplevelScaleFactor(widget);
     g_object_weak_ref(G_OBJECT(widget), OnTrackedWidgetDestroyed, nullptr);
   }
 
@@ -679,6 +728,11 @@ class WindowManager::Impl {
         WindowResizedEvent event(window_id, window->GetSize());
         manager_->DispatchWindowEvent(event);
       }
+    } else if (event_type == "scale_factor_changed") {
+      GdkWindow* gdk_window = FindGdkWindowById(window_id);
+      const int raw_scale = gdk_window ? gdk_window_get_scale_factor(gdk_window) : 1;
+      WindowScaleFactorChangedEvent event(window_id, raw_scale > 0 ? static_cast<double>(raw_scale) : 1.0);
+      manager_->DispatchWindowEvent(event);
     }
   }
 

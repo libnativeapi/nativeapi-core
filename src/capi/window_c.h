@@ -129,6 +129,7 @@ typedef enum {
   NATIVE_WINDOW_EVENT_TYPE_OCCLUSION_CHANGED = 13,
   NATIVE_WINDOW_EVENT_TYPE_DOCKED = 14,
   NATIVE_WINDOW_EVENT_TYPE_UNDOCKED = 15,
+  NATIVE_WINDOW_EVENT_TYPE_SCALE_FACTOR_CHANGED = 16,
 } native_window_event_type_t;
 
 /// One WindowEvent, tagged by its concrete type.
@@ -157,6 +158,9 @@ typedef struct {
     struct {
       native_window_dock_side_t side;
     } docked;
+    struct {
+      double scale_factor;
+    } scale_factor_changed;
   } data;
 } native_window_event_t;
 

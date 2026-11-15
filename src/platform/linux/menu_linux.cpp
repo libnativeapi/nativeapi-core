@@ -43,22 +43,6 @@ static void OnGtkCheckMenuItemToggled(GtkCheckMenuItem* item, gpointer user_data
   }
 }
 
-static void OnGtkMenuMap(GtkWidget* /*menu*/, gpointer user_data) {
-  Menu* menu_obj = static_cast<Menu*>(user_data);
-  if (!menu_obj) {
-    return;
-  }
-  menu_obj->Emit(MenuOpenedEvent(menu_obj->GetId()));
-}
-
-static void OnGtkMenuUnmap(GtkWidget* /*menu*/, gpointer user_data) {
-  Menu* menu_obj = static_cast<Menu*>(user_data);
-  if (!menu_obj) {
-    return;
-  }
-  menu_obj->Emit(MenuClosedEvent(menu_obj->GetId()));
-}
-
 static void OnGtkSubmenuMap(GtkWidget* /*submenu*/, gpointer user_data) {
   MenuItem* menu_item = static_cast<MenuItem*>(user_data);
   if (!menu_item) {
@@ -486,6 +470,10 @@ class Menu::Impl {
   }
 
   ~Impl() {
+    if (pending_close_idle_id_ != 0) {
+      g_source_remove(pending_close_idle_id_);
+      pending_close_idle_id_ = 0;
+    }
     if (gtk_menu_) {
       g_object_remove_weak_pointer(G_OBJECT(gtk_menu_), (gpointer*)&gtk_menu_);
     }
@@ -498,7 +486,35 @@ class Menu::Impl {
   // Signal handler IDs for cleanup
   gulong map_handler_id_;
   gulong unmap_handler_id_;
+  guint pending_close_idle_id_ = 0;
 };
+
+static void OnGtkMenuMap(GtkWidget* /*menu*/, gpointer user_data) {
+  Menu* menu_obj = static_cast<Menu*>(user_data);
+  if (!menu_obj) {
+    return;
+  }
+  menu_obj->Emit(MenuOpenedEvent(menu_obj->GetId()));
+}
+
+// GTK unmaps a popup menu inside gtk_menu_shell_deactivate() immediately before
+// emitting the chosen GtkMenuItem's "activate" signal. Deferring MenuClosedEvent
+// to a high-priority idle callback lets MenuItemClickedEvent fire first.
+static void OnGtkMenuUnmap(GtkWidget* /*menu*/, gpointer user_data) {
+  Menu* menu_obj = static_cast<Menu*>(user_data);
+  if (!menu_obj || menu_obj->pimpl_->pending_close_idle_id_ != 0) {
+    return;
+  }
+  menu_obj->pimpl_->pending_close_idle_id_ = g_idle_add_full(
+      G_PRIORITY_HIGH,
+      [](gpointer data) -> gboolean {
+        Menu* self = static_cast<Menu*>(data);
+        self->pimpl_->pending_close_idle_id_ = 0;
+        self->Emit(MenuClosedEvent(self->GetId()));
+        return G_SOURCE_REMOVE;
+      },
+      menu_obj, nullptr);
+}
 
 Menu::Menu() {
   MenuId id = IdAllocator::Allocate<Menu>();

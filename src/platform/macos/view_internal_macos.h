@@ -6,6 +6,8 @@
 #import <Cocoa/Cocoa.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "../../image.h"
 #include "../../view_impl.h"
@@ -50,6 +52,9 @@ struct View::Impl::Platform {
   // zero size can restore it.
   Color text_color{0, 0, 0, 0};
   double font_size = 0.0;
+  std::optional<std::string> font_family;
+  int font_weight = 0;
+  bool bordered = true;
   bool secure = false;
   bool multiline = false;
   std::shared_ptr<Image> image;
