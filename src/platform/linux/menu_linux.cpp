@@ -487,6 +487,25 @@ class Menu::Impl {
   gulong map_handler_id_;
   gulong unmap_handler_id_;
   guint pending_close_idle_id_ = 0;
+
+  // GTK unmaps a popup menu inside gtk_menu_shell_deactivate() immediately before
+  // emitting the chosen GtkMenuItem's "activate" signal. Deferring MenuClosedEvent
+  // to a high-priority idle callback lets MenuItemClickedEvent fire first.
+  static void OnUnmap(GtkWidget* /*menu*/, gpointer user_data) {
+    Menu* menu_obj = static_cast<Menu*>(user_data);
+    if (!menu_obj || menu_obj->pimpl_->pending_close_idle_id_ != 0) {
+      return;
+    }
+    menu_obj->pimpl_->pending_close_idle_id_ = g_idle_add_full(
+        G_PRIORITY_HIGH,
+        [](gpointer data) -> gboolean {
+          Menu* self = static_cast<Menu*>(data);
+          self->pimpl_->pending_close_idle_id_ = 0;
+          self->Emit(MenuClosedEvent(self->GetId()));
+          return G_SOURCE_REMOVE;
+        },
+        menu_obj, nullptr);
+  }
 };
 
 static void OnGtkMenuMap(GtkWidget* /*menu*/, gpointer user_data) {
@@ -497,25 +516,6 @@ static void OnGtkMenuMap(GtkWidget* /*menu*/, gpointer user_data) {
   menu_obj->Emit(MenuOpenedEvent(menu_obj->GetId()));
 }
 
-// GTK unmaps a popup menu inside gtk_menu_shell_deactivate() immediately before
-// emitting the chosen GtkMenuItem's "activate" signal. Deferring MenuClosedEvent
-// to a high-priority idle callback lets MenuItemClickedEvent fire first.
-static void OnGtkMenuUnmap(GtkWidget* /*menu*/, gpointer user_data) {
-  Menu* menu_obj = static_cast<Menu*>(user_data);
-  if (!menu_obj || menu_obj->pimpl_->pending_close_idle_id_ != 0) {
-    return;
-  }
-  menu_obj->pimpl_->pending_close_idle_id_ = g_idle_add_full(
-      G_PRIORITY_HIGH,
-      [](gpointer data) -> gboolean {
-        Menu* self = static_cast<Menu*>(data);
-        self->pimpl_->pending_close_idle_id_ = 0;
-        self->Emit(MenuClosedEvent(self->GetId()));
-        return G_SOURCE_REMOVE;
-      },
-      menu_obj, nullptr);
-}
-
 Menu::Menu() {
   MenuId id = IdAllocator::Allocate<Menu>();
   pimpl_ = std::unique_ptr<Impl>(new Impl(id, gtk_menu_new()));
@@ -524,7 +524,7 @@ Menu::Menu() {
     pimpl_->map_handler_id_ =
         g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "map", G_CALLBACK(OnGtkMenuMap), this);
     pimpl_->unmap_handler_id_ =
-        g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "unmap", G_CALLBACK(OnGtkMenuUnmap), this);
+        g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "unmap", G_CALLBACK(Impl::OnUnmap), this);
   }
 }
 
@@ -535,7 +535,7 @@ Menu::Menu(void* menu) {
     pimpl_->map_handler_id_ =
         g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "map", G_CALLBACK(OnGtkMenuMap), this);
     pimpl_->unmap_handler_id_ =
-        g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "unmap", G_CALLBACK(OnGtkMenuUnmap), this);
+        g_signal_connect(G_OBJECT(pimpl_->gtk_menu_), "unmap", G_CALLBACK(Impl::OnUnmap), this);
   }
 }
 

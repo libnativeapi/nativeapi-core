@@ -122,7 +122,7 @@ void OnBufferChanged(GtkTextBuffer*, gpointer data) {
 }
 
 void OnPlaceholderBufferChanged(GtkTextBuffer*, gpointer data) {
-  static_cast<View::Impl::Platform*>(data)->SyncPlaceholderVisibility();
+  static_cast<Impl::Platform*>(data)->SyncPlaceholderVisibility();
 }
 
 gboolean OnFocusIn(GtkWidget*, GdkEventFocus*, gpointer data) {
