@@ -186,7 +186,7 @@ void RebuildEdit(ViewInternal::Impl& impl) {
   }
   // Under the host still: its EN_CHANGE reaches no handler.
   SetWindowTextUtf8(replacement, WindowTextUtf8(old));
-  if (platform.placeholder) {
+  if (platform.placeholder && !platform.multiline) {
     SetCueBanner(replacement, platform.placeholder);
   }
   platform.ReplaceHwnd(replacement);
@@ -394,7 +394,13 @@ void TextField::SetPlaceholder(const std::optional<std::string>& placeholder) {
   }
   pimpl_->platform->placeholder = placeholder;
   NATIVEAPI_VIEW_XAML(*pimpl_, SetPlaceholder(placeholder))
-  SetCueBanner(pimpl_->platform->hwnd, placeholder);
+  if (pimpl_->platform->multiline) {
+    if (pimpl_->platform->hwnd) {
+      InvalidateRect(pimpl_->platform->hwnd, nullptr, TRUE);
+    }
+  } else {
+    SetCueBanner(pimpl_->platform->hwnd, placeholder);
+  }
 }
 
 std::optional<std::string> TextField::GetPlaceholder() const {

@@ -129,8 +129,13 @@ int main(int argc, char** argv) {
             field->GetAccessibilityLabel() == std::optional<std::string>("Search query"),
         "TextField preserves unbordered, font & accessibility across SetSecure");
   field->SetSecure(false);
+  field->SetPlaceholder("Enter or paste text");
   field->SetMultiline(true);
-  check(!field->IsBordered() && field->IsMultiline(), "TextField preserves unbordered in multiline");
+  check(!field->IsBordered() && field->IsMultiline() &&
+            field->GetPlaceholder() == std::optional<std::string>("Enter or paste text"),
+        "TextField preserves unbordered & placeholder in multiline");
+  field->SetText("");
+  check(field->GetText().empty(), "TextField multiline clear keeps placeholder state");
 
   if (failures == 0) {
     std::cout << "view_api_test: all passed" << std::endl;

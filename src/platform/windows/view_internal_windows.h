@@ -95,6 +95,10 @@ struct View::Impl::Platform {
   /// Set around a programmatic WM_SETTEXT so EN_CHANGE does not become a
   /// TextFieldChangedEvent.
   bool suppress_change = false;
+  /// Multiline EDIT controls receive no EM_SETCUEBANNER support from Win32;
+  /// EditSubclassProc paints their placeholder while empty and not composing.
+  bool ime_composing = false;
+  bool multiline_cue_drawn = false;
 
   // ImageView: the image and the bitmap rendered from it at the frame size.
   std::shared_ptr<Image> image;

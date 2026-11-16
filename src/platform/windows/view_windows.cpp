@@ -248,6 +248,84 @@ std::wstring WindowTextWide(HWND hwnd) {
 
 /// Enter in a single-line EDIT submits instead of beeping; a multi-line one
 /// keeps its newline (ES_WANTRETURN).
+void PaintMultilineCue(ViewInternal::Impl& impl, HWND hwnd) {
+  auto& platform = *impl.platform;
+  if (!platform.placeholder || platform.placeholder->empty()) {
+    return;
+  }
+  RECT rect = {};
+  SendMessageW(hwnd, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&rect));
+  if (rect.right <= rect.left || rect.bottom <= rect.top) {
+    GetClientRect(hwnd, &rect);
+  }
+  if (rect.right <= rect.left || rect.bottom <= rect.top) {
+    return;
+  }
+
+  COLORREF background;
+  if (impl.background_color.a != 0) {
+    background = ToColorRef(impl.background_color);
+  } else {
+    background =
+        GetSysColor(platform.editable && IsWindowEnabled(hwnd) ? COLOR_WINDOW : COLOR_3DFACE);
+  }
+  COLORREF cue;
+  if (platform.text_color.a != 0 || impl.background_color.a != 0) {
+    const COLORREF text =
+        platform.text_color.a != 0
+            ? ToColorRef(platform.text_color)
+            : GetSysColor(IsWindowEnabled(hwnd) ? COLOR_WINDOWTEXT : COLOR_GRAYTEXT);
+    auto blend = [](BYTE fg, BYTE bg) -> BYTE {
+      return static_cast<BYTE>((static_cast<int>(fg) * 122 + static_cast<int>(bg) * 133 + 127) /
+                               255);
+    };
+    cue = RGB(blend(GetRValue(text), GetRValue(background)),
+              blend(GetGValue(text), GetGValue(background)),
+              blend(GetBValue(text), GetBValue(background)));
+  } else {
+    cue = GetSysColor(COLOR_GRAYTEXT);
+  }
+
+  HDC hdc = GetDC(hwnd);
+  if (!hdc) {
+    return;
+  }
+  const bool focused = GetFocus() == hwnd;
+  if (focused) {
+    HideCaret(hwnd);
+  }
+  const int saved = SaveDC(hdc);
+  IntersectClipRect(hdc, rect.left, rect.top, rect.right, rect.bottom);
+  FillRect(hdc, &rect, platform.BrushFor(background));
+  HFONT font = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+  if (!font) {
+    font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+  }
+  SelectObject(hdc, font);
+  SetBkMode(hdc, TRANSPARENT);
+  SetTextColor(hdc, cue);
+  UINT format = DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX;
+  switch (platform.text_alignment) {
+    case TextAlignment::Center:
+      format |= DT_CENTER;
+      break;
+    case TextAlignment::End:
+      format |= DT_RIGHT;
+      break;
+    case TextAlignment::Start:
+    default:
+      format |= DT_LEFT;
+      break;
+  }
+  const std::wstring wide = StringToWString(*platform.placeholder);
+  DrawTextW(hdc, wide.c_str(), static_cast<int>(wide.size()), &rect, format);
+  RestoreDC(hdc, saved);
+  if (focused) {
+    ShowCaret(hwnd);
+  }
+  ReleaseDC(hwnd, hdc);
+}
+
 LRESULT CALLBACK EditSubclassProc(HWND hwnd,
                                   UINT msg,
                                   WPARAM wparam,
@@ -260,11 +338,33 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
            !target->platform->multiline && target->platform->placeholder &&
            !target->platform->placeholder->empty() && GetWindowTextLengthW(control) == 0;
   };
+  auto has_multiline_cue = [](ViewInternal::Impl* target, HWND control) {
+    return target && target->platform && target->platform->hwnd == control &&
+           target->platform->multiline && !target->platform->ime_composing &&
+           target->platform->placeholder && !target->platform->placeholder->empty() &&
+           GetWindowTextLengthW(control) == 0;
+  };
   switch (msg) {
+    case WM_IME_STARTCOMPOSITION:
+      if (impl && impl->platform && impl->platform->hwnd == hwnd) {
+        impl->platform->ime_composing = true;
+        if (impl->platform->multiline_cue_drawn) {
+          impl->platform->multiline_cue_drawn = false;
+          InvalidateRect(hwnd, nullptr, TRUE);
+        }
+      }
+      break;
+    case WM_IME_ENDCOMPOSITION:
+    case WM_KILLFOCUS:
+      if (impl && impl->platform && impl->platform->hwnd == hwnd && impl->platform->ime_composing) {
+        impl->platform->ime_composing = false;
+        InvalidateRect(hwnd, nullptr, TRUE);
+      }
+      break;
     case WM_LBUTTONDBLCLK:
-      // Win32's single-line EDIT enters word-selection drag on double-click and
-      // erases its cue banner directly on GetDC(hwnd) without scheduling WM_PAINT.
-      if (has_empty_cue(impl, hwnd)) {
+      // Win32's EDIT enters word-selection drag on double-click and erases its
+      // cue banner directly on GetDC(hwnd) without scheduling WM_PAINT.
+      if (has_empty_cue(impl, hwnd) || has_multiline_cue(impl, hwnd)) {
         if (IsWindowEnabled(hwnd) && GetFocus() != hwnd) {
           SetFocus(hwnd);
         }
@@ -272,6 +372,21 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
         return 0;
       }
       break;
+    case WM_PAINT: {
+      const LRESULT painted = DefSubclassProc(hwnd, msg, wparam, lparam);
+      DWORD_PTR current_ref = 0;
+      if (IsWindow(hwnd) &&
+          GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref)) {
+        auto* target = reinterpret_cast<ViewInternal::Impl*>(current_ref);
+        if (has_multiline_cue(target, hwnd)) {
+          PaintMultilineCue(*target, hwnd);
+          target->platform->multiline_cue_drawn = true;
+        } else if (target && target->platform && target->platform->hwnd == hwnd) {
+          target->platform->multiline_cue_drawn = false;
+        }
+      }
+      return painted;
+    }
     case WM_KEYDOWN:
       if (wparam == VK_RETURN && impl && impl->platform && !impl->platform->multiline) {
         if (impl->platform->listening) {
@@ -290,19 +405,32 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
       RemoveWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId);
       if (impl && impl->platform && impl->platform->hwnd == hwnd) {
         impl->platform->subclassed = false;
+        impl->platform->ime_composing = false;
+        impl->platform->multiline_cue_drawn = false;
       }
       return DefSubclassProc(hwnd, msg, wparam, lparam);
     default:
       break;
   }
   const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
-  if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
-      (msg == WM_MOUSEMOVE && (wparam & MK_LBUTTON) != 0) || msg == WM_KEYDOWN ||
-      msg == EM_SETSEL) {
+  if (msg != WM_ERASEBKGND && msg != WM_NCPAINT && msg != WM_NCHITTEST && msg != WM_SETCURSOR &&
+      msg != WM_GETICON && msg != WM_TIMER && IsWindow(hwnd)) {
     DWORD_PTR current_ref = 0;
-    if (IsWindow(hwnd) && GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref) &&
-        has_empty_cue(reinterpret_cast<ViewInternal::Impl*>(current_ref), hwnd)) {
-      InvalidateRect(hwnd, nullptr, FALSE);
+    if (GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref)) {
+      auto* target = reinterpret_cast<ViewInternal::Impl*>(current_ref);
+      if (target && target->platform && target->platform->hwnd == hwnd) {
+        const bool want_multiline_cue = has_multiline_cue(target, hwnd);
+        if (want_multiline_cue != target->platform->multiline_cue_drawn) {
+          target->platform->multiline_cue_drawn = false;
+          InvalidateRect(hwnd, nullptr, TRUE);
+        } else if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+                   (msg == WM_MOUSEMOVE && (wparam & MK_LBUTTON) != 0) || msg == WM_KEYDOWN ||
+                   msg == EM_SETSEL || msg == WM_SETFOCUS || msg == WM_KILLFOCUS) {
+          if (has_empty_cue(target, hwnd) || want_multiline_cue) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+          }
+        }
+      }
     }
   }
   return result;
@@ -660,6 +788,8 @@ void View::Impl::Platform::ReplaceHwnd(HWND replacement) {
     }
   }
   hwnd = replacement;
+  ime_composing = false;
+  multiline_cue_drawn = false;
   impl->native = replacement;
   ApplyFont();
   if (impl->tooltip) {
