@@ -140,7 +140,7 @@ class ApplicationMessages {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     if (!input_started_) input_started_ = now.QuadPart;
-    if (now.QuadPart - input_started_ < frequency_.QuadPart / 125 &&
+    if (now.QuadPart - input_started_ < frequency_.QuadPart / 250 &&
         PeekMessage(message, nullptr, 0, 0, PM_REMOVE | PM_QS_INPUT)) {
       RecordMessage(*message, now.QuadPart, true);
       return message->message == WM_QUIT ? 0 : 1;

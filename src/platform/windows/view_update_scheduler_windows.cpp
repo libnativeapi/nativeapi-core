@@ -127,13 +127,15 @@ class Scheduler {
     QueryPerformanceCounter(&ready_time);
     // Input may become available after Application's pre-check but before this
     // posted message is retrieved. Yield without a nested pump so the host can
-    // dispatch it and coalesce wheel/state changes before expensive rendering.
+    // dispatch it and coalesce wheel/state changes before expensive rendering,
+    // keeping the slice short enough not to push delivery across a vblank.
     if (HIWORD(GetQueueStatus(QS_INPUT))) {
       if (!input_yield_started)
         input_yield_started = ready_time.QuadPart;
-      if (ready_time.QuadPart - input_yield_started < frequency / 125) {
+      const auto yield_budget = std::min<int64_t>(frequency / 500, frame_period / 4);
+      if (ready_time.QuadPart - input_yield_started < yield_budget) {
         LARGE_INTEGER retry;
-        retry.QuadPart = -10000;  // 1 ms, bounded to an 8 ms input slice.
+        retry.QuadPart = -2500;  // 0.25 ms, bounded to <= 2 ms or 1/4 frame.
         if (SetWaitableTimer(timer, &retry, 0, nullptr, nullptr, FALSE))
           return;
       }
