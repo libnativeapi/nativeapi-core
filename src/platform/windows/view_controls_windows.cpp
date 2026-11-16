@@ -457,21 +457,10 @@ void TextField::SetBordered(bool is_bordered) {
   }
   platform.bordered = is_bordered;
   NATIVEAPI_VIEW_XAML(*pimpl_, SetBordered(is_bordered))
-  if (platform.hwnd) {
-    LONG_PTR style = GetWindowLongPtrW(platform.hwnd, GWL_STYLE);
-    if (is_bordered) {
-      style |= WS_BORDER;
-    } else {
-      style &= ~static_cast<LONG_PTR>(WS_BORDER);
-    }
-    SetWindowLongPtrW(platform.hwnd, GWL_STYLE, style);
-    SetWindowPos(platform.hwnd, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    if (!is_bordered) {
-      SendMessageW(platform.hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
-    }
-    InvalidateRect(platform.hwnd, nullptr, TRUE);
-  }
+  // Win32 EDIT latches WS_BORDER into its internal border flag during
+  // WM_NCCREATE and clears WS_BORDER from GWL_STYLE, painting a 1px
+  // COLOR_WINDOWFRAME outline in WM_PAINT until the control is recreated.
+  RebuildEdit(*pimpl_);
   pimpl_->InvalidateIntrinsicSize();
 }
 

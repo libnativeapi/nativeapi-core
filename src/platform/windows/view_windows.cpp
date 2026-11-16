@@ -255,10 +255,28 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
                                   UINT_PTR /*subclass_id*/,
                                   DWORD_PTR ref_data) {
   auto* impl = reinterpret_cast<ViewInternal::Impl*>(ref_data);
+  auto has_empty_cue = [](ViewInternal::Impl* target, HWND control) {
+    return target && target->platform && target->platform->hwnd == control &&
+           !target->platform->multiline && target->platform->placeholder &&
+           !target->platform->placeholder->empty() && GetWindowTextLengthW(control) == 0;
+  };
   switch (msg) {
+    case WM_LBUTTONDBLCLK:
+      // Win32's single-line EDIT enters word-selection drag on double-click and
+      // erases its cue banner directly on GetDC(hwnd) without scheduling WM_PAINT.
+      if (has_empty_cue(impl, hwnd)) {
+        if (IsWindowEnabled(hwnd) && GetFocus() != hwnd) {
+          SetFocus(hwnd);
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
+      break;
     case WM_KEYDOWN:
       if (wparam == VK_RETURN && impl && impl->platform && !impl->platform->multiline) {
-        impl->Emit(TextFieldSubmittedEvent(impl->id));
+        if (impl->platform->listening) {
+          impl->Emit(TextFieldSubmittedEvent(impl->id));
+        }
         // `impl` may be gone: a listener can destroy the view.
         return 0;
       }
@@ -273,11 +291,21 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
       if (impl && impl->platform && impl->platform->hwnd == hwnd) {
         impl->platform->subclassed = false;
       }
-      break;
+      return DefSubclassProc(hwnd, msg, wparam, lparam);
     default:
       break;
   }
-  return DefSubclassProc(hwnd, msg, wparam, lparam);
+  const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
+  if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+      (msg == WM_MOUSEMOVE && (wparam & MK_LBUTTON) != 0) || msg == WM_KEYDOWN ||
+      msg == EM_SETSEL) {
+    DWORD_PTR current_ref = 0;
+    if (IsWindow(hwnd) && GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref) &&
+        has_empty_cue(reinterpret_cast<ViewInternal::Impl*>(current_ref), hwnd)) {
+      InvalidateRect(hwnd, nullptr, FALSE);
+    }
+  }
+  return result;
 }
 
 }  // namespace
@@ -353,6 +381,7 @@ View::Impl::Platform::Platform(Impl* impl, HWND hwnd)
     : impl(impl), hwnd(hwnd), kind(DetectKind(hwnd)) {
   if (impl->owned && kind != ViewKind::Container) {
     ApplyFont();
+    Subclass();
   }
 }
 
@@ -591,6 +620,15 @@ void View::Impl::Platform::ReplaceHwnd(HWND replacement) {
     return;
   }
   HWND old = hwnd;
+  if (native_updates && old) {
+    const auto pending = native_updates->moves.find(old);
+    if (pending != native_updates->moves.end()) {
+      auto move = pending->second;
+      native_updates->moves.erase(pending);
+      native_updates->moves[replacement] = move;
+    }
+    native_updates->damage.erase(old);
+  }
   const bool had_resize_handler = resize_handler_id != 0;
   if (resize_handler_id) {
     WindowMessageDispatcher::GetInstance().UnregisterHandler(resize_handler_id);
@@ -631,7 +669,7 @@ void View::Impl::Platform::ReplaceHwnd(HWND replacement) {
     impl->SetNativeAccessibilityLabel(impl->accessibility_label);
   }
   HookParent();
-  if (listening) {
+  if (impl->owned || listening) {
     Subclass();
   }
   if (had_resize_handler) {
@@ -1142,7 +1180,9 @@ void View::Impl::StopNativeListening() {
     dispatcher.UnregisterHandler(platform->host_command_handler_id);
     platform->host_command_handler_id = 0;
   }
-  platform->Unsubclass();
+  if (!owned) {
+    platform->Unsubclass();
+  }
 }
 
 void View::Impl::ObserveNativeResize(bool observe) {
