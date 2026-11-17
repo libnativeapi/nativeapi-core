@@ -326,6 +326,43 @@ void PaintMultilineCue(ViewInternal::Impl& impl, HWND hwnd) {
   ReleaseDC(hwnd, hdc);
 }
 
+bool ShouldSyncEditCueAfterMessage(UINT msg, WPARAM wparam) {
+  switch (msg) {
+    case WM_SETTEXT:
+    case WM_CHAR:
+    case WM_UNICHAR:
+    case WM_DEADCHAR:
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_PASTE:
+    case WM_CUT:
+    case WM_CLEAR:
+    case WM_UNDO:
+    case EM_UNDO:
+    case EM_REPLACESEL:
+    case EM_SETSEL:
+    case EM_SETREADONLY:
+    case WM_IME_CHAR:
+    case WM_IME_COMPOSITION:
+    case WM_IME_ENDCOMPOSITION:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_ENABLE:
+    case WM_SETFONT:
+    case WM_STYLECHANGED:
+    case WM_SIZE:
+      return true;
+    case WM_MOUSEMOVE:
+      return (wparam & MK_LBUTTON) != 0;
+    default:
+      return false;
+  }
+}
+
 LRESULT CALLBACK EditSubclassProc(HWND hwnd,
                                   UINT msg,
                                   WPARAM wparam,
@@ -379,8 +416,8 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
           GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref)) {
         auto* target = reinterpret_cast<ViewInternal::Impl*>(current_ref);
         if (has_multiline_cue(target, hwnd)) {
-          PaintMultilineCue(*target, hwnd);
           target->platform->multiline_cue_drawn = true;
+          PaintMultilineCue(*target, hwnd);
         } else if (target && target->platform && target->platform->hwnd == hwnd) {
           target->platform->multiline_cue_drawn = false;
         }
@@ -413,14 +450,14 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd,
       break;
   }
   const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
-  if (msg != WM_ERASEBKGND && msg != WM_NCPAINT && msg != WM_NCHITTEST && msg != WM_SETCURSOR &&
-      msg != WM_GETICON && msg != WM_TIMER && IsWindow(hwnd)) {
+  if (ShouldSyncEditCueAfterMessage(msg, wparam) && IsWindow(hwnd)) {
     DWORD_PTR current_ref = 0;
     if (GetWindowSubclass(hwnd, EditSubclassProc, kEditSubclassId, &current_ref)) {
       auto* target = reinterpret_cast<ViewInternal::Impl*>(current_ref);
       if (target && target->platform && target->platform->hwnd == hwnd) {
         const bool want_multiline_cue = has_multiline_cue(target, hwnd);
-        if (want_multiline_cue != target->platform->multiline_cue_drawn) {
+        if (want_multiline_cue != target->platform->multiline_cue_drawn ||
+            (msg == WM_SIZE && want_multiline_cue)) {
           target->platform->multiline_cue_drawn = false;
           InvalidateRect(hwnd, nullptr, TRUE);
         } else if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||

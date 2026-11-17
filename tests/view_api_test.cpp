@@ -2,6 +2,10 @@
 #include "../src/view.h"
 #include "../src/window.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <gtk/gtk.h>
 #endif
@@ -16,6 +20,7 @@ using nativeapi::Rectangle;
 using nativeapi::Size;
 using nativeapi::TextField;
 using nativeapi::View;
+using nativeapi::ViewBackend;
 using nativeapi::ViewLayout;
 using nativeapi::ViewResizedEvent;
 using nativeapi::WindowScaleFactorChangedEvent;
@@ -136,6 +141,37 @@ int main(int argc, char** argv) {
         "TextField preserves unbordered & placeholder in multiline");
   field->SetText("");
   check(field->GetText().empty(), "TextField multiline clear keeps placeholder state");
+
+  if (View::IsBackendSupported(ViewBackend::Native)) {
+    const ViewBackend previous_backend = View::GetDefaultBackend();
+    View::SetDefaultBackend(ViewBackend::Native);
+
+    auto native_host = std::make_shared<View>();
+    native_host->SetFrame(Rectangle{0, 0, 240, 120});
+    auto native_multiline = std::make_shared<TextField>("");
+    native_multiline->SetPlaceholder("Excluded bundle IDs, one per line");
+    native_multiline->SetMultiline(true);
+    native_multiline->SetBordered(false);
+    native_multiline->SetFrame(Rectangle{0, 0, 240, 80});
+    native_host->AddSubview(native_multiline);
+
+#ifdef _WIN32
+    if (auto* hwnd = static_cast<HWND>(native_multiline->GetNativeObject())) {
+      check(GetWindowTextLengthW(hwnd) == 0, "Native multiline TextField WM_GETTEXTLENGTH");
+      InvalidateRect(hwnd, nullptr, TRUE);
+      UpdateWindow(hwnd);
+    }
+#endif
+
+    check(native_multiline->GetText().empty(), "Native multiline TextField initially empty");
+    native_multiline->SetText("com.example.App\norg.example.Tool");
+    check(native_multiline->GetText() == "com.example.App\norg.example.Tool",
+          "Native multiline TextField SetText roundtrip");
+    native_multiline->SetText("");
+    check(native_multiline->GetText().empty(), "Native multiline TextField clear roundtrip");
+
+    View::SetDefaultBackend(previous_backend);
+  }
 
   if (failures == 0) {
     std::cout << "view_api_test: all passed" << std::endl;
