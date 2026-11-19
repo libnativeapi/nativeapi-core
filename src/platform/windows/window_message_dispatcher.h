@@ -1,10 +1,16 @@
 #pragma once
 
 #include <windows.h>
+#include <array>
+#include <atomic>
+#include <cstdint>
 #include <functional>
+#include <initializer_list>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 namespace nativeapi {
 
@@ -91,6 +97,21 @@ class WindowMessageDispatcher {
   int RegisterHandler(HWND hwnd, WindowMessageHandler handler);
 
   /**
+   * @brief Register a message handler for a specific window and subset of messages.
+   *
+   * Messages not listed in @p messages bypass mutex locking, handler lookup,
+   * and allocation in the subclass procedure via a lock-free bitmask.
+   *
+   * @param hwnd Target window handle
+   * @param messages Win32 message IDs this handler cares about (empty = all)
+   * @param handler Function to call for matching Windows messages
+   * @return int Handler ID for unregistration
+   */
+  int RegisterHandler(HWND hwnd,
+                      std::initializer_list<UINT> messages,
+                      WindowMessageHandler handler);
+
+  /**
    * @brief Unregister a message handler by ID.
    *
    * @param id Handler ID returned from RegisterHandler
@@ -134,29 +155,41 @@ class WindowMessageDispatcher {
   struct HandlerEntry {
     WindowMessageHandler handler;  ///< The handler function
     HWND target_hwnd;              ///< Target window (HWND(0) for global handlers)
+    std::vector<UINT> messages;    ///< Empty = all messages; otherwise filter list
   };
 
   /**
-   * @brief Install message hook for a window.
-   *
-   * @param hwnd Window handle to hook
-   * @return bool true if hook was installed successfully
+   * @brief Per-window dispatch state passed directly as SetWindowSubclass dwRefData.
    */
-  bool InstallHook(HWND hwnd);
+  struct WindowState {
+    static constexpr size_t kMaskWords = 16;  // Covers standard messages 0..1023.
+    std::array<std::atomic<uint64_t>, kMaskWords> msg_mask{};
+    std::atomic<uint32_t> wildcard_count{0};
+    // Protected by WindowMessageDispatcher::mutex_, kept sorted descending by ID.
+    std::vector<int> handler_ids;
+  };
 
-  /**
-   * @brief Uninstall message hook for a window.
-   *
-   * @param hwnd Window handle to unhook
-   */
-  void UninstallHook(HWND hwnd);
+  static LRESULT CALLBACK SubclassWindowProc(HWND hwnd,
+                                             UINT msg,
+                                             WPARAM wparam,
+                                             LPARAM lparam,
+                                             UINT_PTR subclass_id,
+                                             DWORD_PTR ref_data);
+
+  void RebuildWindowMaskLocked(WindowState& state);
+  void EnsureHookInstalled(HWND hwnd, const std::shared_ptr<WindowState>& state);
+  void ScheduleHookUninstall(HWND hwnd, const std::shared_ptr<WindowState>& state);
 
   ///< Mutex for thread safety
   mutable std::mutex mutex_;
   ///< Registered handlers by ID
   std::unordered_map<int, HandlerEntry> handlers_;
-  ///< Original window procedures
-  std::unordered_map<HWND, WNDPROC> original_procs_;
+  ///< Global handler IDs (sorted descending)
+  std::vector<int> global_handler_ids_;
+  ///< Lock-free count of global handlers for the fast path
+  std::atomic<uint32_t> global_handler_count_{0};
+  ///< Per-window subclass state
+  std::unordered_map<HWND, std::shared_ptr<WindowState>> window_states_;
   ///< Next available handler ID
   int next_id_ = 1;
   ///< Host window for tray icons and menus

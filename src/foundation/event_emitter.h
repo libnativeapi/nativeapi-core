@@ -221,6 +221,7 @@ class EventEmitter {
         // deliver any further events to this listener.
         (*it)->MarkRemoved();
         listeners_.erase(it);
+        listener_count_.store(listeners_.size(), std::memory_order_relaxed);
         dispatch_cache_.clear();
         removed = true;
         became_empty = listeners_.empty();
@@ -259,6 +260,7 @@ class EventEmitter {
         entry->MarkRemoved();
       }
       listeners_.clear();
+      listener_count_.store(0, std::memory_order_relaxed);
       dispatch_cache_.clear();
     }
 
@@ -295,6 +297,13 @@ class EventEmitter {
   }
 
   /**
+   * Lock-free check for whether any listener is currently registered.
+   */
+  bool HasAnyListeners() const {
+    return listener_count_.load(std::memory_order_relaxed) > 0;
+  }
+
+  /**
    * Emit an event synchronously to all registered listeners.
    * This is a public method for internal use by platform implementations.
    * The event must be of BaseEventType or a subclass.
@@ -304,6 +313,10 @@ class EventEmitter {
    * @param event The event to emit
    */
   void Emit(const BaseEventType& event) {
+    if (!HasAnyListeners()) {
+      return;
+    }
+
     std::vector<ListenerEntryPtr> snapshot;
 
     {
@@ -489,6 +502,7 @@ class EventEmitter {
       std::lock_guard<std::mutex> lock(listeners_mutex_);
       was_empty = listeners_.empty();
       listeners_.push_back(std::move(entry));
+      listener_count_.store(listeners_.size(), std::memory_order_relaxed);
       dispatch_cache_.clear();
     }
 
@@ -516,6 +530,7 @@ class EventEmitter {
                                       return false;
                                     });
       listeners_.erase(new_end, listeners_.end());
+      listener_count_.store(listeners_.size(), std::memory_order_relaxed);
 
       removed_any = listeners_.size() != before;
       if (removed_any) {
@@ -619,6 +634,9 @@ class EventEmitter {
 
   // Listener ID generation
   std::atomic<size_t> next_listener_id_;
+
+  // Lock-free mirror of listeners_.size() for zero-listener fast paths.
+  std::atomic<size_t> listener_count_{0};
 };
 
 }  // namespace nativeapi

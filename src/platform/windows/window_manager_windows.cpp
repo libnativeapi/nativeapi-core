@@ -152,8 +152,38 @@ struct WindowSnapshot {
   RECT rect;
   double scale_factor = 1.0;
 };
+
+// Coalescing state for WindowMovedEvent / WindowResizedEvent per window.
+// During interactive edge-drag (WM_ENTERSIZEMOVE..WM_EXITSIZEMOVE) or rapid
+// programmatic SetWindowPos bursts, geometry events are coalesced on a low-
+// priority WM_TIMER (50 ms) and flushed immediately on WM_EXITSIZEMOVE.
+// Single isolated moves/resizes outside a burst emit immediately (0 ms delay).
+static constexpr UINT kGeometryCoalesceMs = 50;
+static UINT_PTR GeometryTimerId() {
+  static int tag = 0;
+  return reinterpret_cast<UINT_PTR>(&tag);
+}
+
+struct PendingGeometry {
+  bool moved = false;
+  bool resized = false;
+  bool timer_armed = false;
+  bool in_size_move = false;
+  ULONGLONG last_emit_tick = 0;
+  WindowSnapshot snapshot = {};
+};
+
+// Lock-free mirror of whether any listener exists on WindowManager or any Window.
+// When false, WindowGeometryProc short-circuits straight to DefSubclassProc.
+static std::atomic<bool> g_has_window_listeners{false};
+
+static constexpr DWORD kEventGeometryEnterSizeMove = 0xFFFFFF01u;
+static constexpr DWORD kEventGeometryExitSizeMove = 0xFFFFFF02u;
+static constexpr DWORD kEventGeometryFlushTimer = 0xFFFFFF03u;
+
 static HWINEVENTHOOK g_lifetime_hook = nullptr;
 static std::unordered_map<HWND, WindowSnapshot> g_window_snapshots;
+static std::unordered_map<HWND, PendingGeometry> g_pending_geometry;
 // Windows seen on screen, which is what WindowCreatedEvent and WindowClosedEvent
 // are about. The ID is kept because the destroy event is delivered after the
 // HWND, and the property holding its ID, are gone.
@@ -204,8 +234,43 @@ static bool IsReportableWindow(HWND hwnd) {
 static LRESULT CALLBACK
 WindowGeometryProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR) {
   if (message == WM_NCDESTROY) {
+    KillTimer(hwnd, GeometryTimerId());
+    WithObserver([&] { g_pending_geometry.erase(hwnd); });
     RemoveWindowSubclass(hwnd, WindowGeometryProc, subclass_id);
-  } else if (message == WM_WINDOWPOSCHANGED || message == WM_DPICHANGED) {
+    return DefSubclassProc(hwnd, message, wp, lp);
+  }
+  if (message == WM_TIMER && wp == GeometryTimerId()) {
+    KillTimer(hwnd, GeometryTimerId());
+    if (g_has_window_listeners.load(std::memory_order_relaxed)) {
+      WithObserver([&] {
+        if (g_window_changed_fn && g_window_changed_context) {
+          g_window_changed_fn(g_window_changed_context, kEventGeometryFlushTimer, hwnd);
+        }
+      });
+    }
+    return 0;
+  }
+  if (!g_has_window_listeners.load(std::memory_order_relaxed)) {
+    return DefSubclassProc(hwnd, message, wp, lp);
+  }
+  if (message == WM_ENTERSIZEMOVE) {
+    WithObserver([&] {
+      if (g_window_changed_fn && g_window_changed_context) {
+        g_window_changed_fn(g_window_changed_context, kEventGeometryEnterSizeMove, hwnd);
+      }
+    });
+    return DefSubclassProc(hwnd, message, wp, lp);
+  }
+  if (message == WM_EXITSIZEMOVE) {
+    const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
+    WithObserver([&] {
+      if (g_window_changed_fn && g_window_changed_context) {
+        g_window_changed_fn(g_window_changed_context, kEventGeometryExitSizeMove, hwnd);
+      }
+    });
+    return result;
+  }
+  if (message == WM_WINDOWPOSCHANGED || message == WM_DPICHANGED) {
     const LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
     WithObserver([&] {
       if (g_window_changed_fn && g_window_changed_context) {
@@ -827,10 +892,33 @@ class WindowManager::Impl {
       g_lifetime_hook = nullptr;
     }
     for (const auto& [hwnd, snapshot] : g_window_snapshots) {
+      KillTimer(hwnd, GeometryTimerId());
       UnwatchWindowGeometry(hwnd);
     }
     g_window_snapshots.clear();
+    g_pending_geometry.clear();
     g_shown_windows.clear();
+  }
+
+  static void RefreshTrackedSnapshots() {
+    WithObserver([] {
+      for (auto& [hwnd, snapshot] : g_window_snapshots) {
+        if (IsWindow(hwnd)) {
+          snapshot = TakeSnapshot(hwnd);
+        }
+      }
+    });
+  }
+
+  static void ClearPendingGeometryTimers() {
+    WithObserver([] {
+      for (auto& [hwnd, pending] : g_pending_geometry) {
+        if (pending.timer_armed && IsWindow(hwnd)) {
+          KillTimer(hwnd, GeometryTimerId());
+        }
+      }
+      g_pending_geometry.clear();
+    });
   }
 
  public:
@@ -843,9 +931,91 @@ class WindowManager::Impl {
     return snapshot;
   }
 
+  static Size LogicalSizeFromSnapshot(const WindowSnapshot& snapshot) {
+    const double scale = snapshot.scale_factor > 0.0 ? snapshot.scale_factor : 1.0;
+    return {
+        static_cast<double>(snapshot.rect.right - snapshot.rect.left) / scale,
+        static_cast<double>(snapshot.rect.bottom - snapshot.rect.top) / scale,
+    };
+  }
+
+  static Point LogicalPositionFromSnapshot(const WindowSnapshot& snapshot) {
+    return PhysicalToLogicalPoint({snapshot.rect.left, snapshot.rect.top});
+  }
+
+  void EmitGeometryFromSnapshot(HWND hwnd,
+                                const WindowSnapshot& snapshot,
+                                bool moved,
+                                bool resized) {
+    if (!moved && !resized) {
+      return;
+    }
+    const WindowId window_id = GetWindowIdFromHwnd(hwnd);
+    if (window_id == IdAllocator::kInvalidId) {
+      return;
+    }
+    if (moved) {
+      WindowMovedEvent event(window_id, LogicalPositionFromSnapshot(snapshot));
+      manager_->DispatchWindowEvent(event);
+    }
+    if (resized) {
+      WindowResizedEvent event(window_id, LogicalSizeFromSnapshot(snapshot));
+      manager_->DispatchWindowEvent(event);
+    }
+  }
+
+  void FlushPendingGeometry(HWND hwnd) {
+    auto pit = g_pending_geometry.find(hwnd);
+    if (pit == g_pending_geometry.end()) {
+      return;
+    }
+    PendingGeometry& pending = pit->second;
+    if (pending.timer_armed) {
+      KillTimer(hwnd, GeometryTimerId());
+      pending.timer_armed = false;
+    }
+    const bool moved = pending.moved;
+    const bool resized = pending.resized;
+    const WindowSnapshot snapshot = pending.snapshot;
+    pending.moved = false;
+    pending.resized = false;
+    if (moved || resized) {
+      pending.last_emit_tick = GetTickCount64();
+      EmitGeometryFromSnapshot(hwnd, snapshot, moved, resized);
+    }
+  }
+
   // Compare a window with its last snapshot and emit what changed.
   void OnWindowChanged(DWORD event, HWND hwnd) {
+    if (event == kEventGeometryEnterSizeMove) {
+      g_pending_geometry[hwnd].in_size_move = true;
+      return;
+    }
+    if (event == kEventGeometryExitSizeMove) {
+      auto pit = g_pending_geometry.find(hwnd);
+      if (pit != g_pending_geometry.end()) {
+        pit->second.in_size_move = false;
+      }
+      FlushPendingGeometry(hwnd);
+      ScheduleOcclusionRefresh();
+      return;
+    }
+    if (event == kEventGeometryFlushTimer) {
+      auto pit = g_pending_geometry.find(hwnd);
+      if (pit != g_pending_geometry.end()) {
+        pit->second.timer_armed = false;
+      }
+      FlushPendingGeometry(hwnd);
+      return;
+    }
     if (event == EVENT_OBJECT_DESTROY) {
+      auto pit = g_pending_geometry.find(hwnd);
+      if (pit != g_pending_geometry.end()) {
+        if (pit->second.timer_armed && IsWindow(hwnd)) {
+          KillTimer(hwnd, GeometryTimerId());
+        }
+        g_pending_geometry.erase(pit);
+      }
       g_window_snapshots.erase(hwnd);
       auto shown = g_shown_windows.find(hwnd);
       if (shown != g_shown_windows.end()) {
@@ -886,6 +1056,15 @@ class WindowManager::Impl {
       // A minimized window is parked off screen (-32000) and no longer reports
       // as maximized. Keep the rest of the snapshot, so that restoring it to
       // where it was is neither a move, a resize nor a second "maximized".
+      auto pit = g_pending_geometry.find(hwnd);
+      if (pit != g_pending_geometry.end()) {
+        if (pit->second.timer_armed) {
+          KillTimer(hwnd, GeometryTimerId());
+          pit->second.timer_armed = false;
+        }
+        pit->second.moved = false;
+        pit->second.resized = false;
+      }
       it->second.minimized = true;
       if (!previous.minimized) {
         OnWindowEvent(hwnd, "minimized");
@@ -908,14 +1087,36 @@ class WindowManager::Impl {
     const bool resized =
         current.rect.right - current.rect.left != previous.rect.right - previous.rect.left ||
         current.rect.bottom - current.rect.top != previous.rect.bottom - previous.rect.top;
-    if (moved) {
-      OnWindowEvent(hwnd, "moved");
+    if (!moved && !resized) {
+      return;
     }
-    if (resized) {
-      OnWindowEvent(hwnd, "resized");
-    }
-    if (moved || resized) {
+
+    PendingGeometry& pending = g_pending_geometry[hwnd];
+    if (!pending.in_size_move) {
       ScheduleOcclusionRefresh();
+    }
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG elapsed = now - pending.last_emit_tick;
+    if (!pending.in_size_move && !pending.timer_armed && elapsed >= kGeometryCoalesceMs) {
+      pending.last_emit_tick = now;
+      EmitGeometryFromSnapshot(hwnd, current, moved, resized);
+      return;
+    }
+
+    pending.moved |= moved;
+    pending.resized |= resized;
+    pending.snapshot = current;
+    if (!pending.timer_armed) {
+      const UINT delay =
+          pending.in_size_move
+              ? kGeometryCoalesceMs
+              : (elapsed >= kGeometryCoalesceMs ? kGeometryCoalesceMs
+                                                : static_cast<UINT>(kGeometryCoalesceMs - elapsed));
+      if (SetTimer(hwnd, GeometryTimerId(), delay > 0 ? delay : 1, nullptr) != 0) {
+        pending.timer_armed = true;
+      } else {
+        FlushPendingGeometry(hwnd);
+      }
     }
   }
 
@@ -1015,6 +1216,7 @@ WindowManager::WindowManager() : pimpl_(std::make_unique<Impl>(this)) {
 
 WindowManager::~WindowManager() {
   ShutdownEmitter();
+  g_has_window_listeners.store(false, std::memory_order_relaxed);
   pimpl_->StopEventListening();
 }
 
@@ -1327,9 +1529,13 @@ bool WindowManager::CallOriginalHide(WindowId id) {
 void WindowManager::StartEventListening() {
   pimpl_->StartEventListening();
   pimpl_->SetOcclusionTrackingEnabled(true);
+  Impl::RefreshTrackedSnapshots();
+  g_has_window_listeners.store(true, std::memory_order_relaxed);
 }
 
 void WindowManager::StopEventListening() {
+  g_has_window_listeners.store(false, std::memory_order_relaxed);
+  Impl::ClearPendingGeometryTimers();
   pimpl_->SetOcclusionTrackingEnabled(false);
 }
 

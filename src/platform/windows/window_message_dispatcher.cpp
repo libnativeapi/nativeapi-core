@@ -1,10 +1,29 @@
 #include "window_message_dispatcher.h"
+#include <commctrl.h>
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <vector>
 #include "dpi_utils_windows.h"
+#include "ui_thread_windows.h"
 
 namespace nativeapi {
+
+namespace {
+
+UINT_PTR DispatcherSubclassId() {
+  static int tag = 0;
+  return reinterpret_cast<UINT_PTR>(&tag);
+}
+
+bool MatchesMessageFilter(const std::vector<UINT>& messages, UINT msg) {
+  if (messages.empty()) {
+    return true;
+  }
+  return std::find(messages.begin(), messages.end(), msg) != messages.end();
+}
+
+}  // namespace
 
 WindowMessageDispatcher& WindowMessageDispatcher::GetInstance() {
   // Use heap allocation to avoid static destruction order issues
@@ -15,55 +34,109 @@ WindowMessageDispatcher& WindowMessageDispatcher::GetInstance() {
 }
 
 WindowMessageDispatcher::~WindowMessageDispatcher() {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Destroy host window if it exists
-  if (host_window_) {
-    DestroyWindow(host_window_);
+  std::unordered_map<HWND, std::shared_ptr<WindowState>> states;
+  HWND host = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    host = host_window_;
     host_window_ = nullptr;
+    states.swap(window_states_);
+    handlers_.clear();
+    global_handler_ids_.clear();
+    global_handler_count_.store(0, std::memory_order_relaxed);
   }
 
-  // Uninstall all hooks before destruction. Over a copy: UninstallHook() erases
-  // from original_procs_.
-  const auto hooked = original_procs_;
-  for (const auto& [hwnd, _] : hooked) {
-    UninstallHook(hwnd);
+  for (const auto& [hwnd, state] : states) {
+    if (hwnd && IsWindow(hwnd)) {
+      RemoveWindowSubclass(hwnd, SubclassWindowProc, DispatcherSubclassId());
+    }
   }
-  original_procs_.clear();
+  if (host && IsWindow(host)) {
+    DestroyWindow(host);
+  }
+}
+
+void WindowMessageDispatcher::RebuildWindowMaskLocked(WindowState& state) {
+  std::array<uint64_t, WindowState::kMaskWords> mask{};
+  uint32_t wildcards = 0;
+  for (const int id : state.handler_ids) {
+    auto it = handlers_.find(id);
+    if (it == handlers_.end()) {
+      continue;
+    }
+    const auto& msgs = it->second.messages;
+    if (msgs.empty()) {
+      ++wildcards;
+      continue;
+    }
+    bool all_in_mask = true;
+    for (const UINT m : msgs) {
+      if (m < WindowState::kMaskWords * 64) {
+        mask[m >> 6] |= (uint64_t{1} << (m & 63));
+      } else {
+        all_in_mask = false;
+      }
+    }
+    if (!all_in_mask) {
+      ++wildcards;
+    }
+  }
+  for (size_t i = 0; i < WindowState::kMaskWords; ++i) {
+    state.msg_mask[i].store(mask[i], std::memory_order_relaxed);
+  }
+  state.wildcard_count.store(wildcards, std::memory_order_relaxed);
 }
 
 int WindowMessageDispatcher::RegisterHandler(WindowMessageHandler handler) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   int id = next_id_++;
-  handlers_[id] = {std::move(handler), HWND(0)};  // HWND(0) for global handler
+  handlers_[id] = {std::move(handler), HWND(0), {}};  // HWND(0) for global handler
+  global_handler_ids_.insert(global_handler_ids_.begin(), id);
+  global_handler_count_.store(static_cast<uint32_t>(global_handler_ids_.size()),
+                              std::memory_order_relaxed);
   return id;
 }
 
 int WindowMessageDispatcher::RegisterHandler(HWND hwnd, WindowMessageHandler handler) {
-  // Check if hook needs to be installed (outside of lock to avoid deadlock)
+  return RegisterHandler(hwnd, {}, std::move(handler));
+}
+
+int WindowMessageDispatcher::RegisterHandler(HWND hwnd,
+                                             std::initializer_list<UINT> messages,
+                                             WindowMessageHandler handler) {
+  std::shared_ptr<WindowState> state;
   bool needs_hook = false;
+  int id = 0;
+
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    needs_hook = (original_procs_.find(hwnd) == original_procs_.end());
+    id = next_id_++;
+    handlers_[id] = {std::move(handler), hwnd, std::vector<UINT>(messages)};
+
+    auto it = window_states_.find(hwnd);
+    if (it == window_states_.end()) {
+      state = std::make_shared<WindowState>();
+      window_states_[hwnd] = state;
+      needs_hook = true;
+    } else {
+      state = it->second;
+    }
+    // Keep handler_ids sorted descending by ID (most recently registered first).
+    state->handler_ids.insert(state->handler_ids.begin(), id);
+    RebuildWindowMaskLocked(*state);
   }
 
-  // Install hook if needed (outside of lock)
   if (needs_hook) {
-    InstallHook(hwnd);
+    EnsureHookInstalled(hwnd, state);
   }
-
-  // Register the handler (inside lock)
-  std::lock_guard<std::mutex> lock(mutex_);
-  int id = next_id_++;
-  handlers_[id] = {std::move(handler), hwnd};
 
   return id;
 }
 
 bool WindowMessageDispatcher::UnregisterHandler(int id) {
   HWND target_hwnd = HWND(0);
-  bool should_uninstall = false;
+  std::shared_ptr<WindowState> state_to_uninstall;
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -76,67 +149,80 @@ bool WindowMessageDispatcher::UnregisterHandler(int id) {
     target_hwnd = it->second.target_hwnd;
     handlers_.erase(it);
 
-    // Check if this was the last handler for this window
-    if (target_hwnd != HWND(0)) {
-      bool has_other_handlers = std::any_of(
-          handlers_.begin(), handlers_.end(),
-          [target_hwnd](const auto& pair) { return pair.second.target_hwnd == target_hwnd; });
-
-      should_uninstall = !has_other_handlers;
+    if (target_hwnd == HWND(0)) {
+      auto git = std::find(global_handler_ids_.begin(), global_handler_ids_.end(), id);
+      if (git != global_handler_ids_.end()) {
+        global_handler_ids_.erase(git);
+      }
+      global_handler_count_.store(static_cast<uint32_t>(global_handler_ids_.size()),
+                                  std::memory_order_relaxed);
+    } else {
+      auto sit = window_states_.find(target_hwnd);
+      if (sit != window_states_.end()) {
+        auto& ids = sit->second->handler_ids;
+        auto id_it = std::find(ids.begin(), ids.end(), id);
+        if (id_it != ids.end()) {
+          ids.erase(id_it);
+        }
+        RebuildWindowMaskLocked(*sit->second);
+        if (ids.empty()) {
+          state_to_uninstall = sit->second;
+        }
+      }
     }
   }
 
-  // Uninstall hook if needed (outside of lock to avoid deadlock)
-  if (should_uninstall) {
-    UninstallHook(target_hwnd);
+  if (state_to_uninstall) {
+    ScheduleHookUninstall(target_hwnd, state_to_uninstall);
   }
 
   return true;
 }
 
-LRESULT CALLBACK WindowMessageDispatcher::DispatchWindowProc(HWND hwnd,
+LRESULT CALLBACK WindowMessageDispatcher::SubclassWindowProc(HWND hwnd,
                                                              UINT msg,
                                                              WPARAM wparam,
-                                                             LPARAM lparam) {
+                                                             LPARAM lparam,
+                                                             UINT_PTR subclass_id,
+                                                             DWORD_PTR ref_data) {
   auto& dispatcher = GetInstance();
+  auto* state = reinterpret_cast<WindowState*>(ref_data);
 
-  // Take the original window procedure and the handler IDs while holding the
-  // lock. Only the IDs: a handler may destroy the object another handler
-  // belongs to -- a Menu freed from a MenuOpenedEvent listener, say, while this
-  // very message is being dispatched -- so each handler is read back under the
-  // lock immediately before it is called. Calling a copy taken up front would
-  // reach into freed memory from inside a window procedure, which Windows turns
-  // into an immediate process kill (STATUS_FATAL_USER_CALLBACK_EXCEPTION).
-  WNDPROC original_proc = nullptr;
+  const bool has_global = dispatcher.global_handler_count_.load(std::memory_order_relaxed) > 0;
+  const bool has_window_match =
+      state != nullptr &&
+      (state->wildcard_count.load(std::memory_order_relaxed) > 0 ||
+       (msg < WindowState::kMaskWords * 64 &&
+        (state->msg_mask[msg >> 6].load(std::memory_order_relaxed) &
+         (uint64_t{1} << (msg & 63))) != 0));
+
+  // Fast path: no global handler and no per-window handler cares about `msg`.
+  if (msg != WM_NCDESTROY && !has_global && !has_window_match) {
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+  }
+
+  // Slow path: snapshot candidate handler IDs (already sorted descending by ID).
+  // Only the IDs are snapshotted: a handler may destroy the object another
+  // handler belongs to while this message is being dispatched, so each handler
+  // is read back under the lock immediately before it is invoked.
   std::vector<int> ids;
-
-  {
+  if (has_global || has_window_match) {
     std::lock_guard<std::mutex> lock(dispatcher.mutex_);
-
-    // Get original window procedure
-    auto proc_it = dispatcher.original_procs_.find(hwnd);
-    if (proc_it == dispatcher.original_procs_.end()) {
-      return DefWindowProc(hwnd, msg, wparam, lparam);
-    }
-
-    original_proc = proc_it->second;
-
-    ids.reserve(dispatcher.handlers_.size());
-    for (const auto& [id, entry] : dispatcher.handlers_) {
-      if (entry.target_hwnd == HWND(0) || entry.target_hwnd == hwnd) {
-        ids.push_back(id);
+    if (!has_global) {
+      if (state) {
+        ids = state->handler_ids;
       }
+    } else if (!state || state->handler_ids.empty()) {
+      ids = dispatcher.global_handler_ids_;
+    } else {
+      ids.reserve(state->handler_ids.size() + dispatcher.global_handler_ids_.size());
+      std::merge(state->handler_ids.begin(), state->handler_ids.end(),
+                 dispatcher.global_handler_ids_.begin(), dispatcher.global_handler_ids_.end(),
+                 std::back_inserter(ids), std::greater<int>());
     }
   }
 
-  // Most recently registered first: IDs grow with each registration, and
-  // handlers_ is unordered.
-  std::sort(ids.begin(), ids.end(), std::greater<int>());
-
-  // Call the handlers without holding the mutex, so they may register, remove
-  // or emit freely. A handler unregistered since the snapshot is skipped.
-  // (A handler removed from another thread between the lookup and the call can
-  // still be reached; handlers are expected to live on the UI thread.)
+  std::optional<LRESULT> handled_result;
   for (const int id : ids) {
     WindowMessageHandler handler;
     {
@@ -148,64 +234,111 @@ LRESULT CALLBACK WindowMessageDispatcher::DispatchWindowProc(HWND hwnd,
       if (entry->second.target_hwnd != HWND(0) && entry->second.target_hwnd != hwnd) {
         continue;
       }
+      if (!MatchesMessageFilter(entry->second.messages, msg)) {
+        continue;
+      }
       handler = entry->second.handler;
     }
 
     auto result = handler(hwnd, msg, wparam, lparam);
     if (result.has_value()) {
-      return result.value();
+      handled_result = result;
+      break;
     }
   }
 
-  // No handler consumed the message, call original procedure
-  return CallWindowProc(original_proc, hwnd, msg, wparam, lparam);
+  if (msg == WM_NCDESTROY) {
+    RemoveWindowSubclass(hwnd, SubclassWindowProc, subclass_id);
+    std::lock_guard<std::mutex> lock(dispatcher.mutex_);
+    auto sit = dispatcher.window_states_.find(hwnd);
+    if (sit != dispatcher.window_states_.end() && sit->second.get() == state) {
+      dispatcher.window_states_.erase(sit);
+    }
+  }
+
+  if (handled_result.has_value()) {
+    return handled_result.value();
+  }
+  return DefSubclassProc(hwnd, msg, wparam, lparam);
 }
 
-bool WindowMessageDispatcher::InstallHook(HWND hwnd) {
+LRESULT CALLBACK WindowMessageDispatcher::DispatchWindowProc(HWND hwnd,
+                                                             UINT msg,
+                                                             WPARAM wparam,
+                                                             LPARAM lparam) {
+  return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void WindowMessageDispatcher::EnsureHookInstalled(HWND hwnd,
+                                                  const std::shared_ptr<WindowState>& state) {
   if (!hwnd || !IsWindow(hwnd)) {
-    return false;
+    return;
   }
-
-  // Get current window procedure
-  WNDPROC current_proc = reinterpret_cast<WNDPROC>(GetWindowLongPtr(hwnd, GWLP_WNDPROC));
-  if (!current_proc) {
-    return false;
+  const DWORD thread = GetWindowThreadProcessId(hwnd, nullptr);
+  if (!thread) {
+    return;
   }
-
-  // If the window already has DispatchWindowProc, don't install it again
-  if (current_proc == DispatchWindowProc) {
-    return true;  // Already installed
+  auto install = [this, hwnd, state]() {
+    if (!IsWindow(hwnd)) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto sit = window_states_.find(hwnd);
+      if (sit == window_states_.end() || sit->second != state) {
+        return;
+      }
+    }
+    SetWindowSubclass(hwnd, SubclassWindowProc, DispatcherSubclassId(),
+                      reinterpret_cast<DWORD_PTR>(state.get()));
+  };
+  if (thread == GetCurrentThreadId()) {
+    install();
+  } else {
+    detail::PostToThread(thread, std::move(install));
   }
-
-  // Store original procedure
-  original_procs_[hwnd] = current_proc;
-
-  // Install our dispatcher as the new window procedure
-  SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(DispatchWindowProc));
-
-  return true;
 }
 
-void WindowMessageDispatcher::UninstallHook(HWND hwnd) {
-  auto it = original_procs_.find(hwnd);
-  if (it == original_procs_.end()) {
+void WindowMessageDispatcher::ScheduleHookUninstall(HWND hwnd,
+                                                    const std::shared_ptr<WindowState>& state) {
+  if (!hwnd) {
     return;
   }
+  auto uninstall = [this, hwnd, state]() {
+    bool should_remove = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto sit = window_states_.find(hwnd);
+      if (sit != window_states_.end() && sit->second == state && state->handler_ids.empty()) {
+        should_remove = true;
+      }
+    }
+    if (!should_remove) {
+      return;
+    }
+    if (IsWindow(hwnd)) {
+      RemoveWindowSubclass(hwnd, SubclassWindowProc, DispatcherSubclassId());
+    }
+    // Re-check under the lock before erasing, in case a handler was added
+    // while RemoveWindowSubclass was running, and keep `state` alive until
+    // after RemoveWindowSubclass has returned on the window's thread.
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto sit = window_states_.find(hwnd);
+    if (sit != window_states_.end() && sit->second == state && state->handler_ids.empty()) {
+      window_states_.erase(sit);
+    }
+  };
 
-  // The host window keeps DispatchWindowProc for its whole life, so it also
-  // keeps its entry here. Dropping it would make the window deaf for good:
-  // DispatchWindowProc bails out early on a window it cannot find, and
-  // InstallHook() would not add it back, since the procedure it sees installed
-  // is already ours. That is what happened once every menu had been destroyed.
-  if (hwnd == host_window_) {
-    return;
+  const DWORD thread = IsWindow(hwnd) ? GetWindowThreadProcessId(hwnd, nullptr) : 0;
+  if (thread == 0 || thread == GetCurrentThreadId()) {
+    uninstall();
+  } else if (!detail::PostToThread(thread, uninstall)) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto sit = window_states_.find(hwnd);
+    if (sit != window_states_.end() && sit->second == state && state->handler_ids.empty()) {
+      window_states_.erase(sit);
+    }
   }
-
-  // Restore original window procedure
-  SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(it->second));
-
-  // Remove from our tracking
-  original_procs_.erase(it);
 }
 
 HWND WindowMessageDispatcher::GetHostWindow() {
@@ -220,7 +353,7 @@ HWND WindowMessageDispatcher::GetHostWindow() {
   static const wchar_t* class_name = L"NativeApiHostWindow";
 
   WNDCLASSW wc = {};
-  wc.lpfnWndProc = DispatchWindowProc;  // Use dispatcher for host window
+  wc.lpfnWndProc = DefWindowProcW;
   wc.hInstance = GetModuleHandle(nullptr);
   wc.lpszClassName = class_name;
 
@@ -261,9 +394,7 @@ HWND WindowMessageDispatcher::GetHostWindow() {
       return host_window_;
     }
 
-    // Register the host window in original_procs_ with DefWindowProc as fallback
     host_window_ = new_host_window;
-    original_procs_[host_window_] = DefWindowProcW;
   }
 
   return host_window_;
