@@ -1590,7 +1590,7 @@ static int RegisterAspectRatioHandler(HWND hwnd,
     return 0;
   }
   return WindowMessageDispatcher::GetInstance().RegisterHandler(
-      hwnd,
+      hwnd, {WM_SIZING},
       [aspect_ratio, minimum, maximum](HWND hwnd, UINT msg, WPARAM wparam,
                                        LPARAM lparam) -> std::optional<LRESULT> {
         const double ratio = *aspect_ratio;
@@ -1689,7 +1689,7 @@ static int RegisterAlwaysOnBottomHandler(HWND hwnd, int existing_handler_id) {
   }
   auto& dispatcher = WindowMessageDispatcher::GetInstance();
   return dispatcher.RegisterHandler(
-      hwnd,
+      hwnd, {WM_WINDOWPOSCHANGING},
       [](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> std::optional<LRESULT> {
         if (msg != WM_WINDOWPOSCHANGING) {
           return std::nullopt;
@@ -1722,7 +1722,7 @@ static int RegisterMinMaxInfoHandler(HWND hwnd,
   // wrapper that installed this handler. Its destructor unregisters the handler
   // before destroying the Impl that owns these sizes.
   return WindowMessageDispatcher::GetInstance().RegisterHandler(
-      hwnd,
+      hwnd, {WM_GETMINMAXINFO},
       [minimum, maximum](HWND hwnd, UINT msg, WPARAM, LPARAM lparam) -> std::optional<LRESULT> {
         if (msg != WM_GETMINMAXINFO || !lparam) {
           return std::nullopt;
