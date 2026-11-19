@@ -538,30 +538,53 @@ static void CALLBACK OcclusionTimerProc(HWND, UINT, UINT_PTR timer, DWORD) {
   });
 }
 
+static void ScheduleOcclusionRefresh() {
+  WithObserver([] {
+    if (g_occlusion_hooks[0] && !g_occlusion_timer) {
+      g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
+    }
+  });
+}
+
 static void CALLBACK
 OcclusionEventProc(HWINEVENTHOOK, DWORD, HWND hwnd, LONG id_object, LONG id_child, DWORD, DWORD) {
   if (id_object != OBJID_WINDOW || id_child != CHILDID_SELF || !hwnd ||
       GetAncestor(hwnd, GA_ROOT) != hwnd)
     return;
-  WithObserver([&] {
-    if (!g_occlusion_timer)
-      g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
-  });
+  ScheduleOcclusionRefresh();
 }
 
 static void InstallOcclusionHooks() {
   if (g_occlusion_hooks[0])
     return;
+  // Never hook EVENT_OBJECT_LOCATIONCHANGE system-wide: Windows fires it on
+  // every cursor move (OBJID_CURSOR) and every desktop window move, flooding
+  // the UI thread during interactive drag-resizing. EVENT_SYSTEM_MOVESIZEEND
+  // covers interactive moves/resizes of other processes' windows once they
+  // finish, and our own windows' programmatic moves/resizes call
+  // ScheduleOcclusionRefresh() from OnWindowChanged.
   const DWORD ranges[5][2] = {
       {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND},
+      {EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND},
       {EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND},
       {EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER},  // Show, hide, reorder.
-      {EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE},
       {EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED},  // Virtual desktop switches.
   };
   for (int i = 0; i < 5; ++i)
     g_occlusion_hooks[i] = SetWinEventHook(ranges[i][0], ranges[i][1], nullptr, OcclusionEventProc,
                                            0, 0, WINEVENT_OUTOFCONTEXT);
+  WithObserver([] {
+    std::vector<HWND> windows;
+    windows.reserve(g_window_snapshots.size());
+    for (const auto& entry : g_window_snapshots)
+      windows.push_back(entry.first);
+    for (HWND hwnd : windows) {
+      if (!IsWindow(hwnd))
+        continue;
+      Window window(hwnd);
+      detail::WindowPropertyDispatch::RefreshOcclusion(window);
+    }
+  });
 }
 
 static void RemoveOcclusionHooks() {
@@ -664,6 +687,47 @@ class WindowManager::Impl {
     remove_inline();
   }
 
+  void SetOcclusionTrackingEnabled(bool enabled) {
+    DWORD thread = 0;
+    uint64_t generation = 0;
+    bool already_started = false;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (occlusion_enabled_ == enabled) {
+        return;
+      }
+      occlusion_enabled_ = enabled;
+      already_started = started_;
+      thread = observation_thread_;
+      generation = generation_;
+    }
+    if (!already_started || thread == 0) {
+      return;
+    }
+    auto lifetime = lifetime_;
+    auto update = [this, lifetime, generation, enabled] {
+      if (!lifetime->load()) {
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        if (!started_ || generation_ != generation || occlusion_enabled_ != enabled) {
+          return;
+        }
+      }
+      if (enabled) {
+        InstallOcclusionHooks();
+      } else {
+        RemoveOcclusionHooks();
+      }
+    };
+    if (thread == GetCurrentThreadId()) {
+      update();
+    } else {
+      detail::PostToThread(thread, std::move(update));
+    }
+  }
+
  private:
   // Runs on the UI thread.
   void InstallObservation(const std::shared_ptr<std::atomic<bool>>& lifetime) {
@@ -709,7 +773,8 @@ class WindowManager::Impl {
                           GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
     }
 
-    InstallOcclusionHooks();
+    // lifecycle_mutex_ is already held by StartEventListening's install closure.
+    const bool enable_occlusion = occlusion_enabled_;
 
     // Windows that exist already have a state to compare the first change with.
     // Only this thread can subclass them, which is why this runs here.
@@ -718,8 +783,6 @@ class WindowManager::Impl {
           if (IsOwnProcessWindow(hwnd) && IsReportableWindow(hwnd)) {
             g_window_snapshots[hwnd] = TakeSnapshot(hwnd);
             WatchWindowGeometry(hwnd);
-            Window window(hwnd);
-            detail::WindowPropertyDispatch::RefreshOcclusion(window);
             // Already on screen, so not created under our eyes: no
             // WindowCreatedEvent for it, only the WindowClosedEvent.
             if (IsWindowVisible(hwnd)) {
@@ -732,6 +795,10 @@ class WindowManager::Impl {
           return TRUE;
         },
         0);
+
+    if (enable_occlusion) {
+      InstallOcclusionHooks();
+    }
   }
 
   // Runs on the thread that installed the hooks; only touches this file's state,
@@ -836,12 +903,19 @@ class WindowManager::Impl {
     if (current.maximized != previous.maximized) {
       OnWindowEvent(hwnd, current.maximized ? "maximized" : "restored");
     }
-    if (current.rect.left != previous.rect.left || current.rect.top != previous.rect.top) {
+    const bool moved =
+        current.rect.left != previous.rect.left || current.rect.top != previous.rect.top;
+    const bool resized =
+        current.rect.right - current.rect.left != previous.rect.right - previous.rect.left ||
+        current.rect.bottom - current.rect.top != previous.rect.bottom - previous.rect.top;
+    if (moved) {
       OnWindowEvent(hwnd, "moved");
     }
-    if (current.rect.right - current.rect.left != previous.rect.right - previous.rect.left ||
-        current.rect.bottom - current.rect.top != previous.rect.bottom - previous.rect.top) {
+    if (resized) {
       OnWindowEvent(hwnd, "resized");
+    }
+    if (moved || resized) {
+      ScheduleOcclusionRefresh();
     }
   }
 
@@ -920,6 +994,7 @@ class WindowManager::Impl {
   std::shared_ptr<std::atomic<bool>> lifetime_;
   std::mutex lifecycle_mutex_;
   bool started_ = false;
+  bool occlusion_enabled_ = false;
   // Bumped by every start and stop, so a queued transition can tell that its own
   // is no longer the current one.
   uint64_t generation_ = 0;
@@ -935,12 +1010,12 @@ class WindowManager::Impl {
 };
 
 WindowManager::WindowManager() : pimpl_(std::make_unique<Impl>(this)) {
-  StartEventListening();
+  pimpl_->StartEventListening();
 }
 
 WindowManager::~WindowManager() {
   ShutdownEmitter();
-  StopEventListening();
+  pimpl_->StopEventListening();
 }
 
 namespace {
@@ -1251,10 +1326,11 @@ bool WindowManager::CallOriginalHide(WindowId id) {
 
 void WindowManager::StartEventListening() {
   pimpl_->StartEventListening();
+  pimpl_->SetOcclusionTrackingEnabled(true);
 }
 
 void WindowManager::StopEventListening() {
-  pimpl_->StopEventListening();
+  pimpl_->SetOcclusionTrackingEnabled(false);
 }
 
 void WindowManager::DispatchWindowEvent(const WindowEvent& event) {
