@@ -16,7 +16,6 @@
 using nativeapi::Application;
 using nativeapi::Button;
 using nativeapi::Label;
-using nativeapi::Rectangle;
 using nativeapi::Size;
 using nativeapi::TextField;
 using nativeapi::View;
@@ -73,11 +72,11 @@ int main(int argc, char** argv) {
   std::vector<Size> observed_sizes;
   auto listener_id = container->AddListener<ViewResizedEvent>(
       [&](const ViewResizedEvent& e) { observed_sizes.push_back(e.GetNewSize()); });
-  container->SetFrame(Rectangle{10, 20, 200, 120});
+  container->SetFrame(nativeapi::Rectangle{10, 20, 200, 120});
   check(observed_sizes.size() == 1 && observed_sizes[0].width == 200 &&
             observed_sizes[0].height == 120,
         "ViewResizedEvent on SetFrame resize");
-  container->SetFrame(Rectangle{50, 60, 200, 120});
+  container->SetFrame(nativeapi::Rectangle{50, 60, 200, 120});
   check(observed_sizes.size() == 1, "ViewResizedEvent suppressed on pure move");
 
   container->SetLayout(ViewLayout::Row);
@@ -89,7 +88,7 @@ int main(int argc, char** argv) {
   container->AddSubview(child);
   check(child_sizes.size() == 1 && child_sizes[0].width == 200 && child_sizes[0].height == 120,
         "ViewResizedEvent on child laid out by Row");
-  container->SetFrame(Rectangle{50, 60, 300, 140});
+  container->SetFrame(nativeapi::Rectangle{50, 60, 300, 140});
   check(child_sizes.size() == 2 && child_sizes[1].width == 300 && child_sizes[1].height == 140,
         "ViewResizedEvent on child after parent resize");
   container->RemoveListener(listener_id);
@@ -147,12 +146,12 @@ int main(int argc, char** argv) {
     View::SetDefaultBackend(ViewBackend::Native);
 
     auto native_host = std::make_shared<View>();
-    native_host->SetFrame(Rectangle{0, 0, 240, 120});
+    native_host->SetFrame(nativeapi::Rectangle{0, 0, 240, 120});
     auto native_multiline = std::make_shared<TextField>("");
     native_multiline->SetPlaceholder("Excluded bundle IDs, one per line");
     native_multiline->SetMultiline(true);
     native_multiline->SetBordered(false);
-    native_multiline->SetFrame(Rectangle{0, 0, 240, 80});
+    native_multiline->SetFrame(nativeapi::Rectangle{0, 0, 240, 80});
     native_host->AddSubview(native_multiline);
 
 #ifdef _WIN32
