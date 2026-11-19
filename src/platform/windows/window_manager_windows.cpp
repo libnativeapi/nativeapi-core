@@ -987,9 +987,9 @@ std::shared_ptr<Window> WindowManager::Get(WindowId id) {
 static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
   auto* windows = reinterpret_cast<std::vector<HWND>*>(lParam);
 
-  // Only include visible windows that are not minimized to taskbar
-  // and have a title (filters out many background windows)
-  if (IsWindowVisible(hwnd)) {
+  // Only include this process's visible windows that have a title (filters out
+  // helper/background windows and every other application's windows).
+  if (IsOwnProcessWindow(hwnd) && IsWindowVisible(hwnd)) {
     int length = GetWindowTextLengthW(hwnd);
     if (length > 0) {
       // Check if it's a normal window (not tool window, etc.)
@@ -1028,8 +1028,61 @@ std::vector<std::shared_ptr<Window>> WindowManager::GetAll() {
   return windows;
 }
 
+namespace {
+
+struct CurrentWindowCandidates {
+  HWND first_visible = nullptr;
+  HWND first_hidden = nullptr;
+};
+
+// A top-level window of this process that GetCurrent() can fall back to when no
+// window of this process is active: an application window already known to the
+// library, or a normal titled top-level window (including one that is created
+// hidden and shown after its first frame, as a Flutter runner's is).
+BOOL CALLBACK FindCurrentWindowCandidates(HWND hwnd, LPARAM data) {
+  if (!IsOwnProcessWindow(hwnd) || !IsWindow(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd) {
+    return TRUE;
+  }
+  if (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) {
+    return TRUE;
+  }
+  const LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if (ex_style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) {
+    return TRUE;
+  }
+  if (!GetPropW(hwnd, kWindowIdProperty) && GetWindowTextLengthW(hwnd) <= 0) {
+    return TRUE;
+  }
+  auto* candidates = reinterpret_cast<CurrentWindowCandidates*>(data);
+  if (IsWindowVisible(hwnd)) {
+    if (!candidates->first_visible) {
+      candidates->first_visible = hwnd;
+    }
+  } else if (!candidates->first_hidden) {
+    candidates->first_hidden = hwnd;
+  }
+  return TRUE;
+}
+
+}  // namespace
+
 std::shared_ptr<Window> WindowManager::GetCurrent() {
   HWND hwnd = GetActiveWindow();
+  if (!IsOwnProcessWindow(hwnd)) {
+    HWND foreground = GetForegroundWindow();
+    if (foreground) {
+      foreground = GetAncestor(foreground, GA_ROOT);
+    }
+    hwnd = IsOwnProcessWindow(foreground) ? foreground : nullptr;
+  }
+  if (!hwnd && g_focused_hwnd && IsWindow(g_focused_hwnd) && IsOwnProcessWindow(g_focused_hwnd)) {
+    hwnd = g_focused_hwnd;
+  }
+  if (!hwnd) {
+    CurrentWindowCandidates candidates;
+    EnumWindows(FindCurrentWindowCandidates, reinterpret_cast<LPARAM>(&candidates));
+    hwnd = candidates.first_visible ? candidates.first_visible : candidates.first_hidden;
+  }
   if (hwnd) {
     WindowId window_id = GetWindowIdFromHwnd(hwnd);
     if (window_id != IdAllocator::kInvalidId) {
