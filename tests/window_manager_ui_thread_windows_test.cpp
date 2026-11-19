@@ -150,6 +150,14 @@ int main() {
   const nativeapi::WindowId id_a = IdOf(window_a);
   const nativeapi::WindowId id_b = created ? IdOf(window_b) : 0;
   Check(created && g_created == id_b, "the created window is the one that was shown");
+  const auto current = manager.GetCurrent();
+  Check(current && (current->GetId() == id_a || current->GetId() == id_b),
+        "GetCurrent resolves the process window from a non-UI thread");
+  for (const auto& listed : manager.GetAll()) {
+    DWORD listed_pid = 0;
+    GetWindowThreadProcessId(static_cast<HWND>(listed->GetNativeObject()), &listed_pid);
+    Check(listed_pid == GetCurrentProcessId(), "GetAll only returns windows of this process");
+  }
 
   // Moved/resized come from the subclass, which only the owning thread can install.
   Advance(2);
@@ -162,6 +170,51 @@ int main() {
 
   Advance(4);
   platform.join();
+
+  // A window created hidden on the platform thread (the Flutter runner's
+  // anti-white-flash startup pattern) is still found by GetCurrent() from a
+  // non-UI thread before it is shown, and keeps that ID once shown.
+  std::atomic<HWND> hidden_hwnd{nullptr};
+  std::atomic<bool> show_hidden{false}, close_hidden{false};
+  std::thread hidden_platform([&] {
+    WNDCLASSW cls = {};
+    cls.lpfnWndProc = DefWindowProcW;
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpszClassName = L"NativeApiUiThreadHiddenTestWindow";
+    RegisterClassW(&cls);
+    HWND hwnd = CreateWindowW(cls.lpszClassName, L"nativeapi hidden startup", WS_OVERLAPPEDWINDOW,
+                              80, 80, 300, 200, nullptr, nullptr, cls.hInstance, nullptr);
+    hidden_hwnd = hwnd;
+    bool shown = false;
+    while (!close_hidden.load()) {
+      MSG message;
+      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+      }
+      if (show_hidden.load() && !shown) {
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        shown = true;
+      }
+      Sleep(1);
+    }
+    DestroyWindow(hwnd);
+  });
+  while (!hidden_hwnd.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto hidden_current = manager.GetCurrent();
+  Check(hidden_current && hidden_current->GetNativeObject() == hidden_hwnd.load(),
+        "GetCurrent resolves the process's hidden window from a non-UI thread");
+  show_hidden = true;
+  while (!IsWindowVisible(hidden_hwnd.load())) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto shown_current = manager.GetCurrent();
+  Check(shown_current && hidden_current && shown_current->GetId() == hidden_current->GetId(),
+        "the hidden window wrapped earlier keeps its ID once shown");
+  close_hidden = true;
+  hidden_platform.join();
 
   std::cout << (failures ? "FAILED " : "OK ") << failures << " failure(s)" << std::endl;
   return failures ? 1 : 0;
