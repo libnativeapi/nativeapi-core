@@ -1469,11 +1469,33 @@ void Window::Show() {
   } else if (pimpl_->gdk_window_) {
     gdk_window_show(pimpl_->gdk_window_);
   }
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    if (GdkWindow* gdk_win = gtk_widget_get_window(pimpl_->widget_)) {
+      pimpl_->gdk_window_ = gdk_win;
+    }
+    if (IsFrameless()) {
+      GtkWidget* explicit_title_bar = gtk_window_get_titlebar(GTK_WINDOW(pimpl_->widget_));
+      if (!explicit_title_bar || !linux_shadow::GtkOwnsGutter(pimpl_->widget_))
+        gtk_window_set_decorated(GTK_WINDOW(pimpl_->widget_), FALSE);
+      SetHasShadow(HasShadow());
+    }
+  }
 }
 
 void Window::ShowInactive() {
   if (pimpl_->widget_) {
     gtk_widget_show(pimpl_->widget_);
+    if (GTK_IS_WINDOW(pimpl_->widget_)) {
+      if (GdkWindow* gdk_win = gtk_widget_get_window(pimpl_->widget_)) {
+        pimpl_->gdk_window_ = gdk_win;
+      }
+      if (IsFrameless()) {
+        GtkWidget* explicit_title_bar = gtk_window_get_titlebar(GTK_WINDOW(pimpl_->widget_));
+        if (!explicit_title_bar || !linux_shadow::GtkOwnsGutter(pimpl_->widget_))
+          gtk_window_set_decorated(GTK_WINDOW(pimpl_->widget_), FALSE);
+        SetHasShadow(HasShadow());
+      }
+    }
   } else if (pimpl_->gdk_window_) {
     gdk_window_show_unraised(pimpl_->gdk_window_);
   }
@@ -2126,8 +2148,10 @@ static const char* kFramelessKey = "NativeAPIFrameless";
 
 bool Window::SetFrameless(bool is_frameless) {
   auto* widget = pimpl_->widget_;
-  if (!widget || !GTK_IS_WINDOW(widget) || gtk_widget_in_destruction(widget) ||
-      !gtk_widget_get_window(widget) || gdk_window_is_destroyed(gtk_widget_get_window(widget))) return false;
+  if (!widget || !GTK_IS_WINDOW(widget) || gtk_widget_in_destruction(widget)) return false;
+  if (GdkWindow* gdk_win = gtk_widget_get_window(widget)) {
+    if (gdk_window_is_destroyed(gdk_win)) return false;
+  }
   if (is_frameless == IsFrameless()) return true;
   detail::WindowPropertyScope property_scope(*this);
   SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
