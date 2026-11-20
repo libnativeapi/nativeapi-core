@@ -289,6 +289,27 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
   });
   return result;
 }
+void Clipboard::Impl::ReadCustomFormatBase64(
+    const std::string&,
+    std::function<void(bool, std::optional<std::string>)> callback) {
+  if (callback)
+    callback(false, std::nullopt);
+}
+bool Clipboard::Impl::WriteCustomFormatBase64(const std::string&, const std::string&) {
+  return false;
+}
+int64_t Clipboard::Impl::GetChangeCount() const {
+  return 0;
+}
+bool Clipboard::Impl::IsConcealed() const {
+  return false;
+}
+bool Clipboard::Impl::HasFormat(ClipboardReadFormat) const {
+  return false;
+}
+bool Clipboard::Impl::HasCustomFormat(const std::string&) const {
+  return false;
+}
 bool Clipboard::Impl::Start() {
   bool result = false;
   android::RunSync([&] {

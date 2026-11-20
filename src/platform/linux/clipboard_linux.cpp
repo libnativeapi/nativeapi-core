@@ -244,6 +244,10 @@ struct PublishedData {
       gtk_selection_data_set(selection, gtk_selection_data_get_target(selection), 8,
                              reinterpret_cast<const guchar*>(self.data.html->data()),
                              static_cast<gint>(self.data.html->size()));
+    else if (info == 6)
+      gtk_selection_data_set(selection, gtk_selection_data_get_target(selection), 8,
+                             reinterpret_cast<const guchar*>(self.data.rtf->data()),
+                             static_cast<gint>(self.data.rtf->size()));
     else if (info == 3)
       gtk_selection_data_set(selection, gtk_selection_data_get_target(selection), 8,
                              self.png.data(), static_cast<gint>(self.png.size()));
@@ -314,6 +318,11 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
   }
   if (data.html)
     add("text/html", 2);
+  if (data.rtf) {
+    if (data.rtf->size() > G_MAXINT)
+      return false;
+    add("text/rtf", 6);
+  }
   if (data.image) {
     state->png = clipboard_internal::DecodeBase64(data.image->ToBase64());
     if (state->png.empty() || state->png.size() > G_MAXINT)
@@ -351,6 +360,106 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
     gtk_clipboard_set_can_store(board, nullptr, 0);
   return true;
 }
+void Clipboard::Impl::ReadCustomFormatBase64(
+    const std::string& format,
+    std::function<void(bool, std::optional<std::string>)> callback) {
+  auto* board = Board();
+  if (!board) {
+    RunOnMainThread([callback = std::move(callback)] { callback(false, std::nullopt); });
+    return;
+  }
+  struct CustomRead {
+    std::function<void(bool, std::optional<std::string>)> callback;
+  };
+  auto* ctx = new CustomRead{std::move(callback)};
+  GdkAtom atom = gdk_atom_intern(format.c_str(), FALSE);
+  gtk_clipboard_request_contents(
+      board, atom,
+      +[](GtkClipboard*, GtkSelectionData* selection, gpointer ptr) {
+        std::unique_ptr<CustomRead> holder(static_cast<CustomRead*>(ptr));
+        if (!selection || gtk_selection_data_get_length(selection) < 0) {
+          holder->callback(true, std::nullopt);
+          return;
+        }
+        gint len = 0;
+        const guchar* raw = gtk_selection_data_get_data_with_length(selection, &len);
+        if (!raw || len < 0) {
+          holder->callback(true, std::nullopt);
+          return;
+        }
+        holder->callback(true, clipboard_internal::Base64(raw, static_cast<size_t>(len)));
+      },
+      ctx);
+}
+
+bool Clipboard::Impl::WriteCustomFormatBase64(const std::string& format,
+                                              const std::string& base64_data) {
+  auto* board = Board();
+  if (!board)
+    return false;
+  auto bytes = clipboard_internal::DecodeBase64(base64_data);
+  if ((bytes.empty() && !base64_data.empty()) || bytes.size() > G_MAXINT)
+    return false;
+  struct CustomPublished {
+    std::vector<unsigned char> bytes;
+  };
+  auto state = std::make_unique<CustomPublished>();
+  state->bytes = std::move(bytes);
+  GtkTargetEntry target = {const_cast<gchar*>(format.c_str()), 0, 1};
+  if (!gtk_clipboard_set_with_data(
+          board, &target, 1,
+          +[](GtkClipboard*, GtkSelectionData* selection, guint, gpointer ptr) {
+            const auto& pub = *static_cast<CustomPublished*>(ptr);
+            gtk_selection_data_set(selection, gtk_selection_data_get_target(selection), 8,
+                                   pub.bytes.data(), static_cast<gint>(pub.bytes.size()));
+          },
+          +[](GtkClipboard*, gpointer ptr) { delete static_cast<CustomPublished*>(ptr); },
+          state.get())) {
+    return false;
+  }
+  state.release();
+  gtk_clipboard_set_can_store(board, nullptr, 0);
+  return true;
+}
+
+int64_t Clipboard::Impl::GetChangeCount() const {
+  return 0;
+}
+
+bool Clipboard::Impl::IsConcealed() const {
+  return false;
+}
+
+bool Clipboard::Impl::HasFormat(ClipboardReadFormat format) const {
+  auto* board = Board();
+  if (!board)
+    return false;
+  switch (format) {
+    case ClipboardReadFormat::Text:
+      return gtk_clipboard_wait_is_text_available(board) != FALSE;
+    case ClipboardReadFormat::Html:
+      return gtk_clipboard_wait_is_target_available(board, gdk_atom_intern("text/html", FALSE)) !=
+             FALSE;
+    case ClipboardReadFormat::Rtf:
+      return gtk_clipboard_wait_is_target_available(board, gdk_atom_intern("text/rtf", FALSE)) !=
+             FALSE;
+    case ClipboardReadFormat::Image:
+      return gtk_clipboard_wait_is_image_available(board) != FALSE;
+    case ClipboardReadFormat::FilePaths:
+      return gtk_clipboard_wait_is_uris_available(board) != FALSE;
+    default:
+      return false;
+  }
+}
+
+bool Clipboard::Impl::HasCustomFormat(const std::string& format) const {
+  auto* board = Board();
+  if (!board)
+    return false;
+  return gtk_clipboard_wait_is_target_available(board, gdk_atom_intern(format.c_str(), FALSE)) !=
+         FALSE;
+}
+
 bool Clipboard::Impl::Start() {
   if (!Clipboard::IsChangeMonitoringSupported())
     return false;

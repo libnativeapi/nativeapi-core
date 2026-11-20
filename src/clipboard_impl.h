@@ -11,14 +11,21 @@
 
 namespace nativeapi {
 
-enum class ClipboardReadFormat { None, Text, Html, Image, FilePaths };
+enum class ClipboardReadFormat { None, Text, Html, Rtf, Image, FilePaths };
 
 class Clipboard::Impl {
  public:
   explicit Impl(Clipboard* owner);
   ~Impl();
   void Read(unsigned mask, std::function<void(bool, ClipboardData)> callback);
+  void ReadCustomFormatBase64(const std::string& format,
+                              std::function<void(bool, std::optional<std::string>)> callback);
   bool Write(const ClipboardData& data);
+  bool WriteCustomFormatBase64(const std::string& format, const std::string& base64_data);
+  int64_t GetChangeCount() const;
+  bool IsConcealed() const;
+  bool HasFormat(ClipboardReadFormat format) const;
+  bool HasCustomFormat(const std::string& format) const;
   bool Start();
   void Stop();
   void Changed() { owner->EmitAsync<ClipboardChangedEvent>(); }
@@ -26,7 +33,7 @@ class Clipboard::Impl {
   static constexpr unsigned Bit(ClipboardReadFormat format) {
     return 1u << static_cast<unsigned>(format);
   }
-  static constexpr unsigned All = 30;
+  static constexpr unsigned All = 62;
   Clipboard* owner;
   bool monitoring = false;
   struct Platform;
@@ -76,7 +83,8 @@ inline bool ValidString(const std::string& text) {
 }
 
 inline bool ValidData(const ClipboardData& data) {
-  if ((data.text && !ValidString(*data.text)) || (data.html && !ValidString(*data.html)))
+  if ((data.text && !ValidString(*data.text)) || (data.html && !ValidString(*data.html)) ||
+      (data.rtf && !ValidString(*data.rtf)))
     return false;
   for (const auto& path : data.file_paths) {
     if (!ValidString(path) || !std::filesystem::u8path(path).is_absolute())
