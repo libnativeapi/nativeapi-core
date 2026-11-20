@@ -361,6 +361,23 @@ bool Application::SetBrightness(Brightness brightness) {
   });
   return result;
 }
+Brightness Application::GetSystemBrightness() const {
+  Brightness result = Brightness::System;
+  ohos::WithContext([&](napi_env env, napi_value context) {
+    napi_value config = nullptr, mode_val = nullptr;
+    int32_t mode = -1;
+    if (ohos::js::Property(env, context, "config", config) &&
+        ohos::js::Property(env, config, "colorMode", mode_val) &&
+        napi_get_value_int32(env, mode_val, &mode) == napi_ok) {
+      if (mode == 0) {
+        result = Brightness::Dark;
+      } else if (mode == 1) {
+        result = Brightness::Light;
+      }
+    }
+  });
+  return result;
+}
 std::shared_ptr<Window> Application::GetPrimaryWindow() const {
   std::shared_ptr<Window> result;
   ohos::WithEnvironment([&](napi_env) {

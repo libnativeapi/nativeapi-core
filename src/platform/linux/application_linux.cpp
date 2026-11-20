@@ -206,6 +206,96 @@ class Application::Impl {
     return true;
   }
 
+  Brightness GetSystemBrightness() const {
+    if (GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr)) {
+      GVariant* reply = g_dbus_connection_call_sync(
+          bus, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+          "org.freedesktop.portal.Settings", "Read",
+          g_variant_new("(ss)", "org.freedesktop.appearance", "color-scheme"),
+          G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 200, nullptr, nullptr);
+      g_object_unref(bus);
+      if (reply) {
+        GVariant* outer = nullptr;
+        g_variant_get(reply, "(v)", &outer);
+        if (outer) {
+          GVariant* inner = g_variant_is_of_type(outer, G_VARIANT_TYPE_VARIANT)
+                                ? g_variant_get_variant(outer)
+                                : g_variant_ref(outer);
+          if (inner && g_variant_is_of_type(inner, G_VARIANT_TYPE_UINT32)) {
+            guint32 scheme = g_variant_get_uint32(inner);
+            g_variant_unref(inner);
+            g_variant_unref(outer);
+            g_variant_unref(reply);
+            if (scheme == 1) {
+              return Brightness::Dark;
+            }
+            if (scheme == 2) {
+              return Brightness::Light;
+            }
+          } else {
+            if (inner) {
+              g_variant_unref(inner);
+            }
+            g_variant_unref(outer);
+            g_variant_unref(reply);
+          }
+        } else {
+          g_variant_unref(reply);
+        }
+      }
+    }
+
+    GtkSettings* settings = gtk_settings_get_default();
+    if (!settings) {
+      return Brightness::System;
+    }
+    gboolean prefer_dark = FALSE;
+    g_object_get(settings, "gtk-application-prefer-dark-theme", &prefer_dark, nullptr);
+    if (prefer_dark) {
+      return Brightness::Dark;
+    }
+    const std::string& effective_theme = original_theme_name_;
+    if (!effective_theme.empty()) {
+      if (g_str_has_suffix(effective_theme.c_str(), "-dark") ||
+          g_str_has_suffix(effective_theme.c_str(), "-Dark")) {
+        return Brightness::Dark;
+      }
+      return Brightness::Light;
+    }
+    gchar* theme_name = nullptr;
+    g_object_get(settings, "gtk-theme-name", &theme_name, nullptr);
+    bool is_dark = theme_name && (g_str_has_suffix(theme_name, "-dark") ||
+                                  g_str_has_suffix(theme_name, "-Dark"));
+    g_free(theme_name);
+    return is_dark ? Brightness::Dark : Brightness::Light;
+  }
+
+  void StartEventMonitoring() {
+    if (portal_bus_) {
+      return;
+    }
+    last_system_brightness_ = GetSystemBrightness();
+    portal_bus_ = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
+    if (!portal_bus_) {
+      return;
+    }
+    portal_signal_id_ = g_dbus_connection_signal_subscribe(
+        portal_bus_, "org.freedesktop.portal.Desktop", "org.freedesktop.portal.Settings",
+        "SettingChanged", "/org/freedesktop/portal/desktop", "org.freedesktop.appearance",
+        G_DBUS_SIGNAL_FLAGS_NONE, OnPortalSettingChanged, this, nullptr);
+  }
+
+  void StopEventMonitoring() {
+    if (portal_bus_) {
+      if (portal_signal_id_ != 0) {
+        g_dbus_connection_signal_unsubscribe(portal_bus_, portal_signal_id_);
+        portal_signal_id_ = 0;
+      }
+      g_object_unref(portal_bus_);
+      portal_bus_ = nullptr;
+    }
+  }
+
   bool SetMenuBar(std::shared_ptr<Menu> menu) {
     if (!menu) {
       return false;
@@ -227,6 +317,7 @@ class Application::Impl {
   }
 
   void CleanupEventMonitoring() {
+    StopEventMonitoring();
     // Clean up Linux-specific event monitoring
     if (lock_file_handle_ != -1) {
       close(lock_file_handle_);
@@ -248,6 +339,37 @@ class Application::Impl {
   long long launcher_count_ = 0;
   bool launcher_count_visible_ = false;
   std::string original_theme_name_;
+  GDBusConnection* portal_bus_ = nullptr;
+  guint portal_signal_id_ = 0;
+  Brightness last_system_brightness_ = Brightness::System;
+
+  static void OnPortalSettingChanged(GDBusConnection*,
+                                     const gchar*,
+                                     const gchar*,
+                                     const gchar*,
+                                     const gchar*,
+                                     GVariant* parameters,
+                                     gpointer user_data) {
+    auto* impl = static_cast<Impl*>(user_data);
+    if (!impl || !parameters) {
+      return;
+    }
+    const gchar* ns = nullptr;
+    const gchar* key = nullptr;
+    GVariant* value = nullptr;
+    g_variant_get(parameters, "(&s&sv)", &ns, &key, &value);
+    if (value) {
+      if (ns && key && std::strcmp(ns, "org.freedesktop.appearance") == 0 &&
+          std::strcmp(key, "color-scheme") == 0) {
+        Brightness current = impl->GetSystemBrightness();
+        if (current != impl->last_system_brightness_) {
+          impl->last_system_brightness_ = current;
+          impl->app_->Emit<ApplicationSystemBrightnessChangedEvent>(current);
+        }
+      }
+      g_variant_unref(value);
+    }
+  }
 
   // Broadcasts the com.canonical.Unity.LauncherEntry "Update" signal that
   // Unity, Plasma, elementary and Dash to Dock listen for. The entry is keyed
@@ -396,6 +518,10 @@ bool Application::SetBrightness(Brightness brightness) {
   return pimpl_->SetBrightness(brightness);
 }
 
+Brightness Application::GetSystemBrightness() const {
+  return pimpl_->GetSystemBrightness();
+}
+
 bool Application::SetMenuBar(std::shared_ptr<Menu> menu) {
   return pimpl_->SetMenuBar(menu);
 }
@@ -413,8 +539,30 @@ std::vector<std::shared_ptr<Window>> Application::GetAllWindows() const {
   return window_manager.GetAll();
 }
 
-void Application::StartEventListening() {}
+void Application::StartEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() > 0) {
+      pimpl_->StartEventMonitoring();
+    }
+  }));
+  if (IsMainThread()) {
+    update();
+  } else {
+    (void)RunOnMainThread(std::move(update));
+  }
+}
 
-void Application::StopEventListening() {}
+void Application::StopEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() == 0) {
+      pimpl_->StopEventMonitoring();
+    }
+  }));
+  if (IsMainThread()) {
+    update();
+  } else {
+    (void)RunOnMainThread(std::move(update));
+  }
+}
 
 }  // namespace nativeapi

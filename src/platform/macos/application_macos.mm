@@ -348,6 +348,15 @@ class Application::Impl {
     return brightness != Brightness::Dark;
   }
 
+  Brightness GetSystemBrightness() const {
+    if (@available(macOS 10.14, *)) {
+      NSString* style =
+          [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleInterfaceStyle"];
+      return [style isEqualToString:@"Dark"] ? Brightness::Dark : Brightness::Light;
+    }
+    return Brightness::Light;
+  }
+
   bool SetMenuBar(std::shared_ptr<Menu> menu) {
     if (!menu) {
       return false;
@@ -379,6 +388,24 @@ class Application::Impl {
     delegate_->quitPolicy->ObserveHost(NSApp.delegate);
     NativeApiObserveDelegateChanges(NSApp, delegate_);
     MonitorCurrentHost();
+    if (!theme_observer_) {
+      last_system_brightness_ = GetSystemBrightness();
+      auto* app = app_;
+      theme_observer_ = [[NSDistributedNotificationCenter defaultCenter]
+          addObserverForName:@"AppleInterfaceThemeChangedNotification"
+                      object:nil
+                       queue:NSOperationQueue.mainQueue
+                  usingBlock:^(NSNotification*) {
+                    Brightness current = GetSystemBrightness();
+                    if (current != last_system_brightness_) {
+                      last_system_brightness_ = current;
+                      app->Emit<ApplicationSystemBrightnessChangedEvent>(current);
+                    }
+                  }];
+#if !__has_feature(objc_arc)
+      [theme_observer_ retain];
+#endif
+    }
   }
 
   void MonitorCurrentHost() {
@@ -426,6 +453,13 @@ class Application::Impl {
 
   void StopEventMonitoring() {
     event_monitoring_ = false;
+    if (theme_observer_) {
+      [[NSDistributedNotificationCenter defaultCenter] removeObserver:theme_observer_];
+#if !__has_feature(objc_arc)
+      [theme_observer_ release];
+#endif
+      theme_observer_ = nil;
+    }
     for (id token in notification_observers_)
       [NSNotificationCenter.defaultCenter removeObserver:token];
 #if !__has_feature(objc_arc)
@@ -469,6 +503,8 @@ class Application::Impl {
   NativeApplicationDelegate* delegate_;
   bool event_monitoring_ = false;
   NSMutableArray* notification_observers_ = nil;
+  id theme_observer_ = nil;
+  Brightness last_system_brightness_ = Brightness::System;
   NSHashTable* delegate_hosts_ = nil;
   int lock_file_handle_ = -1;
   NSImageView* dock_icon_view_ = nil;
@@ -608,6 +644,10 @@ bool Application::SetBadgeLabel(const std::string& label) {
 
 bool Application::SetBrightness(Brightness brightness) {
   return pimpl_->SetBrightness(brightness);
+}
+
+Brightness Application::GetSystemBrightness() const {
+  return pimpl_->GetSystemBrightness();
 }
 
 bool Application::SetMenuBar(std::shared_ptr<Menu> menu) {

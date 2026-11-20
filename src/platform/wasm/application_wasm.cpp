@@ -45,6 +45,9 @@ bool Application::SetBadgeLabel(const std::string&) {
 bool Application::SetBrightness(Brightness) {
   return false;
 }
+Brightness Application::GetSystemBrightness() const {
+  return Brightness::System;
+}
 bool Application::SetMenuBar(std::shared_ptr<Menu>) {
   return false;
 }

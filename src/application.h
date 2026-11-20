@@ -100,15 +100,35 @@ class ApplicationQuitRequestedEvent : public ApplicationEvent {
  * @brief Light or dark appearance for the application's user interface.
  *
  * Passed to Application::SetBrightness() to override the appearance the
- * operating system would otherwise apply to this application's windows.
+ * operating system would otherwise apply to this application's windows,
+ * and returned by Application::GetSystemBrightness().
  */
 enum class Brightness {
-  /** Follow the operating system's current appearance setting. */
+  /** Follow the operating system's current appearance setting, or unknown. */
   System,
   /** Always use the light appearance. */
   Light,
   /** Always use the dark appearance. */
   Dark
+};
+
+/**
+ * @brief Event emitted when the operating system's light or dark appearance changes.
+ */
+class ApplicationSystemBrightnessChangedEvent : public ApplicationEvent {
+ public:
+  explicit ApplicationSystemBrightnessChangedEvent(Brightness brightness)
+      : brightness_(brightness) {}
+
+  /**
+   * @brief Gets the operating system's new appearance.
+   * @return Brightness::Light or Brightness::Dark.
+   */
+  Brightness GetBrightness() const { return brightness_; }
+  std::string GetTypeName() const override { return "ApplicationSystemBrightnessChangedEvent"; }
+
+ private:
+  Brightness brightness_;
 };
 
 /**
@@ -462,6 +482,29 @@ class Application : public EventEmitter<ApplicationEvent> {
    *   Invalid values, missing initialized context or SDK exceptions return false.
    */
   bool SetBrightness(Brightness brightness);
+
+  /**
+   * @brief Gets the operating system's current light or dark appearance.
+   *
+   * This reads the system preference rather than any application override
+   * applied with SetBrightness(). Subscribe to
+   * ApplicationSystemBrightnessChangedEvent to observe runtime changes.
+   *
+   * @return Brightness::Light or Brightness::Dark when known, or
+   *         Brightness::System when the platform cannot determine it.
+   *
+   * @note Platform availability:
+   * - macOS: ✅ Fully supported - Reads AppleInterfaceStyle and observes
+   *   AppleInterfaceThemeChangedNotification.
+   * - Windows: ✅ Fully supported - Reads HKCU AppsUseLightTheme and observes
+   *   WM_SETTINGCHANGE (ImmersiveColorSet).
+   * - Linux: ✅ Supported - Reads XDG Desktop Portal org.freedesktop.appearance
+   *   color-scheme with GtkSettings fallback, and observes portal changes.
+   * - Android: ❌ Not implemented - Always returns Brightness::System.
+   * - iOS: ⚠️ Query only - Reads UIScreen.mainScreen.traitCollection on iOS 13+.
+   * - OpenHarmony: ⚠️ Query only - Reads owning Ability context.config.colorMode.
+   */
+  Brightness GetSystemBrightness() const;
 
   /**
    * @brief Set the application menu bar
