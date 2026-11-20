@@ -89,6 +89,19 @@ enum class TextAlignment {
 };
 
 /**
+ * @brief A UTF-16 code-unit selection or caret range inside a TextField.
+ *
+ * `start` is the zero-based offset from the beginning of the text and `length`
+ * is the number of selected code units (0 for a collapsed caret).
+ */
+struct TextRange {
+  /** Zero-based start offset in UTF-16 code units. */
+  size_t start = 0;
+  /** Number of selected UTF-16 code units; 0 represents a caret. */
+  size_t length = 0;
+};
+
+/**
  * @brief Which toolkit draws a view's controls.
  *
  * A view keeps the backend it was created with. Views of different backends
@@ -1126,6 +1139,44 @@ class TextField : public View {
    * @return true unless SetBordered(false) was called.
    */
   bool IsBordered() const;
+
+  /**
+   * @brief Sets the text selection or caret position in UTF-16 code units.
+   *
+   * Out-of-bounds offsets are clamped to the current text length.
+   *
+   * @param range Start offset and selection length in UTF-16 code units.
+   * @note Platform availability:
+   * - macOS: ✅ Supported while the field is being edited (has an active field editor).
+   * - Windows: ✅ Fully supported on Win32 and WinUI 3.
+   * - Linux: ✅ Fully supported on single-line and multi-line fields.
+   * - Android: ❌ Not applicable - Ignored.
+   * - iOS: ❌ Not applicable - Ignored.
+   * - OpenHarmony: ❌ Not implemented - Ignored.
+   */
+  void SetSelection(TextRange range);
+
+  /**
+   * @brief Gets the current text selection or caret range in UTF-16 code units.
+   *
+   * @return The selected range, or `{0, 0}` when unavailable.
+   * @see SetSelection() for platform availability.
+   */
+  TextRange GetSelection() const;
+
+  /**
+   * @brief Checks if an input method (IME) composition is currently active.
+   *
+   * @return true while uncommitted IME preedit text is present, false otherwise.
+   * @note Platform availability:
+   * - macOS: ✅ Checks NSTextInputClient hasMarkedText on the active field editor.
+   * - Windows: ✅ Checks IMM32 composition string on Win32; false on WinUI 3.
+   * - Linux: ⚠️ Tracks GTK preedit state on single-line entries.
+   * - Android: ❌ Always false.
+   * - iOS: ❌ Always false.
+   * - OpenHarmony: ❌ Always false.
+   */
+  bool IsComposing() const;
 };
 
 /**

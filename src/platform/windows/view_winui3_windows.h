@@ -87,6 +87,9 @@ class XamlView {
   void SetSecure(bool is_secure);
   void SetMultiline(bool is_multiline);
   void SetBordered(bool is_bordered);
+  void SetSelection(TextRange range);
+  TextRange GetSelection() const;
+  bool IsComposing() const;
   void SetImage(const std::shared_ptr<Image>& image);
 
   struct State;

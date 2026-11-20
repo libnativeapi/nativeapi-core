@@ -854,6 +854,35 @@ void XamlView::SetBordered(bool is_bordered) {
   s.impl->InvalidateIntrinsicSize();
 }
 
+void XamlView::SetSelection(TextRange range) {
+  auto& s = *state_;
+  if (!s.text_box) return;
+  Guard("SetSelection", [&] {
+    const auto text = s.text_box.Text();
+    const size_t total = static_cast<size_t>(text.size());
+    const size_t start = (std::min)(range.start, total);
+    const size_t length = (std::min)(range.length, total - start);
+    s.text_box.Select(static_cast<int32_t>(start), static_cast<int32_t>(length));
+  });
+}
+
+TextRange XamlView::GetSelection() const {
+  auto& s = *state_;
+  TextRange result{0, 0};
+  if (!s.text_box) return result;
+  Guard("GetSelection", [&] {
+    const int32_t start = s.text_box.SelectionStart();
+    const int32_t length = s.text_box.SelectionLength();
+    result.start = start > 0 ? static_cast<size_t>(start) : 0;
+    result.length = length > 0 ? static_cast<size_t>(length) : 0;
+  });
+  return result;
+}
+
+bool XamlView::IsComposing() const {
+  return false;
+}
+
 void XamlView::SetImage(const std::shared_ptr<Image>& image) {
   auto& s = *state_;
   if (!s.image) return;

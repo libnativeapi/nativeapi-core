@@ -668,6 +668,17 @@ void View::Impl::Platform::Unsubclass() {
 }
 
 HBRUSH View::Impl::Platform::OnControlColor(HDC hdc) {
+  COLORREF text;
+  if (text_color.a != 0) {
+    text = ToColorRef(text_color);
+  } else {
+    text = GetSysColor(IsWindowEnabled(hwnd) ? COLOR_WINDOWTEXT : COLOR_GRAYTEXT);
+  }
+  SetTextColor(hdc, text);
+  if (kind == ViewKind::TextField && !bordered && impl->background_color.a == 0) {
+    SetBkMode(hdc, TRANSPARENT);
+    return static_cast<HBRUSH>(GetStockObject(HOLLOW_BRUSH));
+  }
   COLORREF background;
   if (impl->background_color.a != 0) {
     background = ToColorRef(impl->background_color);
@@ -678,13 +689,6 @@ HBRUSH View::Impl::Platform::OnControlColor(HDC hdc) {
   } else {
     background = EffectiveBackgroundColor(GetAncestor(hwnd, GA_PARENT));
   }
-  COLORREF text;
-  if (text_color.a != 0) {
-    text = ToColorRef(text_color);
-  } else {
-    text = GetSysColor(IsWindowEnabled(hwnd) ? COLOR_WINDOWTEXT : COLOR_GRAYTEXT);
-  }
-  SetTextColor(hdc, text);
   SetBkColor(hdc, background);
   SetBkMode(hdc, OPAQUE);
   return BrushFor(background);

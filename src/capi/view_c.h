@@ -51,6 +51,11 @@ typedef enum {
   NATIVE_VIEW_BACKEND_WIN_UI3 = 1,
 } native_view_backend_t;
 
+typedef struct {
+  unsigned long start;
+  unsigned long length;
+} native_text_range_t;
+
 /// Opaque View handle.
 ///
 /// A generational index into the library's handle table, NOT a pointer:
@@ -505,6 +510,15 @@ void native_text_field_set_bordered(native_text_field_t text_field, bool is_bord
 FFI_PLUGIN_EXPORT
 bool native_text_field_is_bordered(native_text_field_t text_field);
 
+FFI_PLUGIN_EXPORT
+void native_text_field_set_selection(native_text_field_t text_field, native_text_range_t range);
+
+FFI_PLUGIN_EXPORT
+native_text_range_t native_text_field_get_selection(native_text_field_t text_field);
+
+FFI_PLUGIN_EXPORT
+bool native_text_field_is_composing(native_text_field_t text_field);
+
 /// Releases the caller's reference. Safe to call with an invalid or
 /// already-released handle.
 FFI_PLUGIN_EXPORT
@@ -558,6 +572,8 @@ inline native_text_alignment_t to_c_text_alignment(nativeapi::TextAlignment valu
 inline nativeapi::TextAlignment to_cpp_text_alignment(native_text_alignment_t value);
 inline native_view_backend_t to_c_view_backend(nativeapi::ViewBackend value);
 inline nativeapi::ViewBackend to_cpp_view_backend(native_view_backend_t value);
+inline native_text_range_t to_c_text_range(const nativeapi::TextRange& value);
+inline nativeapi::TextRange to_cpp_text_range(const native_text_range_t& value);
 
 inline native_view_layout_t to_c_view_layout(nativeapi::ViewLayout value) {
   switch (value) {
@@ -661,6 +677,20 @@ inline nativeapi::ViewBackend to_cpp_view_backend(native_view_backend_t value) {
     default:
       return static_cast<nativeapi::ViewBackend>(value);
   }
+}
+
+inline native_text_range_t to_c_text_range(const nativeapi::TextRange& value) {
+  native_text_range_t result = {};
+  result.start = value.start;
+  result.length = value.length;
+  return result;
+}
+
+inline nativeapi::TextRange to_cpp_text_range(const native_text_range_t& value) {
+  nativeapi::TextRange result = {};
+  result.start = value.start;
+  result.length = value.length;
+  return result;
 }
 
 #endif  // __cplusplus

@@ -1475,6 +1475,50 @@ bool native_text_field_is_bordered(native_text_field_t text_field) {
   }
 }
 
+void native_text_field_set_selection(native_text_field_t text_field, native_text_range_t range) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return;
+  }
+  try {
+    auto range_cpp = to_cpp_text_range(range);
+    self->SetSelection(range_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_set_selection");
+    return;
+  }
+}
+
+native_text_range_t native_text_field_get_selection(native_text_field_t text_field) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    native_text_range_t result = {};
+    return result;
+  }
+  try {
+    const auto cpp_result = self->GetSelection();
+    return to_c_text_range(cpp_result);
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_get_selection");
+    native_text_range_t result = {};
+    return result;
+  }
+}
+
+bool native_text_field_is_composing(native_text_field_t text_field) {
+  auto self = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::TextField>(text_field);
+  if (!self) {
+    return false;
+  }
+  try {
+    return self->IsComposing();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_text_field_is_composing");
+    return false;
+  }
+}
+
 void native_text_field_free(native_text_field_t text_field) {
   // The table invalidates the handle itself, so releasing an unknown or
   // already-released one is a no-op rather than a double free.

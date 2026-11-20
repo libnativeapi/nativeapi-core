@@ -394,6 +394,41 @@ bool TextField::IsBordered() const {
   return pimpl_->platform->bordered;
 }
 
+void TextField::SetSelection(TextRange range) {
+  NSTextField* field = (NSTextField*)pimpl_->platform->view;
+  NSText* editor = field.currentEditor;
+  if (!editor) {
+    return;
+  }
+  const NSUInteger total = editor.string.length;
+  const NSUInteger start = range.start > total ? total : static_cast<NSUInteger>(range.start);
+  const NSUInteger max_len = total - start;
+  const NSUInteger len = range.length > max_len ? max_len : static_cast<NSUInteger>(range.length);
+  editor.selectedRange = NSMakeRange(start, len);
+}
+
+TextRange TextField::GetSelection() const {
+  NSTextField* field = (NSTextField*)pimpl_->platform->view;
+  NSText* editor = field.currentEditor;
+  if (!editor) {
+    return TextRange{0, 0};
+  }
+  const NSRange sel = editor.selectedRange;
+  if (sel.location == NSNotFound) {
+    return TextRange{0, 0};
+  }
+  return TextRange{static_cast<size_t>(sel.location), static_cast<size_t>(sel.length)};
+}
+
+bool TextField::IsComposing() const {
+  NSTextField* field = (NSTextField*)pimpl_->platform->view;
+  NSText* editor = field.currentEditor;
+  if (!editor || ![editor conformsToProtocol:@protocol(NSTextInputClient)]) {
+    return false;
+  }
+  return [(id<NSTextInputClient>)editor hasMarkedText] == YES;
+}
+
 // ---------------------------------------------------------------------------
 // ImageView
 // ---------------------------------------------------------------------------

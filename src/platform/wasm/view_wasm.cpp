@@ -177,6 +177,13 @@ void TextField::SetBordered(bool) {}
 bool TextField::IsBordered() const {
   return false;
 }
+void TextField::SetSelection(TextRange) {}
+TextRange TextField::GetSelection() const {
+  return TextRange{0, 0};
+}
+bool TextField::IsComposing() const {
+  return false;
+}
 
 ImageView::ImageView() : View(NativeControl{nullptr}) {}
 void ImageView::SetImage(std::shared_ptr<Image>) {}
