@@ -40,6 +40,7 @@ typedef enum {
   NATIVE_APPLICATION_EVENT_TYPE_ACTIVATED = 2,
   NATIVE_APPLICATION_EVENT_TYPE_DEACTIVATED = 3,
   NATIVE_APPLICATION_EVENT_TYPE_QUIT_REQUESTED = 4,
+  NATIVE_APPLICATION_EVENT_TYPE_SYSTEM_BRIGHTNESS_CHANGED = 5,
 } native_application_event_type_t;
 
 /// One ApplicationEvent, tagged by its concrete type.
@@ -55,6 +56,9 @@ typedef struct {
     struct {
       native_event_request_t request;
     } quit_requested;
+    struct {
+      native_brightness_t brightness;
+    } system_brightness_changed;
   } data;
 } native_application_event_t;
 
@@ -99,6 +103,9 @@ bool native_application_set_badge_label(const char* label);
 
 FFI_PLUGIN_EXPORT
 bool native_application_set_brightness(native_brightness_t brightness);
+
+FFI_PLUGIN_EXPORT
+native_brightness_t native_application_get_system_brightness(void);
 
 FFI_PLUGIN_EXPORT
 bool native_application_set_menu_bar(native_menu_t menu);

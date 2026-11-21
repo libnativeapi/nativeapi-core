@@ -142,6 +142,15 @@ bool native_application_set_brightness(native_brightness_t brightness) {
   }
 }
 
+native_brightness_t native_application_get_system_brightness(void) {
+  try {
+    return to_c_brightness(nativeapi::Application::GetInstance().GetSystemBrightness());
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_application_get_system_brightness");
+    return (native_brightness_t)NATIVE_BRIGHTNESS_SYSTEM;
+  }
+}
+
 bool native_application_set_menu_bar(native_menu_t menu) {
   try {
     auto menu_cpp = nativeapi::HandleTable::GetInstance().Resolve<nativeapi::Menu>(menu);
@@ -281,6 +290,11 @@ bool to_c_application_event(const nativeapi::ApplicationEvent& event, native_app
   if (const auto* typed = dynamic_cast<const nativeapi::ApplicationQuitRequestedEvent*>(&event)) {
     out->type = NATIVE_APPLICATION_EVENT_TYPE_QUIT_REQUESTED;
     out->data.quit_requested.request = nativeapi::HandleTable::GetInstance().Insert(typed->GetRequest());
+    return true;
+  }
+  if (const auto* typed = dynamic_cast<const nativeapi::ApplicationSystemBrightnessChangedEvent*>(&event)) {
+    out->type = NATIVE_APPLICATION_EVENT_TYPE_SYSTEM_BRIGHTNESS_CHANGED;
+    out->data.system_brightness_changed.brightness = to_c_brightness(typed->GetBrightness());
     return true;
   }
   return false;

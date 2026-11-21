@@ -858,6 +858,13 @@ void TextField::SetBordered(bool value) {
 bool TextField::IsBordered() const {
   return pimpl_->platform->bordered;
 }
+void TextField::SetSelection(TextRange) {}
+TextRange TextField::GetSelection() const {
+  return TextRange{0, 0};
+}
+bool TextField::IsComposing() const {
+  return false;
+}
 ImageView::ImageView() : View(NativeControl{Create(ARKUI_NODE_IMAGE)}) {
   Control(*pimpl_, ARKUI_NODE_IMAGE);
   if (pimpl_->native)

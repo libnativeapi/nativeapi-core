@@ -3,6 +3,7 @@
 #include "../../view.h"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include "view_internal_linux.h"
@@ -454,6 +455,111 @@ void TextField::SetBordered(bool is_bordered) {
 
 bool TextField::IsBordered() const {
   return pimpl_->platform->bordered;
+}
+
+namespace {
+
+size_t Utf16OffsetToCharOffset(const std::string& utf8, size_t utf16_target) {
+  size_t utf16_pos = 0;
+  size_t char_pos = 0;
+  const char* p = utf8.c_str();
+  while (*p && utf16_pos < utf16_target) {
+    gunichar ch = g_utf8_get_char(p);
+    utf16_pos += (ch > 0xFFFF) ? 2 : 1;
+    ++char_pos;
+    p = g_utf8_next_char(p);
+  }
+  return char_pos;
+}
+
+size_t CharOffsetToUtf16Offset(const std::string& utf8, size_t char_target) {
+  size_t utf16_pos = 0;
+  size_t char_pos = 0;
+  const char* p = utf8.c_str();
+  while (*p && char_pos < char_target) {
+    gunichar ch = g_utf8_get_char(p);
+    utf16_pos += (ch > 0xFFFF) ? 2 : 1;
+    ++char_pos;
+    p = g_utf8_next_char(p);
+  }
+  return utf16_pos;
+}
+
+}  // namespace
+
+void TextField::SetSelection(TextRange range) {
+  auto& platform = *pimpl_->platform;
+  const std::string text = ReadWidgetText(platform.widget, platform.text_view);
+  const int start_char = static_cast<int>(Utf16OffsetToCharOffset(text, range.start));
+  const int end_char = static_cast<int>(Utf16OffsetToCharOffset(text, range.start + range.length));
+  if (platform.text_view) {
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(platform.text_view);
+    if (!buffer) {
+      return;
+    }
+    GtkTextIter start_iter;
+    GtkTextIter end_iter;
+    gtk_text_buffer_get_iter_at_offset(buffer, &start_iter, start_char);
+    gtk_text_buffer_get_iter_at_offset(buffer, &end_iter, end_char);
+    gtk_text_buffer_select_range(buffer, &start_iter, &end_iter);
+  } else if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
+    gtk_editable_select_region(GTK_EDITABLE(platform.widget), start_char, end_char);
+  }
+}
+
+TextRange TextField::GetSelection() const {
+  auto& platform = *pimpl_->platform;
+  const std::string text = ReadWidgetText(platform.widget, platform.text_view);
+  if (platform.text_view) {
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(platform.text_view);
+    if (!buffer) {
+      return TextRange{0, 0};
+    }
+    GtkTextIter start_iter;
+    GtkTextIter end_iter;
+    if (gtk_text_buffer_get_selection_bounds(buffer, &start_iter, &end_iter)) {
+      const size_t s =
+          CharOffsetToUtf16Offset(text, static_cast<size_t>(gtk_text_iter_get_offset(&start_iter)));
+      const size_t e =
+          CharOffsetToUtf16Offset(text, static_cast<size_t>(gtk_text_iter_get_offset(&end_iter)));
+      return TextRange{s, e > s ? e - s : 0};
+    }
+    GtkTextMark* insert_mark = gtk_text_buffer_get_insert(buffer);
+    if (insert_mark) {
+      gtk_text_buffer_get_iter_at_mark(buffer, &start_iter, insert_mark);
+      const size_t pos =
+          CharOffsetToUtf16Offset(text, static_cast<size_t>(gtk_text_iter_get_offset(&start_iter)));
+      return TextRange{pos, 0};
+    }
+    return TextRange{0, 0};
+  }
+  if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
+    gint start_pos = 0;
+    gint end_pos = 0;
+    if (gtk_editable_get_selection_bounds(GTK_EDITABLE(platform.widget), &start_pos, &end_pos)) {
+      const size_t s = CharOffsetToUtf16Offset(text, start_pos > 0 ? static_cast<size_t>(start_pos) : 0);
+      const size_t e = CharOffsetToUtf16Offset(text, end_pos > 0 ? static_cast<size_t>(end_pos) : 0);
+      return TextRange{s, e > s ? e - s : 0};
+    }
+    const gint pos = gtk_editable_get_position(GTK_EDITABLE(platform.widget));
+    return TextRange{CharOffsetToUtf16Offset(text, pos > 0 ? static_cast<size_t>(pos) : 0), 0};
+  }
+  return TextRange{0, 0};
+}
+
+bool TextField::IsComposing() const {
+  auto& platform = *pimpl_->platform;
+  if (platform.widget && GTK_IS_ENTRY(platform.widget)) {
+    PangoLayout* layout = gtk_entry_get_layout(GTK_ENTRY(platform.widget));
+    if (layout) {
+      const char* layout_text = pango_layout_get_text(layout);
+      const char* entry_text = gtk_entry_get_text(GTK_ENTRY(platform.widget));
+      if (layout_text && entry_text && gtk_entry_get_visibility(GTK_ENTRY(platform.widget))) {
+        return std::strlen(layout_text) != std::strlen(entry_text);
+      }
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

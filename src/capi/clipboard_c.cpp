@@ -27,6 +27,8 @@ void native_clipboard_data_free(native_clipboard_data_t* value) {
   value->text = nullptr;
   free_c_str(value->html);
   value->html = nullptr;
+  free_c_str(value->rtf);
+  value->rtf = nullptr;
   nativeapi::HandleTable::GetInstance().Release(value->image); value->image = 0;
   native_string_list_free(&value->file_paths);
 }
@@ -144,6 +146,38 @@ void native_clipboard_read_html(native_clipboard_read_html_callback_t callback, 
   }
 }
 
+void native_clipboard_read_rtf(native_clipboard_read_rtf_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
+  auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
+  try {
+    std::function<void(bool, std::optional<std::string>)> callback_cpp;
+    if (callback) {
+      callback_cpp = [callback, holder = callback_holder](bool arg0, std::optional<std::string> arg1) {
+        if (holder->revoked()) return;
+        struct Payload {
+          bool arg0{};
+          char* arg1{};
+        };
+        auto payload = std::shared_ptr<Payload>(new Payload{}, [](Payload* value) {
+          free_c_str(value->arg1);
+          value->arg1 = nullptr;
+          delete value;
+        });
+        payload->arg0 = arg0;
+        payload->arg1 = arg1 ? (arg1->empty() ? new char[1]{0} : to_c_str(*arg1)) : nullptr;
+        auto context = std::make_shared<nativeapi::capi::EventDeliveryContext>(holder);
+        auto lease = std::make_shared<nativeapi::capi::EventDelivery>(context, payload, nullptr);
+        auto delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+        callback(payload->arg0, payload->arg1, delivery, holder->get());
+      };
+    }
+    nativeapi::Clipboard::GetInstance().ReadRtf(callback_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_read_rtf");
+    return;
+  }
+}
+
 void native_clipboard_read_image(native_clipboard_read_image_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
   auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
   try {
@@ -206,6 +240,38 @@ void native_clipboard_read_file_paths(native_clipboard_read_file_paths_callback_
   }
 }
 
+void native_clipboard_read_format_base64(const char* format, native_clipboard_read_format_base64_callback_t callback, void* callback_user_data, native_release_user_data_t callback_release_user_data) {
+  auto callback_holder = nativeapi::capi::UserData::Make(callback_user_data, callback_release_user_data);
+  try {
+    std::function<void(bool, std::optional<std::string>)> callback_cpp;
+    if (callback) {
+      callback_cpp = [callback, holder = callback_holder](bool arg0, std::optional<std::string> arg1) {
+        if (holder->revoked()) return;
+        struct Payload {
+          bool arg0{};
+          char* arg1{};
+        };
+        auto payload = std::shared_ptr<Payload>(new Payload{}, [](Payload* value) {
+          free_c_str(value->arg1);
+          value->arg1 = nullptr;
+          delete value;
+        });
+        payload->arg0 = arg0;
+        payload->arg1 = arg1 ? (arg1->empty() ? new char[1]{0} : to_c_str(*arg1)) : nullptr;
+        auto context = std::make_shared<nativeapi::capi::EventDeliveryContext>(holder);
+        auto lease = std::make_shared<nativeapi::capi::EventDelivery>(context, payload, nullptr);
+        auto delivery = nativeapi::HandleTable::GetInstance().Insert(lease);
+        callback(payload->arg0, payload->arg1, delivery, holder->get());
+      };
+    }
+    nativeapi::Clipboard::GetInstance().ReadFormatBase64(std::string(format ? format : ""), callback_cpp);
+    return;
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_read_format_base64");
+    return;
+  }
+}
+
 bool native_clipboard_write(native_clipboard_data_t data) {
   try {
     auto data_cpp = to_cpp_clipboard_data(data);
@@ -230,6 +296,15 @@ bool native_clipboard_write_html(const char* html) {
     return nativeapi::Clipboard::GetInstance().WriteHtml(std::string(html ? html : ""));
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_write_html");
+    return false;
+  }
+}
+
+bool native_clipboard_write_rtf(const char* rtf) {
+  try {
+    return nativeapi::Clipboard::GetInstance().WriteRtf(std::string(rtf ? rtf : ""));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_write_rtf");
     return false;
   }
 }
@@ -268,11 +343,92 @@ bool native_clipboard_write_file_paths(native_string_list_t file_paths) {
   }
 }
 
+bool native_clipboard_write_format_base64(const char* format, const char* base64_data) {
+  try {
+    return nativeapi::Clipboard::GetInstance().WriteFormatBase64(std::string(format ? format : ""), std::string(base64_data ? base64_data : ""));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_write_format_base64");
+    return false;
+  }
+}
+
 bool native_clipboard_clear(void) {
   try {
     return nativeapi::Clipboard::GetInstance().Clear();
   } catch (...) {
     fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_clear");
+    return false;
+  }
+}
+
+long long native_clipboard_get_change_count(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().GetChangeCount();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_get_change_count");
+    return 0;
+  }
+}
+
+bool native_clipboard_is_concealed(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().IsConcealed();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_is_concealed");
+    return false;
+  }
+}
+
+bool native_clipboard_has_text(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasText();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_text");
+    return false;
+  }
+}
+
+bool native_clipboard_has_html(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasHtml();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_html");
+    return false;
+  }
+}
+
+bool native_clipboard_has_rtf(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasRtf();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_rtf");
+    return false;
+  }
+}
+
+bool native_clipboard_has_image(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasImage();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_image");
+    return false;
+  }
+}
+
+bool native_clipboard_has_file_paths(void) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasFilePaths();
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_file_paths");
+    return false;
+  }
+}
+
+bool native_clipboard_has_format(const char* format) {
+  try {
+    return nativeapi::Clipboard::GetInstance().HasFormat(std::string(format ? format : ""));
+  } catch (...) {
+    fprintf(stderr, "[nativeapi] %s: unexpected exception\n", "native_clipboard_has_format");
     return false;
   }
 }

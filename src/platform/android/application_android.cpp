@@ -82,6 +82,10 @@ bool Application::SetBrightness(Brightness brightness) {
   return false;
 }
 
+Brightness Application::GetSystemBrightness() const {
+  return Brightness::System;
+}
+
 bool Application::SetMenuBar(std::shared_ptr<Menu> menu) {
   ALOGW("Application::SetMenuBar not implemented on Android");
   return false;

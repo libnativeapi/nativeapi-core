@@ -444,6 +444,43 @@ class Application::Impl {
     return update.ok;
   }
 
+  Brightness GetSystemBrightness() const {
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    LSTATUS status = RegGetValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
+    if (status == ERROR_SUCCESS && value == 0) {
+      return Brightness::Dark;
+    }
+    return Brightness::Light;
+  }
+
+  void StartEventMonitoring() {
+    if (theme_hwnd_) {
+      return;
+    }
+    last_system_brightness_ = GetSystemBrightness();
+    const wchar_t* kClassName = L"NativeApiApplicationThemeWindow";
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ThemeWndProc;
+    wc.hInstance = hinstance_;
+    wc.lpszClassName = kClassName;
+    RegisterClassExW(&wc);
+    // Top-level hidden window (not HWND_MESSAGE) so it receives broadcast WM_SETTINGCHANGE.
+    theme_hwnd_ = CreateWindowExW(0, kClassName, L"", WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr,
+                                  hinstance_, this);
+  }
+
+  void StopEventMonitoring() {
+    if (theme_hwnd_) {
+      DestroyWindow(theme_hwnd_);
+      theme_hwnd_ = nullptr;
+    }
+  }
+
   bool SetMenuBar(std::shared_ptr<Menu> menu) {
     if (!menu) {
       return false;
@@ -474,6 +511,7 @@ class Application::Impl {
   }
 
   void CleanupEventMonitoring() {
+    StopEventMonitoring();
     // Clean up Windows-specific event monitoring
     if (mutex_) {
       CloseHandle(mutex_);
@@ -484,9 +522,31 @@ class Application::Impl {
   }
 
  private:
+  static LRESULT CALLBACK ThemeWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCCREATE) {
+      auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+      SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+      return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self && msg == WM_SETTINGCHANGE) {
+      const wchar_t* section = reinterpret_cast<const wchar_t*>(lp);
+      if (!section || _wcsicmp(section, L"ImmersiveColorSet") == 0) {
+        Brightness current = self->GetSystemBrightness();
+        if (current != self->last_system_brightness_) {
+          self->last_system_brightness_ = current;
+          self->app_->Emit<ApplicationSystemBrightnessChangedEvent>(current);
+        }
+      }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+  }
+
   Application* app_;
   HINSTANCE hinstance_;
   HANDLE mutex_ = nullptr;
+  HWND theme_hwnd_ = nullptr;
+  Brightness last_system_brightness_ = Brightness::System;
   ITaskbarList3* taskbar_ = nullptr;
   HICON badge_icon_ = nullptr;
   // SetIcon()'s icons, held by the windows they were set on.
@@ -654,6 +714,10 @@ bool Application::SetBrightness(Brightness brightness) {
   return pimpl_->SetBrightness(brightness);
 }
 
+Brightness Application::GetSystemBrightness() const {
+  return pimpl_->GetSystemBrightness();
+}
+
 bool Application::SetMenuBar(std::shared_ptr<Menu> menu) {
   return pimpl_->SetMenuBar(menu);
 }
@@ -671,8 +735,30 @@ std::vector<std::shared_ptr<Window>> Application::GetAllWindows() const {
   return window_manager.GetAll();
 }
 
-void Application::StartEventListening() {}
+void Application::StartEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() > 0) {
+      pimpl_->StartEventMonitoring();
+    }
+  }));
+  if (IsMainThread()) {
+    update();
+  } else {
+    (void)RunOnMainThread(std::move(update));
+  }
+}
 
-void Application::StopEventListening() {}
+void Application::StopEventListening() {
+  auto update = CreateGuardedCallback<>(std::function<void()>([this] {
+    if (pimpl_ && GetTotalListenerCount() == 0) {
+      pimpl_->StopEventMonitoring();
+    }
+  }));
+  if (IsMainThread()) {
+    update();
+  } else {
+    (void)RunOnMainThread(std::move(update));
+  }
+}
 
 }  // namespace nativeapi

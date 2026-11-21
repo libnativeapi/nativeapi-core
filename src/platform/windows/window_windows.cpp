@@ -630,6 +630,16 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
   // title or icon changes. The content repaints over it a moment later, so it flickers.
   // There is no frame to paint, so none of that is let through.
   if (!frameless) return std::nullopt;
+  if (message == WM_WINDOWPOSCHANGING && lp) {
+    auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
+    if (!(pos->flags & SWP_NOMOVE)) {
+      RECT cur{};
+      if (GetWindowRect(hwnd, &cur) && (pos->x != cur.left || pos->y != cur.top)) {
+        pos->flags |= SWP_NOCOPYBITS;
+      }
+    }
+    return std::nullopt;
+  }
   constexpr UINT kNcUahDrawCaption = 0x00AE;
   constexpr UINT kNcUahDrawFrame = 0x00AF;
   if (message == WM_NCPAINT || message == kNcUahDrawCaption || message == kNcUahDrawFrame)
@@ -690,6 +700,9 @@ static void UpdateFrameRendering(HWND hwnd, bool keep_content) {
 #endif
   DWMNCRENDERINGPOLICY policy = compositor ? DWMNCRP_USEWINDOWSTYLE : DWMNCRP_DISABLED;
   DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+  constexpr DWORD kDwmwaBorderColor = 34;
+  const COLORREF border_color = (hidden && !compositor) ? 0xFFFFFFFEu : 0xFFFFFFFFu;
+  DwmSetWindowAttribute(hwnd, kDwmwaBorderColor, &border_color, sizeof(border_color));
   // Before the shadow below reads the region for its contour.
   DropThemeRegion(hwnd);
   if (hidden && shadow && !compositor)

@@ -246,6 +246,14 @@ void Clipboard::Impl::Read(unsigned mask, std::function<void(bool, ClipboardData
         else
           ok = false;
       }
+      if ((mask & Bit(ClipboardReadFormat::Rtf)) &&
+          IsClipboardFormatAvailable(RegisterClipboardFormatW(L"Rich Text Format"))) {
+        auto bytes = Bytes(RegisterClipboardFormatW(L"Rich Text Format"));
+        size_t len = bytes.size();
+        while (len > 0 && bytes[len - 1] == 0)
+          --len;
+        data.rtf = std::string(reinterpret_cast<const char*>(bytes.data()), len);
+      }
       if ((mask & Bit(ClipboardReadFormat::Image)) &&
           (IsClipboardFormatAvailable(PngFormat()) || IsClipboardFormatAvailable(CF_DIBV5) ||
            IsClipboardFormatAvailable(CF_DIB))) {
@@ -291,6 +299,10 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
   if (data.html) {
     const auto html = Html(*data.html);
     prepared.emplace_back(HtmlFormat(), html.c_str(), html.size() + 1);
+  }
+  if (data.rtf) {
+    prepared.emplace_back(RegisterClipboardFormatW(L"Rich Text Format"), data.rtf->c_str(),
+                          data.rtf->size() + 1);
   }
   if (data.image) {
     auto png = clipboard_internal::DecodeBase64(data.image->ToBase64());
@@ -366,6 +378,107 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
   CloseClipboard();
   return ok;
 }
+void Clipboard::Impl::ReadCustomFormatBase64(
+    const std::string& format,
+    std::function<void(bool, std::optional<std::string>)> callback) {
+  const DWORD revision = GetClipboardSequenceNumber();
+  RunOnMainThread([format, revision, callback = std::move(callback)] {
+    const UINT fmt = RegisterClipboardFormatW(StringToWString(format).c_str());
+    if (!fmt || !OpenClipboard(nullptr)) {
+      callback(false, std::nullopt);
+      return;
+    }
+    std::optional<std::string> result;
+    bool ok = true;
+    try {
+      if (IsClipboardFormatAvailable(fmt)) {
+        auto bytes = Bytes(fmt);
+        result = clipboard_internal::Base64(bytes.data(), bytes.size());
+      }
+      ok = ok && revision == GetClipboardSequenceNumber();
+    } catch (...) {
+      ok = false;
+    }
+    CloseClipboard();
+    callback(ok, ok ? std::move(result) : std::nullopt);
+  });
+}
+
+bool Clipboard::Impl::WriteCustomFormatBase64(const std::string& format,
+                                              const std::string& base64_data) {
+  auto bytes = clipboard_internal::DecodeBase64(base64_data);
+  if (bytes.empty() && !base64_data.empty())
+    return false;
+  const UINT fmt = RegisterClipboardFormatW(StringToWString(format).c_str());
+  if (!fmt)
+    return false;
+  NativeData item(fmt, bytes.data(), bytes.size());
+  if (!item.handle)
+    return false;
+  if (!platform->EnsureWindow() || !OpenClipboard(platform->window))
+    return false;
+  bool ok = EmptyClipboard() != FALSE;
+  if (ok) {
+    if (SetClipboardData(item.format, item.handle))
+      item.handle = nullptr;
+    else
+      ok = false;
+  }
+  CloseClipboard();
+  return ok;
+}
+
+int64_t Clipboard::Impl::GetChangeCount() const {
+  return static_cast<int64_t>(GetClipboardSequenceNumber());
+}
+
+bool Clipboard::Impl::IsConcealed() const {
+  static const UINT kExcludeMonitor =
+      RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+  if (kExcludeMonitor && IsClipboardFormatAvailable(kExcludeMonitor))
+    return true;
+  static const UINT kCanIncludeHistory = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+  if (kCanIncludeHistory && IsClipboardFormatAvailable(kCanIncludeHistory)) {
+    if (OpenClipboard(nullptr)) {
+      bool concealed = false;
+      auto bytes = Bytes(kCanIncludeHistory);
+      if (bytes.size() >= sizeof(DWORD)) {
+        DWORD allowed = 1;
+        std::memcpy(&allowed, bytes.data(), sizeof(DWORD));
+        concealed = (allowed == 0);
+      }
+      CloseClipboard();
+      if (concealed)
+        return true;
+    }
+  }
+  return false;
+}
+
+bool Clipboard::Impl::HasFormat(ClipboardReadFormat format) const {
+  switch (format) {
+    case ClipboardReadFormat::Text:
+      return IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE;
+    case ClipboardReadFormat::Html:
+      return IsClipboardFormatAvailable(HtmlFormat()) != FALSE;
+    case ClipboardReadFormat::Rtf:
+      return IsClipboardFormatAvailable(RegisterClipboardFormatW(L"Rich Text Format")) != FALSE;
+    case ClipboardReadFormat::Image:
+      return IsClipboardFormatAvailable(PngFormat()) != FALSE ||
+             IsClipboardFormatAvailable(CF_DIBV5) != FALSE ||
+             IsClipboardFormatAvailable(CF_DIB) != FALSE;
+    case ClipboardReadFormat::FilePaths:
+      return IsClipboardFormatAvailable(CF_HDROP) != FALSE;
+    default:
+      return false;
+  }
+}
+
+bool Clipboard::Impl::HasCustomFormat(const std::string& format) const {
+  const UINT fmt = RegisterClipboardFormatW(StringToWString(format).c_str());
+  return fmt != 0 && IsClipboardFormatAvailable(fmt) != FALSE;
+}
+
 bool Clipboard::Impl::Start() {
   if (!platform->EnsureWindow())
     return false;

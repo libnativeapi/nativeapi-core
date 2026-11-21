@@ -140,6 +140,74 @@ bool Clipboard::Impl::Write(const ClipboardData& data) {
   });
   return result;
 }
+void Clipboard::Impl::ReadCustomFormatBase64(
+    const std::string& format,
+    std::function<void(bool, std::optional<std::string>)> callback) {
+  RunOnMainThread([format, callback = std::move(callback)] {
+    @autoreleasepool {
+      UIPasteboard* board = [UIPasteboard generalPasteboard];
+      NSString* type = [NSString stringWithUTF8String:format.c_str()];
+      NSData* data = type ? [board dataForPasteboardType:type] : nil;
+      if (!data) {
+        callback(true, std::nullopt);
+        return;
+      }
+      callback(true, clipboard_internal::Base64(static_cast<const unsigned char*>(data.bytes),
+                                                data.length));
+    }
+  });
+}
+
+bool Clipboard::Impl::WriteCustomFormatBase64(const std::string& format,
+                                              const std::string& base64_data) {
+  @autoreleasepool {
+    auto bytes = clipboard_internal::DecodeBase64(base64_data);
+    if (bytes.empty() && !base64_data.empty())
+      return false;
+    NSString* type = [NSString stringWithUTF8String:format.c_str()];
+    if (!type)
+      return false;
+    NSData* data = [NSData dataWithBytes:bytes.data() length:bytes.size()];
+    [[UIPasteboard generalPasteboard] setData:data forPasteboardType:type];
+    return true;
+  }
+}
+
+int64_t Clipboard::Impl::GetChangeCount() const {
+  return static_cast<int64_t>([UIPasteboard generalPasteboard].changeCount);
+}
+
+bool Clipboard::Impl::IsConcealed() const {
+  return false;
+}
+
+bool Clipboard::Impl::HasFormat(ClipboardReadFormat format) const {
+  @autoreleasepool {
+    UIPasteboard* board = [UIPasteboard generalPasteboard];
+    switch (format) {
+      case ClipboardReadFormat::Text:
+        return board.hasStrings == YES;
+      case ClipboardReadFormat::Html:
+        return [board containsPasteboardTypes:@[ @"public.html" ]] == YES;
+      case ClipboardReadFormat::Rtf:
+        return [board containsPasteboardTypes:@[ @"public.rtf" ]] == YES;
+      case ClipboardReadFormat::Image:
+        return board.hasImages == YES;
+      case ClipboardReadFormat::FilePaths:
+        return board.hasURLs == YES;
+      default:
+        return false;
+    }
+  }
+}
+
+bool Clipboard::Impl::HasCustomFormat(const std::string& format) const {
+  @autoreleasepool {
+    NSString* type = [NSString stringWithUTF8String:format.c_str()];
+    return type != nil && [[UIPasteboard generalPasteboard] containsPasteboardTypes:@[ type ]] == YES;
+  }
+}
+
 bool Clipboard::Impl::Start() {
   bool result = false;
   OnUI([&] {

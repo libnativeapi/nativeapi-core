@@ -1469,11 +1469,33 @@ void Window::Show() {
   } else if (pimpl_->gdk_window_) {
     gdk_window_show(pimpl_->gdk_window_);
   }
+  if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
+    if (GdkWindow* gdk_win = gtk_widget_get_window(pimpl_->widget_)) {
+      pimpl_->gdk_window_ = gdk_win;
+    }
+    if (IsFrameless()) {
+      GtkWidget* explicit_title_bar = gtk_window_get_titlebar(GTK_WINDOW(pimpl_->widget_));
+      if (!explicit_title_bar || !linux_shadow::GtkOwnsGutter(pimpl_->widget_))
+        gtk_window_set_decorated(GTK_WINDOW(pimpl_->widget_), FALSE);
+      SetHasShadow(HasShadow());
+    }
+  }
 }
 
 void Window::ShowInactive() {
   if (pimpl_->widget_) {
     gtk_widget_show(pimpl_->widget_);
+    if (GTK_IS_WINDOW(pimpl_->widget_)) {
+      if (GdkWindow* gdk_win = gtk_widget_get_window(pimpl_->widget_)) {
+        pimpl_->gdk_window_ = gdk_win;
+      }
+      if (IsFrameless()) {
+        GtkWidget* explicit_title_bar = gtk_window_get_titlebar(GTK_WINDOW(pimpl_->widget_));
+        if (!explicit_title_bar || !linux_shadow::GtkOwnsGutter(pimpl_->widget_))
+          gtk_window_set_decorated(GTK_WINDOW(pimpl_->widget_), FALSE);
+        SetHasShadow(HasShadow());
+      }
+    }
   } else if (pimpl_->gdk_window_) {
     gdk_window_show_unraised(pimpl_->gdk_window_);
   }
@@ -2081,9 +2103,20 @@ void Window::Center() {
 
 void Window::SetTitle(std::string title) {
   detail::WindowPropertyScope property_scope(*this);
+  auto apply_window_title = [&](GtkWindow* gtk_window) {
+    gtk_window_set_title(gtk_window, title.c_str());
+    // Flutter's Linux runner installs a GtkHeaderBar with its own title set via
+    // gtk_header_bar_set_title(); updating both and queueing a resize keeps the
+    // header bar in sync and avoids ellipsizing a longer pre-show title (#370).
+    if (GtkWidget* titlebar = gtk_window_get_titlebar(gtk_window);
+        titlebar && GTK_IS_HEADER_BAR(titlebar)) {
+      gtk_header_bar_set_title(GTK_HEADER_BAR(titlebar), title.c_str());
+      gtk_widget_queue_resize(titlebar);
+    }
+  };
   // Prefer setting title via GtkWindow if available
   if (pimpl_->widget_ && GTK_IS_WINDOW(pimpl_->widget_)) {
-    gtk_window_set_title(GTK_WINDOW(pimpl_->widget_), title.c_str());
+    apply_window_title(GTK_WINDOW(pimpl_->widget_));
     return;
   }
 
@@ -2092,7 +2125,7 @@ void Window::SetTitle(std::string title) {
     gpointer user_data = nullptr;
     gdk_window_get_user_data(pimpl_->gdk_window_, &user_data);
     if (user_data && GTK_IS_WINDOW(user_data)) {
-      gtk_window_set_title(GTK_WINDOW(user_data), title.c_str());
+      apply_window_title(GTK_WINDOW(user_data));
       return;
     }
 
@@ -2126,8 +2159,10 @@ static const char* kFramelessKey = "NativeAPIFrameless";
 
 bool Window::SetFrameless(bool is_frameless) {
   auto* widget = pimpl_->widget_;
-  if (!widget || !GTK_IS_WINDOW(widget) || gtk_widget_in_destruction(widget) ||
-      !gtk_widget_get_window(widget) || gdk_window_is_destroyed(gtk_widget_get_window(widget))) return false;
+  if (!widget || !GTK_IS_WINDOW(widget) || gtk_widget_in_destruction(widget)) return false;
+  if (GdkWindow* gdk_win = gtk_widget_get_window(widget)) {
+    if (gdk_window_is_destroyed(gdk_win)) return false;
+  }
   if (is_frameless == IsFrameless()) return true;
   detail::WindowPropertyScope property_scope(*this);
   SetTitleBarStyle(is_frameless ? TitleBarStyle::Hidden : TitleBarStyle::Normal);
@@ -2413,6 +2448,8 @@ bool Window::IsVisualEffectSupported(VisualEffect effect) {
   return effect == VisualEffect::None;
 }
 
+static const char* kBackgroundCssProviderKey = "NativeAPIBackgroundCssProvider";
+
 void Window::SetBackgroundColor(const Color& color) {
   if (!pimpl_->widget_)
     return;
@@ -2420,24 +2457,41 @@ void Window::SetBackgroundColor(const Color& color) {
   // Store the color
   pimpl_->background_color_ = color;
 
-  // Create CSS provider for background color
-  GtkCssProvider* provider = gtk_css_provider_new();
-  
-  // Format CSS string with RGBA color
+  // Request an RGBA visual before realization when a translucent background is
+  // asked for, so GTK/compositors can blend alpha instead of painting black.
+  if (color.a < 255 && !gtk_widget_get_realized(pimpl_->widget_)) {
+    if (GdkScreen* screen = gtk_widget_get_screen(pimpl_->widget_)) {
+      if (GdkVisual* visual = gdk_screen_get_rgba_visual(screen);
+          visual && gdk_screen_is_composited(screen)) {
+        gtk_widget_set_visual(pimpl_->widget_, visual);
+      }
+    }
+    gtk_widget_set_app_paintable(pimpl_->widget_, TRUE);
+  }
+
+  // Format alpha with g_ascii_formatd so non-C locales (comma decimal separator)
+  // never produce invalid CSS.
+  char alpha_buf[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd(alpha_buf, sizeof(alpha_buf), "%.4f", color.a / 255.0);
   gchar* css = g_strdup_printf(
-    "window { background-color: rgba(%d, %d, %d, %.2f); }",
-    color.r, color.g, color.b, color.a / 255.0);
-  
+      "window { background-color: rgba(%d, %d, %d, %s); }",
+      color.r, color.g, color.b, alpha_buf);
+
+  GtkStyleContext* context = gtk_widget_get_style_context(pimpl_->widget_);
+  if (auto* previous = static_cast<GtkStyleProvider*>(
+          g_object_get_data(G_OBJECT(pimpl_->widget_), kBackgroundCssProviderKey))) {
+    gtk_style_context_remove_provider(context, previous);
+  }
+
+  GtkCssProvider* provider = gtk_css_provider_new();
   gtk_css_provider_load_from_data(provider, css, -1, nullptr);
   g_free(css);
-  
-  // Apply CSS to the widget
-  GtkStyleContext* context = gtk_widget_get_style_context(pimpl_->widget_);
+
   gtk_style_context_add_provider(context,
                                  GTK_STYLE_PROVIDER(provider),
                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-  
-  g_object_unref(provider);
+  g_object_set_data_full(G_OBJECT(pimpl_->widget_), kBackgroundCssProviderKey, provider,
+                         g_object_unref);
 
   // The content may paint a backing of its own over the window's background. A Flutter
   // view does - opaque black - and has a setter for it, which is looked up at run time:

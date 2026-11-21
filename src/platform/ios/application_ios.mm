@@ -84,6 +84,19 @@ bool Application::SetBrightness(Brightness brightness) {
   return false;
 }
 
+Brightness Application::GetSystemBrightness() const {
+  if (@available(iOS 13.0, *)) {
+    UIUserInterfaceStyle style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    if (style == UIUserInterfaceStyleDark) {
+      return Brightness::Dark;
+    }
+    if (style == UIUserInterfaceStyleLight) {
+      return Brightness::Light;
+    }
+  }
+  return Brightness::System;
+}
+
 bool Application::SetMenuBar(std::shared_ptr<Menu> menu) {
   // iOS doesn't have a menu bar
   return false;

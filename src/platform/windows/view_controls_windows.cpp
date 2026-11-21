@@ -106,6 +106,14 @@ HWND CreateEditHwnd(TextAlignment alignment,
   HWND hwnd = CreateControl(L"EDIT", style, 0);
   if (hwnd && !bordered) {
     SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+    using SetWindowThemeFn = HRESULT(WINAPI*)(HWND, LPCWSTR, LPCWSTR);
+    static HMODULE uxtheme = LoadLibraryW(L"uxtheme.dll");
+    static auto set_theme = uxtheme ? reinterpret_cast<SetWindowThemeFn>(
+                                          GetProcAddress(uxtheme, "SetWindowTheme"))
+                                    : nullptr;
+    if (set_theme) {
+      set_theme(hwnd, L"", L"");
+    }
   }
   return hwnd;
 }
@@ -472,6 +480,65 @@ void TextField::SetBordered(bool is_bordered) {
 
 bool TextField::IsBordered() const {
   return pimpl_->platform->bordered;
+}
+
+void TextField::SetSelection(TextRange range) {
+  NATIVEAPI_VIEW_XAML(*pimpl_, SetSelection(range))
+  HWND hwnd = pimpl_->platform->hwnd;
+  if (!hwnd) {
+    return;
+  }
+  const DWORD total = static_cast<DWORD>(GetWindowTextLengthW(hwnd));
+  const DWORD start = range.start > total ? total : static_cast<DWORD>(range.start);
+  const DWORD max_len = total - start;
+  const DWORD len = range.length > max_len ? max_len : static_cast<DWORD>(range.length);
+  SendMessageW(hwnd, EM_SETSEL, static_cast<WPARAM>(start), static_cast<LPARAM>(start + len));
+}
+
+TextRange TextField::GetSelection() const {
+  NATIVEAPI_VIEW_XAML(*pimpl_, GetSelection())
+  HWND hwnd = pimpl_->platform->hwnd;
+  if (!hwnd) {
+    return TextRange{0, 0};
+  }
+  DWORD start = 0;
+  DWORD end = 0;
+  SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+  if (end < start) {
+    return TextRange{static_cast<size_t>(end), static_cast<size_t>(start - end)};
+  }
+  return TextRange{static_cast<size_t>(start), static_cast<size_t>(end - start)};
+}
+
+bool TextField::IsComposing() const {
+  NATIVEAPI_VIEW_XAML(*pimpl_, IsComposing())
+  HWND hwnd = pimpl_->platform->hwnd;
+  if (!hwnd) {
+    return false;
+  }
+  using ImmGetContextFn = HANDLE(WINAPI*)(HWND);
+  using ImmGetCompositionStringWFn = LONG(WINAPI*)(HANDLE, DWORD, LPVOID, DWORD);
+  using ImmReleaseContextFn = BOOL(WINAPI*)(HWND, HANDLE);
+  static HMODULE imm32 = LoadLibraryW(L"imm32.dll");
+  static auto get_ctx =
+      imm32 ? reinterpret_cast<ImmGetContextFn>(GetProcAddress(imm32, "ImmGetContext")) : nullptr;
+  static auto get_comp = imm32 ? reinterpret_cast<ImmGetCompositionStringWFn>(
+                                     GetProcAddress(imm32, "ImmGetCompositionStringW"))
+                               : nullptr;
+  static auto rel_ctx = imm32 ? reinterpret_cast<ImmReleaseContextFn>(
+                                    GetProcAddress(imm32, "ImmReleaseContext"))
+                              : nullptr;
+  if (!get_ctx || !get_comp || !rel_ctx) {
+    return false;
+  }
+  HANDLE himc = get_ctx(hwnd);
+  if (!himc) {
+    return false;
+  }
+  constexpr DWORD kGcsCompStr = 0x0008;
+  const LONG bytes = get_comp(himc, kGcsCompStr, nullptr, 0);
+  rel_ctx(hwnd, himc);
+  return bytes > 0;
 }
 
 // ---------------------------------------------------------------------------
