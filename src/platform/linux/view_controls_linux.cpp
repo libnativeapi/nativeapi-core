@@ -3,6 +3,7 @@
 #include "../../view.h"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
 #include "view_internal_linux.h"
