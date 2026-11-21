@@ -65,7 +65,9 @@ int main() {
 
       host->fake_full_screen = YES;
       window.Hide();
-      Check(host->toggle_calls == 1, "Hide() in fullscreen calls toggleFullScreen");
+      window.Hide();
+      Check(host->toggle_calls == 1,
+            "Hide() in fullscreen calls toggleFullScreen once even if repeated");
       Check(host->order_out_calls == 0 && host->set_visible_false_calls == 0,
             "Hide() in fullscreen defers orderOut until exit notification");
 
@@ -149,6 +151,12 @@ int main() {
                         object:host];
       Check(host.level == NSFloatingWindowLevel,
             "DidExitFullScreen restores floating level after user-initiated fullscreen");
+
+      // Direct native level changes remain reflected after SetAlwaysOnTop(false).
+      window.SetAlwaysOnTop(false);
+      host.level = NSFloatingWindowLevel;
+      Check(window.IsAlwaysOnTop(),
+            "direct native level raise is reflected by IsAlwaysOnTop()");
       [host close];
     }
 

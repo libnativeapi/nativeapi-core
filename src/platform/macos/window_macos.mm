@@ -50,7 +50,6 @@ static const void* kWindowVisualEffectKey = &kWindowVisualEffectKey;
 static const void* kWindowVisualEffectViewKey = &kWindowVisualEffectViewKey;
 static const void* kWindowAspectRatioKey = &kWindowAspectRatioKey;
 static const void* kWindowContentBackgroundKey = &kWindowContentBackgroundKey;
-static const void* kWindowAlwaysOnTopKey = &kWindowAlwaysOnTopKey;
 static const void* kWindowFullScreenCoordinatorKey = &kWindowFullScreenCoordinatorKey;
 
 // Also called by window_manager_macos.mm, for windows someone else shows.
@@ -79,13 +78,6 @@ static void NativeApiDetachFromParentWindow(NSWindow* window, bool keep_pending)
   }
   objc_setAssociatedObject(window, kWindowPendingParentKey, parent,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static BOOL NativeApiWindowIsAlwaysOnTop(NSWindow* window) {
-  if (!window) return NO;
-  NSNumber* value = objc_getAssociatedObject(window, kWindowAlwaysOnTopKey);
-  if (value) return [value boolValue];
-  return [window level] == NSFloatingWindowLevel;
 }
 
 // Coordinates hiding a fullscreen window (exiting fullscreen first so macOS does
@@ -123,7 +115,7 @@ static BOOL NativeApiWindowIsAlwaysOnTop(NSWindow* window) {
 - (void)willEnterFullScreen:(NSNotification*)note {
   (void)note;
   if (!window) return;
-  if (NativeApiWindowIsAlwaysOnTop(window)) {
+  if ([window level] == NSFloatingWindowLevel) {
     restore_always_on_top = YES;
     [window setLevel:NSNormalWindowLevel];
   }
@@ -133,10 +125,10 @@ static BOOL NativeApiWindowIsAlwaysOnTop(NSWindow* window) {
   (void)note;
   if (!window) return;
   if (restore_always_on_top) {
+    // Raise level before clearing restore_always_on_top so IsAlwaysOnTop()
+    // does not transiently dip to NO while KVO observes the level change.
+    [window setLevel:NSFloatingWindowLevel];
     restore_always_on_top = NO;
-    if (NativeApiWindowIsAlwaysOnTop(window)) {
-      [window setLevel:NSFloatingWindowLevel];
-    }
   }
   if (pending_hide) {
     pending_hide = NO;
@@ -174,6 +166,14 @@ static NativeApiFullScreenCoordinator* NativeApiGetFullScreenCoordinator(NSWindo
 #endif
   }
   return coordinator;
+}
+
+static BOOL NativeApiWindowIsAlwaysOnTop(NSWindow* window) {
+  if (!window) return NO;
+  if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
+    if (coordinator->restore_always_on_top) return YES;
+  }
+  return [window level] == NSFloatingWindowLevel;
 }
 
 // The content may paint a backing of its own over the window's background. A view
@@ -645,8 +645,10 @@ void Window::Hide() {
   if (!window) return;
   if (IsFullScreen()) {
     auto* coordinator = NativeApiGetFullScreenCoordinator(window, true);
-    coordinator->pending_hide = YES;
-    [window toggleFullScreen:nil];
+    if (!coordinator->pending_hide) {
+      coordinator->pending_hide = YES;
+      [window toggleFullScreen:nil];
+    }
     return;
   }
   if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
@@ -954,14 +956,13 @@ void Window::SetAlwaysOnTop(bool is_always_on_top) {
   detail::WindowPropertyScope property_scope(*this);
   NSWindow* window = pimpl_->ns_window_;
   if (!window) return;
-  objc_setAssociatedObject(window, kWindowAlwaysOnTopKey, @(is_always_on_top),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   if (is_always_on_top) {
     auto* coordinator = NativeApiGetFullScreenCoordinator(window, true);
     if (IsFullScreen()) {
       coordinator->restore_always_on_top = YES;
       [window setLevel:NSNormalWindowLevel];
     } else {
+      coordinator->restore_always_on_top = NO;
       [window setLevel:NSFloatingWindowLevel];
     }
   } else {
@@ -986,8 +987,6 @@ void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
   NSWindow* window = pimpl_->ns_window_;
   if (!window) return;
   if (is_always_on_bottom) {
-    objc_setAssociatedObject(window, kWindowAlwaysOnTopKey, @NO,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
       coordinator->restore_always_on_top = NO;
     }
