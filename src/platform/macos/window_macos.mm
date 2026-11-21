@@ -50,6 +50,7 @@ static const void* kWindowVisualEffectKey = &kWindowVisualEffectKey;
 static const void* kWindowVisualEffectViewKey = &kWindowVisualEffectViewKey;
 static const void* kWindowAspectRatioKey = &kWindowAspectRatioKey;
 static const void* kWindowContentBackgroundKey = &kWindowContentBackgroundKey;
+static const void* kWindowFullScreenCoordinatorKey = &kWindowFullScreenCoordinatorKey;
 
 // Also called by window_manager_macos.mm, for windows someone else shows.
 void NativeApiAttachPendingParentWindow(NSWindow* window) {
@@ -77,6 +78,102 @@ static void NativeApiDetachFromParentWindow(NSWindow* window, bool keep_pending)
   }
   objc_setAssociatedObject(window, kWindowPendingParentKey, parent,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// Coordinates hiding a fullscreen window (exiting fullscreen first so macOS does
+// not leave the user on a black fullscreen Space) and suspending NSFloatingWindowLevel
+// while in native fullscreen (so macOS hides the menu bar and Dock properly).
+@interface NativeApiFullScreenCoordinator : NSObject {
+ @public
+  NSWindow* __unsafe_unretained window;
+  BOOL pending_hide;
+  BOOL restore_always_on_top;
+}
+@end
+
+@implementation NativeApiFullScreenCoordinator
+- (instancetype)initWithWindow:(NSWindow*)target {
+  if ((self = [super init])) {
+    window = target;
+    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(willEnterFullScreen:)
+                   name:NSWindowWillEnterFullScreenNotification
+                 object:target];
+    [center addObserver:self
+               selector:@selector(didExitFullScreen:)
+                   name:NSWindowDidExitFullScreenNotification
+                 object:target];
+    [center addObserver:self
+               selector:@selector(willClose:)
+                   name:NSWindowWillCloseNotification
+                 object:target];
+  }
+  return self;
+}
+
+- (void)willEnterFullScreen:(NSNotification*)note {
+  (void)note;
+  if (!window) return;
+  if ([window level] == NSFloatingWindowLevel) {
+    restore_always_on_top = YES;
+    [window setLevel:NSNormalWindowLevel];
+  }
+}
+
+- (void)didExitFullScreen:(NSNotification*)note {
+  (void)note;
+  if (!window) return;
+  if (restore_always_on_top) {
+    // Raise level before clearing restore_always_on_top so IsAlwaysOnTop()
+    // does not transiently dip to NO while KVO observes the level change.
+    [window setLevel:NSFloatingWindowLevel];
+    restore_always_on_top = NO;
+  }
+  if (pending_hide) {
+    pending_hide = NO;
+    NativeApiDetachFromParentWindow(window, true);
+    [window setIsVisible:NO];
+    [window orderOut:nil];
+  }
+}
+
+- (void)willClose:(NSNotification*)note {
+  (void)note;
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  window = nil;
+}
+
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+#if !__has_feature(objc_arc)
+  [super dealloc];
+#endif
+}
+@end
+
+static NativeApiFullScreenCoordinator* NativeApiGetFullScreenCoordinator(NSWindow* window,
+                                                                         bool create) {
+  if (!window) return nil;
+  NativeApiFullScreenCoordinator* coordinator =
+      objc_getAssociatedObject(window, kWindowFullScreenCoordinatorKey);
+  if (!coordinator && create) {
+    coordinator = [[NativeApiFullScreenCoordinator alloc] initWithWindow:window];
+    objc_setAssociatedObject(window, kWindowFullScreenCoordinatorKey, coordinator,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+#if !__has_feature(objc_arc)
+    [coordinator release];
+#endif
+  }
+  return coordinator;
+}
+
+static BOOL NativeApiWindowIsAlwaysOnTop(NSWindow* window) {
+  if (!window) return NO;
+  if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
+    if (coordinator->restore_always_on_top) return YES;
+  }
+  return [window level] == NSFloatingWindowLevel;
 }
 
 // The content may paint a backing of its own over the window's background. A view
@@ -521,6 +618,9 @@ bool Window::IsFocused() const {
 }
 
 void Window::Show() {
+  if (auto* coordinator = NativeApiGetFullScreenCoordinator(pimpl_->ns_window_, false)) {
+    coordinator->pending_hide = NO;
+  }
   if (IsFocusable()) NativeApiRememberFocusReturnTarget(pimpl_->ns_window_);
   [pimpl_->ns_window_ setIsVisible:YES];
   // Panels receive key focus when shown but should not activate the app.
@@ -532,15 +632,31 @@ void Window::Show() {
 }
 
 void Window::ShowInactive() {
+  if (auto* coordinator = NativeApiGetFullScreenCoordinator(pimpl_->ns_window_, false)) {
+    coordinator->pending_hide = NO;
+  }
   [pimpl_->ns_window_ setIsVisible:YES];
   [pimpl_->ns_window_ orderFrontRegardless];
   NativeApiAttachPendingParentWindow(pimpl_->ns_window_);
 }
 
 void Window::Hide() {
-  NativeApiDetachFromParentWindow(pimpl_->ns_window_, true);
-  [pimpl_->ns_window_ setIsVisible:NO];
-  [pimpl_->ns_window_ orderOut:nil];
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
+  if (IsFullScreen()) {
+    auto* coordinator = NativeApiGetFullScreenCoordinator(window, true);
+    if (!coordinator->pending_hide) {
+      coordinator->pending_hide = YES;
+      [window toggleFullScreen:nil];
+    }
+    return;
+  }
+  if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
+    coordinator->pending_hide = NO;
+  }
+  NativeApiDetachFromParentWindow(window, true);
+  [window setIsVisible:NO];
+  [window orderOut:nil];
 }
 
 bool Window::IsVisible() const {
@@ -597,13 +713,20 @@ bool Window::IsMinimized() const {
 }
 
 void Window::SetFullScreen(bool is_full_screen) {
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
   if (is_full_screen) {
     if (!IsFullScreen()) {
-      [pimpl_->ns_window_ toggleFullScreen:nil];
+      if (NativeApiWindowIsAlwaysOnTop(window)) {
+        auto* coordinator = NativeApiGetFullScreenCoordinator(window, true);
+        coordinator->restore_always_on_top = YES;
+        [window setLevel:NSNormalWindowLevel];
+      }
+      [window toggleFullScreen:nil];
     }
   } else {
     if (IsFullScreen()) {
-      [pimpl_->ns_window_ toggleFullScreen:nil];
+      [window toggleFullScreen:nil];
     }
   }
 }
@@ -771,11 +894,30 @@ bool Window::IsMaximizable() const {
 
 void Window::SetFullScreenable(bool is_full_screenable) {
   detail::WindowPropertyScope property_scope(*this);
-  // TODO: Implement this
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
+  auto behavior = window.collectionBehavior;
+  if (is_full_screenable) {
+    behavior &= ~NSWindowCollectionBehaviorFullScreenNone;
+    behavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+  } else {
+    behavior &= ~(NSWindowCollectionBehaviorFullScreenPrimary |
+                  NSWindowCollectionBehaviorFullScreenAuxiliary);
+    behavior |= NSWindowCollectionBehaviorFullScreenNone;
+  }
+  @try {
+    window.collectionBehavior = behavior;
+  } @catch (NSException*) {
+  }
 }
 
 bool Window::IsFullScreenable() const {
-  return [pimpl_->ns_window_ styleMask] & NSWindowStyleMaskFullScreen;
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return false;
+  const auto behavior = [window collectionBehavior];
+  if (behavior & NSWindowCollectionBehaviorFullScreenNone) return false;
+  if (behavior & NSWindowCollectionBehaviorFullScreenPrimary) return true;
+  return ([window styleMask] & NSWindowStyleMaskResizable) != 0;
 }
 
 void Window::SetClosable(bool is_closable) {
@@ -812,11 +954,29 @@ bool Window::IsWindowControlButtonsVisible() const {
 
 void Window::SetAlwaysOnTop(bool is_always_on_top) {
   detail::WindowPropertyScope property_scope(*this);
-  [pimpl_->ns_window_ setLevel:is_always_on_top ? NSFloatingWindowLevel : NSNormalWindowLevel];
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
+  if (is_always_on_top) {
+    auto* coordinator = NativeApiGetFullScreenCoordinator(window, true);
+    if (IsFullScreen()) {
+      coordinator->restore_always_on_top = YES;
+      [window setLevel:NSNormalWindowLevel];
+    } else {
+      coordinator->restore_always_on_top = NO;
+      [window setLevel:NSFloatingWindowLevel];
+    }
+  } else {
+    if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
+      coordinator->restore_always_on_top = NO;
+    }
+    if ([window level] == NSFloatingWindowLevel) {
+      [window setLevel:NSNormalWindowLevel];
+    }
+  }
 }
 
 bool Window::IsAlwaysOnTop() const {
-  return [pimpl_->ns_window_ level] == NSFloatingWindowLevel;
+  return NativeApiWindowIsAlwaysOnTop(pimpl_->ns_window_);
 }
 
 // One level below NSNormalWindowLevel: beneath every ordinary window, above the desktop.
@@ -824,8 +984,14 @@ static const NSInteger kAlwaysOnBottomWindowLevel = NSNormalWindowLevel - 1;
 
 void Window::SetAlwaysOnBottom(bool is_always_on_bottom) {
   detail::WindowPropertyScope property_scope(*this);
-  [pimpl_->ns_window_
-      setLevel:is_always_on_bottom ? kAlwaysOnBottomWindowLevel : NSNormalWindowLevel];
+  NSWindow* window = pimpl_->ns_window_;
+  if (!window) return;
+  if (is_always_on_bottom) {
+    if (auto* coordinator = NativeApiGetFullScreenCoordinator(window, false)) {
+      coordinator->restore_always_on_top = NO;
+    }
+  }
+  [window setLevel:is_always_on_bottom ? kAlwaysOnBottomWindowLevel : NSNormalWindowLevel];
 }
 
 bool Window::IsAlwaysOnBottom() const {
