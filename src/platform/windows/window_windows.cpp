@@ -660,11 +660,8 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
 #endif
 
 static bool HasWindowRegion(HWND hwnd) {
-  HRGN region = CreateRectRgn(0, 0, 0, 0);
-  if (!region) return false;
-  const bool has_region = GetWindowRgn(hwnd, region) != ERROR;
-  DeleteObject(region);
-  return has_region;
+  RECT box = {};
+  return GetWindowRgnBox(hwnd, &box) != ERROR;
 }
 
 // Removes a region the visual style put on a window with a hidden title bar. Without the
@@ -785,14 +782,17 @@ static LRESULT CALLBACK WindowLifetimeProc(HWND hwnd, UINT message, WPARAM wp, L
   // topmost band.
   const auto* pos = message == WM_WINDOWPOSCHANGED ? reinterpret_cast<const WINDOWPOS*>(lp)
                                                    : nullptr;
-  const bool property_change = message == WM_SETTEXT || message == WM_STYLECHANGED ||
-                               (pos && !(pos->flags & SWP_NOZORDER));
+  const bool full_property_change = message == WM_SETTEXT || message == WM_STYLECHANGED;
+  const bool zorder_change = !full_property_change && pos && !(pos->flags & SWP_NOZORDER);
   const LRESULT result = WindowLifetimeMessage(hwnd, message, wp, lp, subclass_id, reference);
   if (message == WM_DPICHANGED && IsWindow(hwnd))
     detail::HandleDockMessage(hwnd, message, wp, lp);
-  if (property_change && IsWindow(hwnd)) {
+  if (full_property_change && IsWindow(hwnd)) {
     Window window(hwnd);
     detail::WindowPropertyDispatch::Refresh(window);
+  } else if (zorder_change && IsWindow(hwnd)) {
+    Window window(hwnd);
+    detail::WindowPropertyDispatch::RefreshAlwaysOnTop(window);
   }
   return result;
 }

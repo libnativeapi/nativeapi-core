@@ -586,10 +586,22 @@ static HWINEVENTHOOK g_occlusion_hooks[5] = {};
 static UINT_PTR g_occlusion_timer = 0;
 constexpr UINT kOcclusionDelayMs = 100;
 
+static bool AnyWindowInSizeMoveLocked() {
+  for (const auto& entry : g_pending_geometry) {
+    if (entry.second.in_size_move)
+      return true;
+  }
+  return false;
+}
+
 static void CALLBACK OcclusionTimerProc(HWND, UINT, UINT_PTR timer, DWORD) {
   WithObserver([&] {
     KillTimer(nullptr, timer);
     g_occlusion_timer = 0;
+    // Defer occlusion scans while any window is actively dragging/resizing;
+    // WM_EXITSIZEMOVE schedules a fresh check once the interaction settles.
+    if (AnyWindowInSizeMoveLocked())
+      return;
     std::vector<HWND> windows;
     windows.reserve(g_window_snapshots.size());
     for (const auto& entry : g_window_snapshots)
@@ -605,7 +617,7 @@ static void CALLBACK OcclusionTimerProc(HWND, UINT, UINT_PTR timer, DWORD) {
 
 static void ScheduleOcclusionRefresh() {
   WithObserver([] {
-    if (g_occlusion_hooks[0] && !g_occlusion_timer) {
+    if (g_occlusion_hooks[0] && !g_occlusion_timer && !AnyWindowInSizeMoveLocked()) {
       g_occlusion_timer = SetTimer(nullptr, 0, kOcclusionDelayMs, OcclusionTimerProc);
     }
   });

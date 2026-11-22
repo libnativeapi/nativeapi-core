@@ -18,6 +18,9 @@ struct WindowPropertyDispatch {
   // A rendered SDK frame can change only the observed title-button layout.
   // Avoid polling every unrelated window property once per frame.
   static void RefreshControlButtons(const Window& window);
+  // A Z-order change on Windows can change only AlwaysOnTop.
+  // Avoid polling title, menu and style properties on every WM_WINDOWPOSCHANGED.
+  static void RefreshAlwaysOnTop(const Window& window);
   // Seed the first usable rendered control layout, which may become available
   // after native window attachment but before observation starts.
   static void PrimeControlButtons(const Window& window);

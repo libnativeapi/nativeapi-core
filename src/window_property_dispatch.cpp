@@ -132,6 +132,32 @@ void WindowPropertyDispatch::RefreshControlButtons(const Window& window) {
   }
 }
 
+void WindowPropertyDispatch::RefreshAlwaysOnTop(const Window& window) {
+  if (g_scope_depth > 0) return;
+  const auto id = window.GetId();
+  if (id == IdAllocator::kInvalidId) return;
+  const bool always_on_top = window.IsAlwaysOnTop();
+  bool missing = false;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto entry = Store().find(id);
+    missing = entry == Store().end();
+    if (!missing) {
+      if (entry->second.always_on_top == always_on_top) return;
+      entry->second.always_on_top = always_on_top;
+    }
+  }
+  if (missing) {
+    Refresh(window);
+    return;
+  }
+  try {
+    WindowManager::GetInstance().DispatchWindowEvent(
+        WindowPropertyChangedEvent(id, WindowProperty::AlwaysOnTop));
+  } catch (...) {
+  }
+}
+
 void WindowPropertyDispatch::RefreshOcclusion(const Window& window) {
   const WindowId id = window.GetId();
   if (id == IdAllocator::kInvalidId) return;
