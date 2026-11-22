@@ -31,12 +31,20 @@ class ProtocolHandlerDispatch {
 
 }  // namespace nativeapi::detail
 
+#if _WIN32
+#define NATIVEAPI_HOST_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define NATIVEAPI_HOST_EXPORT __attribute__((visibility("default")))
+#else
+#define NATIVEAPI_HOST_EXPORT
+#endif
+
 // Host bridge for hosts that cannot link core but load its shared library, i.e.
 // the leanflutter protocol_handler Flutter plugin (dlsym on Apple, JNI on Android).
 // The names and signatures are a stable contract; see specs/protocol-handler.md.
 extern "C" {
 // Creates the handler (starting native capture) and marks the host attached.
-void nativeapi_protocol_handler_host_attach(void);
+NATIVEAPI_HOST_EXPORT void nativeapi_protocol_handler_host_attach(void);
 // url is UTF-8; is_launch is non-zero for the URL that launched the process.
-void nativeapi_protocol_handler_host_deliver(const char* url, int is_launch);
+NATIVEAPI_HOST_EXPORT void nativeapi_protocol_handler_host_deliver(const char* url, int is_launch);
 }
