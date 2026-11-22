@@ -222,6 +222,15 @@ class TrayIcon::Impl {
     }
   }
 
+  static HICON LoadDefaultAppSmallIcon() {
+    HICON app_icon = static_cast<HICON>(LoadImageW(
+        GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    if (app_icon)
+      return app_icon;
+    return CopyIcon(LoadIcon(nullptr, IDI_APPLICATION));
+  }
+
   // Registers the icon with the shell once an image is available. It goes in
   // hidden when it was not shown yet. An icon that is added later, after another
   // one was deleted, can end up visible but deaf to clicks when the process runs
@@ -231,7 +240,7 @@ class TrayIcon::Impl {
     if (!hwnd_ || registered_)
       return;
     if (!nid_.hIcon) {
-      HICON fallback = CopyIcon(LoadIcon(nullptr, IDI_APPLICATION));
+      HICON fallback = LoadDefaultAppSmallIcon();
       if (!fallback)
         return;
       icon_handle_ = fallback;
@@ -267,7 +276,7 @@ class TrayIcon::Impl {
                             : ImageToHICON(image_.get(), width, height);
     }
     if (!icon)
-      icon = CopyIcon(LoadIcon(nullptr, IDI_APPLICATION));
+      icon = LoadDefaultAppSmallIcon();
     if (!icon)
       return;
     HICON previous = icon_handle_;
