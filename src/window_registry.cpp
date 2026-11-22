@@ -11,8 +11,8 @@ class WindowRegistry::Impl {
 };
 
 WindowRegistry& WindowRegistry::GetInstance() {
-  static WindowRegistry instance;
-  return instance;
+  static auto* instance = new WindowRegistry();  // Outlives exit.
+  return *instance;
 }
 
 WindowRegistry::WindowRegistry() : pimpl_(std::make_unique<Impl>()) {}

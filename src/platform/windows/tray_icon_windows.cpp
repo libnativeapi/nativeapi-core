@@ -57,8 +57,8 @@ COLORREF TrayForeground() {
 class TaskbarRestartWatcher {
  public:
   static TaskbarRestartWatcher& GetInstance() {
-    static TaskbarRestartWatcher instance;
-    return instance;
+    static auto* instance = new TaskbarRestartWatcher();  // Outlives exit.
+    return *instance;
   }
 
   int Add(std::function<void(bool)> on_taskbar_created) {
