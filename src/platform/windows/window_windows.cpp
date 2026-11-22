@@ -1014,14 +1014,21 @@ Window::Window() {
   static std::wstring wclass_name = StringToWString("NativeAPIWindow");
 
   if (!class_registered) {
-    WNDCLASSW wc = {};
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = wclass_name.c_str();
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
 
-    if (RegisterClassW(&wc)) {
+    if (RegisterClassExW(&wc)) {
       class_registered = true;
     } else {
       DWORD error = GetLastError();
