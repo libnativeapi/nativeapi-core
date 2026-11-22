@@ -1,5 +1,6 @@
 #include "ui_thread_windows.h"
 
+#include <cwchar>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -11,6 +12,7 @@ namespace {
 // Private message that drains one thread's queue window.
 constexpr UINT kTaskMessage = WM_APP + 0x52;
 constexpr wchar_t kQueueWindowClass[] = L"NativeApiUiThreadQueue";
+constexpr wchar_t kWindowIdProperty[] = L"NativeAPIWindowId";
 
 // Per-thread work queue. The window belongs to the thread the queue serves, so a
 // message posted to it runs on that thread. `tasks` is guarded by g_mutex.
@@ -30,6 +32,7 @@ std::unordered_map<DWORD, HHOOK> g_bootstraps;
 std::mutex g_ui_mutex;
 DWORD g_ui_thread = 0;
 HWND g_ui_anchor = nullptr;
+int g_ui_rank = 0;
 
 void RunTasks(std::vector<std::function<void()>> tasks) {
   for (auto& task : tasks) {
@@ -116,12 +119,52 @@ struct UiThreadSearch {
   DWORD process_id = 0;
   DWORD thread_id = 0;
   HWND anchor = nullptr;
-  bool visible = false;
+  int rank = 0;
 };
 
-// A window a listener would recognise as the application's: top level, and not a
-// tool or helper window. Visibility is preferred but not required — a window
-// shown later still owns the thread the events will be dispatched from.
+// Scores how strongly |hwnd| represents the application's UI thread:
+//   0: Not an application window (child window, tool window not managed by
+//      nativeapi, or a hidden OS/runtime helper window such as GDI+'s
+//      background-thread "GDI+ Hook Window Class").
+//   1: Hidden non-tool host window with non-empty geometry (e.g. a runner's
+//      main window before its initial ShowWindow).
+//   2: Hidden window known to nativeapi (carries NativeAPIWindowId, including
+//      launcher panels or utility windows styled with WS_EX_TOOLWINDOW).
+//   3: Visible application window.
+int UiWindowRank(HWND hwnd) {
+  if (!hwnd || GetAncestor(hwnd, GA_ROOT) != hwnd || (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD)) {
+    return 0;
+  }
+  const bool known = GetPropW(hwnd, kWindowIdProperty) != nullptr;
+  const bool visible = IsWindowVisible(hwnd) != FALSE;
+  if (known) {
+    return visible ? 3 : 2;
+  }
+  if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) {
+    return 0;
+  }
+  wchar_t class_name[64] = {};
+  if (GetClassNameW(hwnd, class_name, 64) > 0) {
+    if (std::wcscmp(class_name, L"GDI+ Hook Window Class") == 0 ||
+        std::wcscmp(class_name, L"IME") == 0 ||
+        std::wcscmp(class_name, L"MSCTFIME UI") == 0 ||
+        std::wcscmp(class_name, L"CicMarshalWndClass") == 0 ||
+        std::wcscmp(class_name, L"OleMainThreadWndClass") == 0 ||
+        std::wcscmp(class_name, L"MediaContextNotificationWindow") == 0 ||
+        std::wcscmp(class_name, L"DummyDWMListenerWindow") == 0) {
+      return 0;
+    }
+  }
+  if (visible) {
+    return 3;
+  }
+  RECT rect = {};
+  if (!GetWindowRect(hwnd, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
+    return 0;
+  }
+  return 1;
+}
+
 BOOL CALLBACK FindUiThreadWindow(HWND hwnd, LPARAM data) {
   auto* search = reinterpret_cast<UiThreadSearch*>(data);
   DWORD process_id = 0;
@@ -129,30 +172,27 @@ BOOL CALLBACK FindUiThreadWindow(HWND hwnd, LPARAM data) {
   if (!thread_id || process_id != search->process_id) {
     return TRUE;
   }
-  if (GetAncestor(hwnd, GA_ROOT) != hwnd || (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) ||
-      (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) {
+  const int rank = UiWindowRank(hwnd);
+  if (rank <= search->rank) {
     return TRUE;
-  }
-  const bool visible = IsWindowVisible(hwnd) != FALSE;
-  if (search->thread_id && (search->visible || !visible)) {
-    return TRUE;  // Already the best candidate.
   }
   search->thread_id = thread_id;
   search->anchor = hwnd;
-  search->visible = visible;
-  return TRUE;
+  search->rank = rank;
+  return rank < 3 ? TRUE : FALSE;
 }
 
 }  // namespace
 
 DWORD FindUiThreadId() {
   std::lock_guard<std::mutex> lock(g_ui_mutex);
-  if (g_ui_anchor && IsWindow(g_ui_anchor) &&
+  if (g_ui_rank >= 2 && g_ui_anchor && IsWindow(g_ui_anchor) &&
       GetWindowThreadProcessId(g_ui_anchor, nullptr) == g_ui_thread) {
     return g_ui_thread;
   }
   g_ui_anchor = nullptr;
   g_ui_thread = 0;
+  g_ui_rank = 0;
 
   // The foreground window is the application's own whenever it is in use, and the
   // one the user's next message goes to.
@@ -160,11 +200,14 @@ DWORD FindUiThreadId() {
   if (foreground) {
     DWORD process_id = 0;
     const DWORD thread_id = GetWindowThreadProcessId(foreground, &process_id);
-    if (thread_id && process_id == GetCurrentProcessId() &&
-        GetAncestor(foreground, GA_ROOT) == foreground) {
-      g_ui_thread = thread_id;
-      g_ui_anchor = foreground;
-      return g_ui_thread;
+    if (thread_id && process_id == GetCurrentProcessId()) {
+      const int rank = UiWindowRank(foreground);
+      if (rank > 0) {
+        g_ui_thread = thread_id;
+        g_ui_anchor = foreground;
+        g_ui_rank = rank;
+        return g_ui_thread;
+      }
     }
   }
 
@@ -173,6 +216,7 @@ DWORD FindUiThreadId() {
   EnumWindows(FindUiThreadWindow, reinterpret_cast<LPARAM>(&search));
   g_ui_thread = search.thread_id;
   g_ui_anchor = search.anchor;
+  g_ui_rank = search.rank;
   return g_ui_thread;
 }
 
