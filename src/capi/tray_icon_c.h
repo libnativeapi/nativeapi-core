@@ -18,6 +18,8 @@ typedef uint64_t native_view_t;
 
 #if _WIN32
 #define FFI_PLUGIN_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define FFI_PLUGIN_EXPORT __attribute__((visibility("default")))
 #else
 #define FFI_PLUGIN_EXPORT
 #endif
