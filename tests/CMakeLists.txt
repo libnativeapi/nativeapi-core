@@ -86,6 +86,10 @@ if(WIN32)
   target_link_libraries(window_geometry_coalesce_windows_test PRIVATE nativeapi comctl32)
   add_test(NAME window_geometry_coalesce_windows_test COMMAND window_geometry_coalesce_windows_test)
   set_tests_properties(window_geometry_coalesce_windows_test PROPERTIES TIMEOUT 20)
+  add_executable(window_hidden_titlebar_nccalcsize_windows_test window_hidden_titlebar_nccalcsize_windows_test.cpp)
+  target_link_libraries(window_hidden_titlebar_nccalcsize_windows_test PRIVATE nativeapi comctl32)
+  add_test(NAME window_hidden_titlebar_nccalcsize_windows_test COMMAND window_hidden_titlebar_nccalcsize_windows_test)
+  set_tests_properties(window_hidden_titlebar_nccalcsize_windows_test PROPERTIES TIMEOUT 20)
 endif()
 
 # window_manager#569 (#77): WS_POPUP windows and their caption.
