@@ -111,6 +111,13 @@ bool FileDialog::Impl::Open() {
       }
     }
 #else
+    const HRESULT com_init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    struct ComGuard {
+      HRESULT hr;
+      ~ComGuard() {
+        if (SUCCEEDED(hr)) CoUninitialize();
+      }
+    } com_guard{com_init};
     Microsoft::WRL::ComPtr<IFileDialog> dialog;
     Check(CoCreateInstance(mode == FileDialogMode::SaveFile ? CLSID_FileSaveDialog : CLSID_FileOpenDialog,
                            nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)));
