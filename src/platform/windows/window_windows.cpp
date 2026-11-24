@@ -612,8 +612,11 @@ static std::optional<LRESULT> HandleHiddenTitleBarFrame(HWND hwnd, UINT message,
     }
     // The maximized frame extends beyond the work area by its resize borders.
     // Fit the captionless client to the work area, excluding those borders.
+    // During WM_NCCALCSIZE the window still has its previous rect (the
+    // minimized placeholder at (-32000, -32000) when restoring from minimized),
+    // so query the monitor for the proposed rect it is moving to.
     MONITORINFO monitor = {sizeof(monitor)};
-    if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+    if (GetMonitorInfoW(MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST), &monitor))
       params->rgrc[0] = monitor.rcWork;
     return result;
   }
