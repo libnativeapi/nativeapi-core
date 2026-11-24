@@ -512,6 +512,10 @@ if(WIN32)
   target_link_libraries(window_close_windows_test PRIVATE nativeapi Threads::Threads)
   add_test(NAME window_close_windows_test COMMAND window_close_windows_test)
   set_tests_properties(window_close_windows_test PROPERTIES TIMEOUT 10)
+  add_executable(window_destroy_quit_windows_test window_destroy_quit_windows_test.cpp)
+  target_link_libraries(window_destroy_quit_windows_test PRIVATE nativeapi comctl32)
+  add_test(NAME window_destroy_quit_windows_test COMMAND window_destroy_quit_windows_test)
+  set_tests_properties(window_destroy_quit_windows_test PROPERTIES TIMEOUT 15)
   # WindowManager first touched from a thread that never reads Win32 messages: the
   # WinEvent hooks and the geometry subclass still have to end up on the thread
   # that owns the windows.

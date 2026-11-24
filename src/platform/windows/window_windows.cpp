@@ -1001,7 +1001,9 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
       DestroyWindow(hwnd);
       return 0;
     case WM_DESTROY:
-      PostQuitMessage(0);
+      // Do not post WM_QUIT for every destroyed window: multi-window apps and
+      // transient windows (popups, dialogs) must keep running. Application::Run(window)
+      // posts WM_QUIT when its primary window is destroyed.
       return 0;
     default:
       return DefWindowProcW(hwnd, uMsg, wParam, lParam);

@@ -1,5 +1,6 @@
 // clang-format off
 #include <windows.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <dwmapi.h>
@@ -220,6 +221,15 @@ class Application::Impl {
     return exit_code;
   }
 
+  static LRESULT CALLBACK PrimaryWindowQuitProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                                UINT_PTR subclass_id, DWORD_PTR) {
+    if (msg == WM_NCDESTROY) {
+      RemoveWindowSubclass(hwnd, PrimaryWindowQuitProc, subclass_id);
+      PostQuitMessage(0);
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+  }
+
   int Run(std::shared_ptr<Window> window) {
     if (!window) {
       return -1;
@@ -227,6 +237,28 @@ class Application::Impl {
 
     // Set the window as primary window
     app_->SetPrimaryWindow(window);
+
+    // End the Run(window) loop when the primary window itself is destroyed,
+    // matching Linux's gtk_application_add_window semantics without letting
+    // secondary or transient windows terminate the loop.
+    HWND primary_hwnd = static_cast<HWND>(window->GetNativeObject());
+    struct PrimaryWindowQuitGuard {
+      HWND hwnd = nullptr;
+      bool installed = false;
+      explicit PrimaryWindowQuitGuard(HWND target) : hwnd(target) {
+        if (hwnd && IsWindow(hwnd)) {
+          installed =
+              SetWindowSubclass(hwnd, PrimaryWindowQuitProc,
+                                reinterpret_cast<UINT_PTR>(&PrimaryWindowQuitProc), 0) != FALSE;
+        }
+      }
+      ~PrimaryWindowQuitGuard() {
+        if (installed && hwnd && IsWindow(hwnd)) {
+          RemoveWindowSubclass(hwnd, PrimaryWindowQuitProc,
+                               reinterpret_cast<UINT_PTR>(&PrimaryWindowQuitProc));
+        }
+      }
+    } quit_guard(primary_hwnd);
 
     // Show the window
     window->Show();
